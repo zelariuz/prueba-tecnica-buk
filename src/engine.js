@@ -4,6 +4,7 @@
 import { createHash } from 'node:crypto';
 
 import { presupuestos as presupuestosPorDefecto } from './budgets.js';
+import { canonica } from './canonical.js';
 import { postgres } from './dialect/postgres.js';
 import { SemanticError } from './errors.js';
 import { crearPlanificador } from './planner.js';
@@ -60,7 +61,7 @@ export function createEngine({
       meta: {
         servedFrom: 'live',
         asOf,
-        queryId: identificarConsulta(query, ctx),
+        queryId: identificarConsulta(query, ctx, catalog.version()),
         // Siempre presente, aunque esté vacía: quien la lee no tiene que
         // preguntarse si el campo existe.
         warnings: advertencias,
@@ -103,11 +104,14 @@ function aNumeros(filas, medidas) {
   );
 }
 
-// Identidad de la consulta: su forma más la empresa. La empresa entra al hash
-// para que una entrada de caché nunca pueda servir a otra empresa.
-function identificarConsulta(query, ctx) {
+// Identidad de la consulta: su forma con los parámetros puestos, más la
+// empresa, más la versión del catálogo. La empresa entra al hash para que una
+// entrada de caché nunca pueda servir a otra empresa; la versión, para que el
+// mismo JSON sobre otro contrato de datos no se confunda con la misma consulta.
+// La serialización es canónica: reordenar las claves del JSON no cambia el id.
+function identificarConsulta(query, ctx, versionDelCatalogo) {
   return createHash('sha256')
-    .update(JSON.stringify({ companyId: ctx.companyId, query }))
+    .update(canonica({ companyId: ctx.companyId, query, catalogVersion: versionDelCatalogo }))
     .digest('hex')
     .slice(0, 16);
 }

@@ -3,6 +3,7 @@
 // SQL: eso es responsabilidad exclusiva del planificador (src/planner.js).
 import { createHash } from 'node:crypto';
 
+import { canonica } from './canonical.js';
 import { SemanticError } from './errors.js';
 import { masParecido } from './suggest.js';
 import { GRANULARIDADES, operadoresDe } from './vocabulary.js';
@@ -258,20 +259,6 @@ function sugerenciaDe(escrito, candidatos, clase, contenedor) {
   return parecido
     ? `La ${clase} ${escrito} no existe en ${contenedor}. ¿Quisiste decir ${parecido}?`
     : `La ${clase} ${escrito} no existe en ${contenedor}.`;
-}
-
-// Serialización canónica: mismo contenido, mismo texto, sin importar en qué
-// orden se declararon las claves. Es lo que hace del hash una versión y no un
-// número que cambia solo porque alguien reordenó un objeto.
-function canonica(valor) {
-  if (Array.isArray(valor)) return `[${valor.map(canonica).join(',')}]`;
-  if (valor && typeof valor === 'object') {
-    return `{${Object.keys(valor)
-      .sort()
-      .map((clave) => `${JSON.stringify(clave)}:${canonica(valor[clave])}`)
-      .join(',')}}`;
-  }
-  return JSON.stringify(valor ?? null);
 }
 
 // Un parámetro de consulta tipo se escribe `:nombre` en el lugar donde va su

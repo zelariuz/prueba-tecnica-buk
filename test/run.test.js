@@ -1,5 +1,6 @@
 import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import pg from 'pg';
 
 import { createCatalog } from '../src/catalog.js';
@@ -8,6 +9,9 @@ import { departments } from '../src/definitions/departments.js';
 import { employees } from '../src/definitions/employees.js';
 import { reviews } from '../src/definitions/reviews.js';
 import { consultasTipo } from '../src/definitions/consultas-tipo.js';
+
+// La misma foto fija del esquema que usa el resto de los tests del catálogo.
+const SNAPSHOT = JSON.parse(readFileSync(new URL('./fixtures/snapshot.json', import.meta.url), 'utf8'));
 
 const { DATABASE_URL } = process.env;
 
@@ -459,5 +463,53 @@ describe('consultas tipo como regresión', conBase, () => {
     });
 
     assert.deepEqual(porEstado(rows), { completed: 5, pending: 4, calibrated: 2 });
+  });
+});
+
+// `queryId` identifica la consulta: es lo que un dashboard reporta cuando algo
+// se ve raro y lo que la caché usará de llave (historia 17). Por eso depende de
+// tres cosas y de ninguna más: la forma de la consulta con sus parámetros, la
+// empresa y la versión del catálogo.
+describe('identidad de la consulta (queryId)', conBase, () => {
+  let pool;
+
+  before(() => {
+    pool = new pg.Pool({ connectionString: DATABASE_URL });
+  });
+
+  after(async () => {
+    await pool.end();
+  });
+
+  function engineCon(snapshot) {
+    const catalog = createCatalog();
+    for (const def of [reviews, employees, departments]) catalog.register(def, snapshot);
+    return createEngine({ catalog, pool });
+  }
+
+  it('es el mismo para la misma forma y empresa, y distinto para otra empresa', async () => {
+    const engine = engineCon();
+    const comoLoEscribeUnDashboard = { measures: ['reviews.count'], dimensions: ['reviews.status'] };
+    // La misma consulta con las claves en otro orden: misma forma, mismo id.
+    const comoLoEscribeOtro = { dimensions: ['reviews.status'], measures: ['reviews.count'] };
+
+    const primera = await engine.run(comoLoEscribeUnDashboard, { companyId: EMPRESA_A, consumer: 'api' });
+    const segunda = await engine.run(comoLoEscribeOtro, { companyId: EMPRESA_A, consumer: 'api' });
+    const otraEmpresa = await engine.run(comoLoEscribeUnDashboard, { companyId: EMPRESA_B, consumer: 'api' });
+
+    assert.equal(primera.meta.queryId, segunda.meta.queryId);
+    assert.notEqual(primera.meta.queryId, otraEmpresa.meta.queryId);
+  });
+
+  it('cambia si cambia la versión del catálogo: el mismo JSON sobre otro contrato no es la misma consulta', async () => {
+    const consulta = { measures: ['reviews.count'], dimensions: ['reviews.status'] };
+    const ctx = { companyId: EMPRESA_A, consumer: 'api' };
+
+    // Las mismas definiciones sobre otro esquema físico son otro contrato de
+    // datos, y la versión del catálogo lo refleja.
+    const sinEsquema = await engineCon().run(consulta, ctx);
+    const conEsquema = await engineCon(SNAPSHOT).run(consulta, ctx);
+
+    assert.notEqual(sinEsquema.meta.queryId, conEsquema.meta.queryId);
   });
 });
