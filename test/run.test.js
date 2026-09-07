@@ -8,6 +8,8 @@ import { createEngine } from '../src/engine.js';
 import { departments } from '../src/definitions/departments.js';
 import { employees } from '../src/definitions/employees.js';
 import { reviews } from '../src/definitions/reviews.js';
+import { attendance } from '../src/definitions/attendance.js';
+import { registrarModulos } from '../src/definitions/index.js';
 import { consultasTipo } from '../src/definitions/consultas-tipo.js';
 
 // La misma foto fija del esquema que usa el resto de los tests del catálogo.
@@ -431,8 +433,9 @@ describe('consultas tipo como regresión', conBase, () => {
   before(() => {
     pool = new pg.Pool({ connectionString: DATABASE_URL });
     catalog = createCatalog();
-    for (const definicion of [reviews, employees, departments]) catalog.register(definicion);
-    for (const consulta of consultasTipo) catalog.registerQuery(consulta);
+    // La composición real: todos los módulos y todas sus consultas tipo. Así
+    // agregar un módulo no deja este test de regresión desactualizado.
+    registrarModulos(catalog);
     engine = createEngine({ catalog, pool });
   });
 
@@ -511,5 +514,74 @@ describe('identidad de la consulta (queryId)', conBase, () => {
     const conEsquema = await engineCon(SNAPSHOT).run(consulta, ctx);
 
     assert.notEqual(sinEsquema.meta.queryId, conEsquema.meta.queryId);
+  });
+});
+
+// Segundo módulo (historia 9): asistencia se registra como una definición más y
+// responde su pregunta del caso sin que el engine ni el planificador cambien.
+describe('módulo de asistencia', conBase, () => {
+  let pool;
+  let engine;
+  let catalog;
+
+  before(() => {
+    pool = new pg.Pool({ connectionString: DATABASE_URL });
+    catalog = createCatalog();
+    for (const def of [reviews, employees, departments, attendance]) catalog.register(def);
+    for (const consulta of consultasTipo) catalog.registerQuery(consulta);
+    engine = createEngine({ catalog, pool });
+  });
+
+  after(async () => {
+    await pool.end();
+  });
+
+  // Agosto de 2025 en el seed: Ingeniería 16 presentes de 20 días, Ventas 5 de 10.
+  const AGOSTO = ['2025-08-01', '2025-08-31'];
+
+  it('la tasa de asistencia por departamento devuelve los valores del seed', async () => {
+    const { rows } = await engine.run(
+      {
+        measures: ['attendance.attendance_rate', 'attendance.count'],
+        dimensions: ['departments.name'],
+        timeDimensions: [
+          { dimension: 'attendance.date', granularity: 'month', dateRange: AGOSTO },
+        ],
+        order: { 'departments.name': 'asc' },
+      },
+      { companyId: EMPRESA_A, consumer: 'dashboard' },
+    );
+
+    assert.deepEqual(rows, [
+      {
+        'departments.name': 'Ingeniería',
+        'attendance.date': '2025-08-01',
+        'attendance.attendance_rate': 80,
+        'attendance.count': 20,
+      },
+      {
+        'departments.name': 'Ventas',
+        'attendance.date': '2025-08-01',
+        'attendance.attendance_rate': 50,
+        'attendance.count': 10,
+      },
+    ]);
+  });
+
+  it('la consulta tipo de asistencia responde por su nombre y aísla a la otra empresa', async () => {
+    const consulta = catalog.query('asistencia-por-departamento', { dateRange: AGOSTO });
+
+    const empresaA = await engine.run(consulta, { companyId: EMPRESA_A, consumer: 'dashboard' });
+    const empresaB = await engine.run(consulta, { companyId: EMPRESA_B, consumer: 'dashboard' });
+
+    assert.deepEqual(
+      empresaA.rows.map((fila) => [fila['departments.name'], fila['attendance.attendance_rate']]),
+      [['Ingeniería', 80], ['Ventas', 50]],
+    );
+    // La empresa 2 tiene su propio bloque de agosto: 3 presentes de 4 días.
+    assert.deepEqual(
+      empresaB.rows.map((fila) => [fila['departments.name'], fila['attendance.attendance_rate']]),
+      [['Ingeniería', 75]],
+    );
   });
 });

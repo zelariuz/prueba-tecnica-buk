@@ -13,7 +13,9 @@
 --     bajo el filtro por empresa, desaparece.
 --   * El departamento 10 tiene en 2025 cuatro evaluaciones, tres completadas
 --     (75 % de completitud).
---   * Asistencia de dos meses corridos (junio y julio de 2025).
+--   * Asistencia de dos meses corridos (junio y julio de 2025), más un mes
+--     (agosto de 2025) con conteos redondos por departamento para la tasa de
+--     asistencia.
 --
 -- CONTEOS ESPERADOS (evaluaciones por empresa y estado, sin joins):
 --   empresa 1 → completed: 5, pending: 4, calibrated: 2   (total 11)
@@ -35,6 +37,14 @@
 --   Ventas     → 2 evaluaciones (1004, 1005),             0 completadas → 0
 --   Con el filtro global `status = completed` la misma consulta da Ingeniería
 --   100 y Ventas desaparece: sin filas completadas no queda grupo que agrupar.
+--
+-- TASA DE ASISTENTES (attendance_rate = presentes / días registrados * 100) de
+-- la empresa 1 por departamento, con la asistencia de agosto de 2025:
+--   Ingeniería → 20 días registrados (empleado 100), 16 presentes → 80
+--   Ventas     → 10 días registrados (empleado 102),  5 presentes → 50
+--   empresa 2  → Ingeniería 4 días, 3 presentes → 75
+-- Junio y julio quedan como estaban; agosto es un bloque aparte para que los
+-- números de la tasa se puedan verificar a mano.
 --
 -- FILA INCONSISTENTE (evaluación 1010), evaluaciones de 2025 por trimestre de
 -- la empresa 1:
@@ -102,3 +112,26 @@ INSERT INTO attendance (id, employee_id, company_id, date, present)
 SELECT 30200 + (gs::date - DATE '2025-06-01'), 200, 2, gs::date,
        gs::date NOT IN (DATE '2025-06-05', DATE '2025-06-06', DATE '2025-07-21')
 FROM generate_series(DATE '2025-06-01', DATE '2025-07-31', INTERVAL '1 day') AS gs;
+
+-- Agosto de 2025: bloque corto con conteos redondos, para la tasa de asistencia
+-- por departamento. Cada empleado está en un departamento distinto, así que la
+-- tasa del departamento es la del empleado.
+--   empleado 100 (empresa 1, Ingeniería): 20 días, 4 ausencias → 16 presentes
+INSERT INTO attendance (id, employee_id, company_id, date, present)
+SELECT 31000 + (gs::date - DATE '2025-08-01'), 100, 1, gs::date,
+       gs::date NOT IN (DATE '2025-08-04', DATE '2025-08-11', DATE '2025-08-18', DATE '2025-08-20')
+FROM generate_series(DATE '2025-08-01', DATE '2025-08-20', INTERVAL '1 day') AS gs;
+
+--   empleado 102 (empresa 1, Ventas): 10 días, 5 ausencias → 5 presentes
+INSERT INTO attendance (id, employee_id, company_id, date, present)
+SELECT 31100 + (gs::date - DATE '2025-08-01'), 102, 1, gs::date,
+       gs::date NOT IN (DATE '2025-08-02', DATE '2025-08-04', DATE '2025-08-06',
+                        DATE '2025-08-08', DATE '2025-08-10')
+FROM generate_series(DATE '2025-08-01', DATE '2025-08-10', INTERVAL '1 day') AS gs;
+
+--   empleado 200 (empresa 2, Ingeniería): 4 días, 1 ausencia → 3 presentes.
+--   Está para que la empresa 2 tenga su propia tasa y el aislamiento se note.
+INSERT INTO attendance (id, employee_id, company_id, date, present)
+SELECT 31200 + (gs::date - DATE '2025-08-01'), 200, 2, gs::date,
+       gs::date NOT IN (DATE '2025-08-03')
+FROM generate_series(DATE '2025-08-01', DATE '2025-08-04', INTERVAL '1 day') AS gs;

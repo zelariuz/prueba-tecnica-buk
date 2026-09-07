@@ -8,6 +8,7 @@ import { departments } from '../src/definitions/departments.js';
 import { employees } from '../src/definitions/employees.js';
 import { reviews } from '../src/definitions/reviews.js';
 import { consultasTipo } from '../src/definitions/consultas-tipo.js';
+import { registrarModulos } from '../src/definitions/index.js';
 
 // Valor improbable a propósito: si aparece en el SQL, es que se interpoló.
 const EMPRESA = 424242;
@@ -580,8 +581,9 @@ function ctesDe(sql) {
 
 test('toda consulta tipo planifica y filtra por empresa en cada una de sus CTE', () => {
   const catalog = createCatalog();
-  for (const definicion of [reviews, employees, departments]) catalog.register(definicion);
-  for (const consulta of consultasTipo) catalog.registerQuery(consulta);
+  // La composición real: todos los módulos y todas sus consultas tipo. El
+  // invariante de empresa vale para lo que se sirve, no para una selección.
+  registrarModulos(catalog);
   const engine = createEngine({ catalog });
 
   // Un parámetro de más lo ignora la consulta que no lo declara.

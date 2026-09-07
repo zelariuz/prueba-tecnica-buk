@@ -48,6 +48,26 @@ export const consultasTipo = [
     },
   },
   {
+    // La pregunta del caso es "tasa de asistencia por departamento de los
+    // últimos tres meses": los tres meses son el `dateRange` que pone quien
+    // llama. La granularidad mensual es obligatoria —v1 no admite un rango sin
+    // granularidad— y de paso deja ver la tendencia mes a mes en vez de un solo
+    // número por departamento.
+    name: 'asistencia-por-departamento',
+    description:
+      'Tasa de asistencia por departamento y mes dentro del rango pedido (por ejemplo, los últimos tres meses).',
+    params: ['dateRange'],
+    query: {
+      measures: ['attendance.attendance_rate'],
+      dimensions: ['departments.name'],
+      timeDimensions: [
+        { dimension: 'attendance.date', granularity: 'month', dateRange: ':dateRange' },
+      ],
+      order: { 'departments.name': 'asc' },
+      limit: 500,
+    },
+  },
+  {
     name: 'headcount-por-departamento',
     description: 'Cantidad de empleados por departamento.',
     params: [],

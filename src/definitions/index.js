@@ -2,12 +2,13 @@
 // Es el único lugar que los nombra a todos, y por eso agregar un módulo es
 // agregar una línea aquí más su archivo de definición: ni el engine ni el
 // planificador se enteran (historia 9).
+import { attendance } from './attendance.js';
 import { consultasTipo } from './consultas-tipo.js';
 import { departments } from './departments.js';
 import { employees } from './employees.js';
 import { reviews } from './reviews.js';
 
-export const modulos = [reviews, employees, departments];
+export const modulos = [reviews, employees, departments, attendance];
 
 // En producción el registro va SIEMPRE con el snapshot del esquema real: sin él
 // se valida la forma pero no que las columnas existan, y una definición que
