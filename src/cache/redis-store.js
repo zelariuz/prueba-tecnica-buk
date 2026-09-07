@@ -117,7 +117,14 @@ export function crearRedisStore({
       // JSON y no otra cosa: serializar es además lo que le da a la L2 la misma
       // semántica de copia que la L1 (`structuredClone`), así que quien mute las
       // filas que recibió no le cambia la respuesta al siguiente.
-      return texto === null ? undefined : JSON.parse(texto);
+      if (texto === null) return undefined;
+      // Una entrada corrupta (otro proceso, otra versión) es un miss, no un
+      // error: el store responde por su propio dato sin depender de quien lo lea.
+      try {
+        return JSON.parse(texto);
+      } catch {
+        return undefined;
+      }
     },
 
     async set(key, value, ttlMs) {
