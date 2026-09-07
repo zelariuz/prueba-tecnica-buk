@@ -32,3 +32,23 @@ services:
       interval: 2s
       timeout: 3s
       retries: 30
+
+  # El servicio HTTP. Arranca después de que la base esté sana porque lo
+  # primero que hace es introspectar el esquema para registrar las definiciones
+  # con snapshot: sin base no puede validar el contrato y no debe escuchar.
+  api:
+    build: .
+    container_name: capa-semantica-api
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      # Dentro de la red de compose la base es `db:5432`; el 5433 es sólo la
+      # publicación al host.
+      DATABASE_URL: postgres://capa:capa@db:5432/capa_semantica
+      PORT: "3000"
+      # Tokens de demo (ver .env.example): valores falsos y públicos a
+      # propósito. La autenticación real está fuera de alcance.
+      DEMO_TOKENS: '{"demo-dashboard-empresa-a":{"companyId":1,"consumer":"dashboard"},"demo-api-empresa-a":{"companyId":1,"consumer":"api"},"demo-agente-empresa-a":{"companyId":1,"consumer":"agent"},"demo-dashboard-empresa-b":{"companyId":2,"consumer":"dashboard"}}'
+    ports:
+      - "3000:3000"
