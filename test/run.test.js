@@ -317,11 +317,24 @@ describe('guardarraíles del consumidor', conBase, () => {
   });
 
   it('el timeout de una petición no contamina la siguiente que usa la misma conexión', async () => {
+    const ctx = { companyId: EMPRESA_A, consumer: 'api' };
+
+    // El test se provoca su propio timeout: sin esta primera petición cortada
+    // no hay estado que pudiera quedar pegado a la conexión y el test pasaría
+    // sin comprobar nada, dependiendo del orden de la suite.
+    const impaciente = createEngine({
+      catalog,
+      pool: poolQueDuerme(pool, 1),
+      presupuestos: { api: { timeoutMs: 50, maxFilas: 10_000, rangoObligatorio: false } },
+    });
+    const error = await errorAlEsperar(impaciente.run(conteoPorEstado, ctx));
+    assert.equal(error.code, 'QUERY_TIMEOUT');
+
+    // Con el pool en tamaño 1, la siguiente petición reusa esa misma conexión.
     // Un segundo durmiendo sobre el presupuesto real de `api` (15 s) pasa; si
     // el SET LOCAL de la petición anterior hubiera quedado pegado a la
     // conexión, esta consulta moriría a los 50 ms.
     const dormilon = createEngine({ catalog, pool: poolQueDuerme(pool, 1) });
-
-    await dormilon.run(conteoPorEstado, { companyId: EMPRESA_A, consumer: 'api' });
+    await dormilon.run(conteoPorEstado, ctx);
   });
 });
