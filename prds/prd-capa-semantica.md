@@ -69,10 +69,13 @@ flowchart TD
   P1 -- "UNKNOWN_MEMBER · NO_JOIN_PATH<br/>MISSING_TENANT · FORBIDDEN_FIELD<br/>MULTI_ENTITY_MEASURES · MISSING_TIME_RANGE" --> ERR["Error estructurado<br/>{code, member, suggestion}"]
   P1 --> P2["Puerta 2 · Planificar<br/>camino de joins por relaciones many_to_one<br/>CTE por entidad con company_id = $1<br/>medidas · derivadas ratio · dialecto"]
   P2 -- dry-run --> PLAN["{ sql, params, plan }"]
-  P2 --> P4["Puerta 4 · Ejecutar<br/>BEGIN · SET LOCAL statement_timeout<br/>consulta parametrizada · COMMIT"]
+  P2 --> P3{"Puerta 3 · ¿en caché?<br/>llave = forma + empresa + versión"}
+  P3 -- "L1 o L2" --> P5
+  P3 -- no --> P4["Puerta 4 · Ejecutar<br/>BEGIN · SET LOCAL statement_timeout<br/>consulta parametrizada · COMMIT"]
   P4 -- timeout / error --> RB["ROLLBACK · error estructurado"]
   P4 --> P5["Puerta 5 · Post-procesar<br/>conversión de tipos · derivadas sobre agregados<br/>meta: servedFrom, asOf, queryId"]
-  P5 --> OUT["{ rows, meta }"]
+  P5 --> S["Guardar en L1 y L2"]
+  S --> OUT["{ rows, meta }"]
 ```
 
 ### Medida derivada en dos etapas
@@ -131,6 +134,8 @@ flowchart LR
 31. Como equipo de plataforma, quiero telemetría por puerta, consumidor y código de error, para poder ver dónde se va el tiempo y cuántas consultas se rechazan.
 32. Como equipo de plataforma, quiero levantar base y servicio con un solo comando de Docker, para poder reproducir el entorno y correr los tests en cualquier máquina.
 33. Como equipo de plataforma, quiero que el catálogo se pueda probar sin base inyectando una foto del esquema, para poder correr la mayoría de los tests en segundos.
+34. Como equipo de plataforma, quiero que las consultas repetidas se sirvan desde una caché en memoria y desde Redis compartido entre instancias, para poder reducir la carga sobre la base cuando muchos usuarios abren el mismo dashboard.
+35. Como equipo de plataforma, quiero que la caché siga funcionando en memoria si Redis no está disponible, para poder que un fallo de la caché nunca tumbe una consulta.
 
 ## Decisiones de Implementación
 
@@ -138,9 +143,9 @@ flowchart LR
 
 - JavaScript puro sobre Node 24, sin TypeScript. Acceso a la base con
   node-postgres y placeholders `$1..$n`.
-- `docker-compose.yml` con dos servicios: `db` (`postgres:16`, esquema del
-  caso y seed de dos empresas) y `api` (servicio Node). El front no forma
-  parte del entregable; la demo por consola hace su papel.
+- `docker-compose.yml` con tres servicios: `db` (`postgres:16`, esquema del
+  caso y seed de dos empresas), `redis` (caché compartida) y `api` (servicio
+  Node). El front no forma parte del entregable; la demo por consola hace su papel.
 
 **Definiciones** (ADR 0001, 0005)
 
@@ -189,8 +194,8 @@ flowchart LR
 
 - Pipeline de puertas; cada puerta es una función que recibe y devuelve el
   contexto o corta con una respuesta. Puertas en v1: validar, planificar,
-  ejecutar, post-procesar. Estimación de costo y caché quedan como costuras
-  documentadas, no implementadas.
+  buscar en caché, ejecutar, post-procesar y guardar en caché. Estimación de
+  costo queda como costura documentada, no implementada.
 - Validar: miembros existentes con sugerencia por distancia de edición,
   camino de joins, campos prohibidos en el JSON, medidas de una sola entidad,
   rango temporal cuando la entidad lo exige, operadores válidos.
@@ -206,12 +211,31 @@ flowchart LR
   del consumidor; consulta parametrizada; `COMMIT`; `ROLLBACK` ante error
   antes de liberar el cliente.
 - Post-procesar: conversión de `int8` y `numeric` (llegan como texto) a
-  número; `meta.servedFrom = 'live'`, `asOf`, `queryId` (hash canónico de la
-  forma de la consulta más empresa); SQL incluido solo con bandera de depuración.
+  número; `meta.servedFrom` con valores `live`, `cache-l1` o `cache-l2`;
+  `asOf` (instante en que se ejecutó la consulta que produjo el resultado,
+  aunque se sirva desde caché); `queryId` (hash canónico de la forma de la
+  consulta más empresa); SQL incluido solo con bandera de depuración.
+
+**Caché** (dos niveles detrás de una interfaz)
+
+- Interfaz `CacheStore` con `get`, `set` y `delete`. Dos implementaciones:
+  `MemoryStore` (L1, en el proceso, LRU acotado, vida corta) y `RedisStore`
+  (L2, compartida entre instancias, TTL por entrada).
+- Llave: hash canónico de la forma de la consulta con sus parámetros, más
+  `companyId`, más versión del catálogo. Cambiar una definición invalida solo.
+  La empresa forma parte de la llave: una entrada nunca puede servir a otra.
+- Lectura: L1, luego L2, luego base. Escritura: al terminar una ejecución en
+  vivo, en ambos niveles. TTL inicial fijo por configuración; la frescura por
+  entidad y la invalidación por escrituras de los módulos quedan como evolución.
+- Si Redis no está disponible, el engine sigue funcionando solo con L1 y lo
+  registra en telemetría; nunca falla una consulta por la caché.
+- Redis se implementa en la última fase del plan: si el tiempo no alcanza, se
+  entrega con L1 y `RedisStore` documentado como segunda implementación de la
+  misma interfaz.
 - Dry-run: `plan(consulta, ctx)` devuelve `{ sql, params, plan }` sin tocar la base.
-- Telemetría en memoria: contadores por resultado y código de error,
-  duración por puerta y de base, expuestos por una función del engine y
-  mostrados al final de la demo.
+- Telemetría en memoria: contadores por resultado y código de error, por
+  `servedFrom` (hit ratio de caché), duración por puerta y de base, expuestos
+  por una función del engine y mostrados al final de la demo.
 
 **Capa HTTP**
 
@@ -222,6 +246,8 @@ flowchart LR
 
 - Comando que registra las definiciones, imprime el catálogo público y
   ejecuta las tres preguntas del caso mostrando JSON, SQL generado y filas.
+  Cada pregunta se ejecuta dos veces para mostrar `live` y luego `cache-l1`;
+  con Redis levantado, una segunda instancia del engine responde `cache-l2`.
 
 ## Decisiones de Testing
 
@@ -266,6 +292,12 @@ flowchart LR
     derivada circular rechazada, `describe()` sin nombres físicos ni datos de
     otra empresa.
   - Pool de tamaño 1 con dos empresas alternadas: sin cruce.
+  - Caché: la segunda ejecución de la misma consulta responde `cache-l1` con
+    las mismas filas; una consulta de la empresa B con la misma forma no recibe
+    la entrada de la A; cambiar la versión del catálogo invalida; con Redis
+    disponible, una segunda instancia del engine responde `cache-l2`; con Redis
+    caído, la consulta se sirve igual y la telemetría lo registra. Los tests de
+    Redis se saltan con aviso si no hay conexión configurada.
   - Timeout del consumidor: una consulta con `pg_sleep` en el seed de prueba
     corta y la conexión vuelve limpia al pool.
 - **Antecedentes**: no hay tests previos en el repo.
@@ -276,8 +308,9 @@ flowchart LR
   la capa solo consume su `company_id` y clase de consumidor.
 - Front end: se entrega el contrato HTTP y la demo por consola.
 - Estimación de costo con `EXPLAIN` y clasificación ligera/media/pesada.
-- Caché de resultados (memoria, Redis, Parquet), single-flight,
-  pre-agregaciones y vistas materializadas.
+- Caché L3 en Parquet, single-flight, invalidación por escrituras de los
+  módulos (generacional), frescura por entidad, pre-agregaciones y vistas
+  materializadas.
 - Trabajos asíncronos y cola.
 - Fuentes externas, presupuestos por fuente y circuit breaker.
 - Tenancy por esquema o por base de datos; `TenantResolver` alternativo.
@@ -287,6 +320,10 @@ flowchart LR
   antes del join).
 - Dialectos distintos de Postgres.
 - Exportador de telemetría (Prometheus, OpenTelemetry).
+
+Nota sobre la caché: L1 y L2 sí están en alcance (ver Decisiones de
+Implementación); lo que queda fuera es lo que exige escritores o infraestructura
+adicional.
 
 Cada punto tiene su costura nombrada en el diseño y se documenta como
 evolución con su costo y beneficio.
