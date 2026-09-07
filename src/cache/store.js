@@ -5,7 +5,10 @@
 // habría que cambiar el engine para que quepa. La forma la fija el más lento.
 //
 // El engine no conoce ninguna implementación concreta: recibe una en
-// `createEngine({ cache })` y sin ella sirve todo en vivo.
+// `createEngine({ cache })` y sin ella sirve todo en vivo. Las otras dos
+// implementaciones son `redis-store.js` (la L2 compartida entre instancias) y
+// `tiered.js`, que no guarda nada: compone las dos detrás de esta misma
+// interfaz. Cómo se arma la caché de un proceso está en `index.js`.
 
 // Cota de la caché en memoria: una caché sin techo es una fuga de memoria con
 // otro nombre. 200 entradas alcanzan de sobra para los tableros que se repiten
