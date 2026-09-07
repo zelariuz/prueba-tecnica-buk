@@ -467,6 +467,17 @@ curl -s -H 'Authorization: Bearer demo-dashboard-empresa-a' \
 - **Redis sin volumen** en el compose: una caché que sobrevive al reinicio no es
   una caché, es una base.
 
+## Corrección posterior al plan (07-09): caso obligatorio
+
+- La consulta tipo del caso lleva `segments: ['reviews.completed']` como filtro
+  global. El SQL de referencia del enunciado aplica `status = 'completed'` a
+  toda la consulta, así que el promedio se calcula solo sobre evaluaciones
+  completadas; antes promediaba también pendientes y calibradas. El snapshot
+  `test/snapshots/caso-obligatorio.sql` cambió por eso (la CTE de reviews
+  lleva `AND status = $4`) y Ventas ya no aparece en el resultado del seed
+  (no tiene completadas en 2025). Sin cambios en el engine ni el planificador:
+  lo resolvió la regla 1 de `docs/semantica-de-filtros.md`.
+
 ## Estado
 
 Fase 8 terminada — **última del plan**. Caché L2 en Redis detrás de la misma
