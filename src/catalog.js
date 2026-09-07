@@ -275,6 +275,45 @@ export function createCatalog() {
     return tablas;
   }
 
+  // Vista pública (ADR 0008): nombres semánticos, tipos, descripciones,
+  // operadores válidos, granularidades y consultas tipo. Nunca nombres de
+  // tablas ni de columnas: lo que un consumidor no ve, no puede acoplarse a él
+  // ni servirle de mapa a quien busque atacar.
+  function vistaPublica() {
+    return {
+      version: version(),
+      granularities: [...GRANULARIDADES],
+      entities: [...entidades.values()].map((def) => ({
+        name: def.name,
+        description: def.description,
+        ...(def.timeDimension ? { timeDimension: `${def.name}.${def.timeDimension}` } : {}),
+        dimensions: Object.entries(def.dimensions ?? {}).map(([nombre, dimension]) => ({
+          name: `${def.name}.${nombre}`,
+          type: dimension.type,
+          description: dimension.description,
+          operators: operadoresDe(dimension.type),
+        })),
+        measures: Object.entries(def.measures ?? {}).map(([nombre, medida]) => ({
+          name: `${def.name}.${nombre}`,
+          type: medida.type,
+          description: medida.description,
+        })),
+        segments: Object.entries(def.segments ?? {}).map(([nombre, segmento]) => ({
+          name: `${def.name}.${nombre}`,
+          description: segmento.description,
+        })),
+        // Con qué se puede cruzar esta entidad, por nombre de entidad: el
+        // consumidor nunca nombra una relación ni su columna de unión.
+        relatedEntities: Object.values(def.relationships ?? {}).map((r) => r.target),
+      })),
+      queries: [...consultasTipo.values()].map(({ name, description, params }) => ({
+        name,
+        description,
+        params: [...params],
+      })),
+    };
+  }
+
   // Todos los miembros conocidos con su clase. Es la lista contra la que se
   // busca la sugerencia cuando alguien escribe mal un nombre: un agente que se
   // equivoca puede corregirse solo si el error le dice cuál era el nombre.
@@ -393,43 +432,21 @@ export function createCatalog() {
     // Vista pública (ADR 0008): nombres semánticos, tipos, descripciones,
     // operadores válidos, granularidades y consultas tipo. Nunca nombres de
     // tablas ni de columnas: lo que un consumidor no ve, no puede acoplarse a
-    // él ni servirle de mapa a quien busque atacar.
+    // él ni servirle de mapa a quien busque atacar. Es lo único que devuelve
+    // `describe`, sin importar qué traiga el contexto: el contexto lo arma
+    // quien llama, y una vista que dependiera de un campo suyo sería una vista
+    // que el consumidor puede pedirse solo.
+    // eslint-disable-next-line no-unused-vars -- el contexto es parte del
+    // contrato: la vista se filtrará por empresa y rol; hoy es la misma.
     describe(ctx) {
-      const publica = {
-        version: version(),
-        granularities: [...GRANULARIDADES],
-        entities: [...entidades.values()].map((def) => ({
-          name: def.name,
-          description: def.description,
-          ...(def.timeDimension ? { timeDimension: `${def.name}.${def.timeDimension}` } : {}),
-          dimensions: Object.entries(def.dimensions ?? {}).map(([nombre, dimension]) => ({
-            name: `${def.name}.${nombre}`,
-            type: dimension.type,
-            description: dimension.description,
-            operators: operadoresDe(dimension.type),
-          })),
-          measures: Object.entries(def.measures ?? {}).map(([nombre, medida]) => ({
-            name: `${def.name}.${nombre}`,
-            type: medida.type,
-            description: medida.description,
-          })),
-          segments: Object.entries(def.segments ?? {}).map(([nombre, segmento]) => ({
-            name: `${def.name}.${nombre}`,
-            description: segmento.description,
-          })),
-          // Con qué se puede cruzar esta entidad, por nombre de entidad: el
-          // consumidor nunca nombra una relación ni su columna de unión.
-          relatedEntities: Object.values(def.relationships ?? {}).map((r) => r.target),
-        })),
-        queries: [...consultasTipo.values()].map(({ name, description, params }) => ({
-          name,
-          description,
-          params: [...params],
-        })),
-      };
+      return vistaPublica();
+    },
 
-      if (!ctx?.internal) return publica;
-      return { ...publica, tables: vistaInterna() };
+    // Vista interna (ADR 0008): la pública más el mapeo físico. No recibe el
+    // contexto de un consumidor porque no es para ningún consumidor: la usa el
+    // servidor —depuración, herramientas del equipo— y nunca sale por la API.
+    describeInternal() {
+      return { ...vistaPublica(), tables: vistaInterna() };
     },
 
     // Un miembro de cada clase, resuelto o con el error que explica por qué no.

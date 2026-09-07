@@ -243,9 +243,9 @@ test('describe entrega la vista pública: nombres semánticos, tipos y operadore
   assert.ok(entidad.segments[0].description.length > 0, 'el segmento llega con su descripción');
 });
 
-test('la vista interna trae el mapeo físico y solo se obtiene pidiéndola', () => {
+test('la vista interna trae el mapeo físico y solo se obtiene por su propio método', () => {
   const catalog = catalogoDelCaso(esquema);
-  const interna = catalog.describe({ companyId: 1, consumer: 'api', internal: true });
+  const interna = catalog.describeInternal();
 
   // La vista interna es la pública más el mapeo físico: quien la pide ya tiene
   // todo lo que ve un consumidor.
@@ -264,6 +264,18 @@ test('la vista interna trae el mapeo físico y solo se obtiene pidiéndola', () 
 
   // El mapeo físico no existe en la vista pública ni por descuido.
   assert.equal(catalog.describe({ companyId: 1, consumer: 'api' }).tables, undefined);
+});
+
+test('un contexto que se declara interno sigue recibiendo la vista pública', () => {
+  // La vista interna no puede depender de un campo del contexto: ese contexto
+  // lo arma quien llama, y un consumidor que lograra colar `internal: true`
+  // tendría el mapa físico completo (ADR 0008). Se pide por otro método.
+  const catalog = catalogoDelCaso(esquema);
+  const vista = catalog.describe({ companyId: 1, consumer: 'api', internal: true });
+
+  assert.equal(vista.tables, undefined);
+  assert.doesNotMatch(JSON.stringify(vista), /performance_reviews/);
+  assert.deepEqual(vista, catalog.describe({ companyId: 1, consumer: 'api' }));
 });
 
 test('la vista pública no contiene ningún nombre de tabla ni de columna física', () => {
@@ -305,10 +317,7 @@ test('la vista pública no contiene ningún nombre de tabla ni de columna físic
   }
 
   // Contraste: la vista interna sí los trae, y por eso no sale del servidor.
-  assert.match(
-    JSON.stringify(catalog.describe({ companyId: 1, internal: true })),
-    /performance_reviews/,
-  );
+  assert.match(JSON.stringify(catalog.describeInternal()), /performance_reviews/);
 });
 
 function catalogoConConsultas() {

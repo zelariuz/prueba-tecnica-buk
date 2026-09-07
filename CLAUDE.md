@@ -134,8 +134,11 @@ docker compose up -d --force-recreate db      # re-aplicar esquema y seed
   todos los demás tests del catálogo la inyectan y corren sin Postgres.
 - `describe(ctx)` devuelve la vista pública (ADR 0008): entidades con
   descripción, dimensiones con tipo y operadores válidos, medidas, segmentos,
-  granularidades, entidades relacionadas **por nombre** y consultas tipo. Con
-  `internal: true` agrega el mapeo físico. El test de fuga toma tablas y
+  granularidades, entidades relacionadas **por nombre** y consultas tipo, y
+  nunca otra cosa: un contexto con `internal: true` recibe exactamente la misma
+  vista. El mapeo físico sale por `describeInternal()`, un método sin contexto
+  de consumidor —una vista que dependiera de un campo del contexto sería una
+  vista que el consumidor puede pedirse solo. El test de fuga toma tablas y
   columnas del snapshot, descarta las que coinciden con un nombre semántico y
   exige que ninguna otra aparezca en la vista pública serializada.
 - La versión del catálogo es sha256 de la serialización canónica (claves

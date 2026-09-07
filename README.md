@@ -137,8 +137,10 @@ con la sugerencia calculada por distancia de edición
 
 `describe(ctx)` es lo que ve un dashboard o un agente: nombres de negocio,
 tipos, descripciones, operadores válidos, granularidades y consultas tipo. Nunca
-una tabla ni una columna (ADR 0008); el mapeo físico solo sale con
-`describe({ ...ctx, internal: true })`, del lado del servidor.
+una tabla ni una columna (ADR 0008): `describe(ctx)` devuelve la vista pública
+aunque el contexto pida lo contrario. El mapeo físico sale por otro método,
+`describeInternal()`, que no recibe contexto de consumidor y vive del lado del
+servidor.
 
 ## Consultas tipo
 
