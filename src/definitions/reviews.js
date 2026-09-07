@@ -7,17 +7,49 @@ export const reviews = {
   primaryKey: 'id',
   companyColumn: 'company_id',
   description: 'Evaluaciones de desempeño: una fila por evaluación de un empleado en un período.',
+  timeDimension: 'period',
   dimensions: {
     status: {
       column: 'status',
       type: 'string',
       description: 'Estado de la evaluación: pending, completed o calibrated.',
     },
+    period: {
+      column: 'period',
+      type: 'date',
+      description: 'Período evaluado; se agrupa por día, mes, trimestre o año.',
+    },
   },
   measures: {
     count: {
       type: 'count',
       description: 'Cantidad de evaluaciones.',
+    },
+    avg_score: {
+      type: 'avg',
+      column: 'score',
+      description: 'Score promedio de las evaluaciones, en la escala de 1 a 5 del módulo.',
+    },
+    completed_count: {
+      type: 'count',
+      segment: 'completed',
+      description: 'Cantidad de evaluaciones completadas, según la regla del segmento `completed`.',
+    },
+  },
+  // La regla de negocio "evaluación completada" se declara una sola vez y
+  // ningún consumidor puede escribirla distinto (ADR 0005).
+  segments: {
+    completed: {
+      description: 'Evaluaciones cerradas por el evaluador.',
+      filters: [{ member: 'reviews.status', operator: 'equals', values: ['completed'] }],
+    },
+  },
+  relationships: {
+    employee: {
+      type: 'many_to_one',
+      target: 'employees',
+      foreignKey: 'employee_id',
+      description: 'Empleado evaluado; por él se llega al departamento.',
     },
   },
 };

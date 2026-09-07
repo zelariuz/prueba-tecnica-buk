@@ -18,6 +18,21 @@
 -- CONTEOS ESPERADOS (evaluaciones por empresa y estado, sin joins):
 --   empresa 1 → completed: 5, pending: 4, calibrated: 2   (total 11)
 --   empresa 2 → completed: 3, pending: 1, calibrated: 1   (total 5)
+--
+-- CASO OBLIGATORIO (score promedio y evaluaciones completadas por departamento
+-- y trimestre de 2025; el trimestre se nombra por su primer día):
+--   empresa 1 → Ingeniería 2025-01-01: avg 4.35 (1000, 1002), completadas 2
+--               Ingeniería 2025-04-01: avg 3.40 (1001, 1003), completadas 1
+--               Ventas     2025-01-01: avg 3.50 (1004),       completadas 0
+--               Ventas     2025-04-01: avg 2.90 (1005),       completadas 0
+--   empresa 2 → Ingeniería 2025-01-01: avg 4.10 (2000), completadas 1
+--               Ingeniería 2025-04-01: avg 3.30 (2004), completadas 1
+--               Ventas     2025-01-01: avg 3.20 (2001), completadas 0
+--
+-- FILA INCONSISTENTE (evaluación 1010), evaluaciones de 2025 por trimestre de
+-- la empresa 1:
+--   sin join  → 2025-01-01: 3, 2025-04-01: 3, 2025-07-01: 1 (la 1010)
+--   con join a empleados y departamentos → 2025-01-01: 3, 2025-04-01: 3
 
 INSERT INTO companies (id, name) VALUES
   (1, 'Empresa A'),
