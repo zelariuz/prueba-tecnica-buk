@@ -60,6 +60,12 @@ function claveDeFiltro(filtro) {
   return `${filtro.member}|${filtro.operator}|${JSON.stringify(filtro.values ?? [])}`;
 }
 
+// El plan lógico sale con filtros propios: los del segmento pertenecen a la
+// definición del módulo y quien lee un plan no puede modificarlos sin querer.
+function copiaDeFiltro(filtro) {
+  return { member: filtro.member, operator: filtro.operator, values: [...(filtro.values ?? [])] };
+}
+
 // Un filtro dicho en palabras, para que la advertencia nombre al culpable.
 function describirFiltros(filtros) {
   return filtros
@@ -435,22 +441,57 @@ export function createEngine({
         ]
       : agregada;
 
+    // Ninguna consulta sale sin LIMIT: el pedido nunca supera el máximo de la
+    // clase de consumidor, y si no pide, manda ese máximo.
+    const filas = Math.min(query.limit ?? presupuesto.maxFilas, presupuesto.maxFilas);
+
     const sql = [
       `WITH ${cte.join(',\n')}`,
       ...cuerpo,
       ...(orden.length ? [`ORDER BY ${orden.join(', ')}`] : []),
-      // Ninguna consulta sale sin LIMIT: el pedido nunca supera el máximo de
-      // la clase de consumidor, y si no pide, manda ese máximo.
-      `LIMIT ${parametro(Math.min(query.limit ?? presupuesto.maxFilas, presupuesto.maxFilas))}`,
+      `LIMIT ${parametro(filas)}`,
     ].join('\n');
 
-    return { sql, params, medidas, presupuesto, advertencias };
+    // Plan lógico (historia 25): lo que el planificador decidió, dicho en el
+    // vocabulario del consumidor y sin una sola tabla física. Es lo que el
+    // dry-run devuelve para poder revisar una consulta antes de gastar la base.
+    const logico = {
+      entity: raiz,
+      joins: aristas.map(({ desde, hacia, relacion }) => ({
+        from: desde,
+        to: hacia,
+        foreignKey: relacion.foreignKey,
+        primaryKey: catalog.entity(hacia).primaryKey,
+      })),
+      // Las dimensiones temporales entran aquí como una dimensión más.
+      dimensions: dimensiones.map((d) => d.miembro),
+      measures: medidas.map((m) => m.miembro),
+      baseMeasures: medidasBase.map((m) => m.miembro),
+      derived: derivadas.map((m) => ({
+        name: m.miembro,
+        numerator: `${m.entidad}.${m.definicion.numerator}`,
+        denominator: `${m.entidad}.${m.definicion.denominator}`,
+        scale: m.definicion.scale,
+      })),
+      // Los filtros que afectan a todas las medidas, y aparte los que cada
+      // medida trae puestos por su segmento: la semántica de filtros, legible.
+      globalFilters: declarados.map(copiaDeFiltro),
+      filtersByMeasure: Object.fromEntries(
+        medidasBase
+          .filter((m) => filtrosDeMedida(m).length > 0)
+          .map((m) => [m.miembro, filtrosDeMedida(m).map(copiaDeFiltro)]),
+      ),
+      budget: { consumer: ctx.consumer, ...presupuesto, rowLimit: filas },
+      warnings: advertencias,
+    };
+
+    return { sql, params, medidas, presupuesto, advertencias, logico };
   }
 
   // Dry-run: el plan sin tocar la base.
   function plan(query, ctx) {
-    const { sql, params } = planificar(query, ctx);
-    return { sql, params };
+    const { sql, params, logico } = planificar(query, ctx);
+    return { sql, params, plan: logico };
   }
 
   // El timeout se fija con SET LOCAL dentro de la transacción: fuera de una

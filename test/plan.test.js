@@ -584,3 +584,92 @@ test('toda consulta tipo planifica y filtra por empresa en cada una de sus CTE',
     assert.equal(valores[0], EMPRESA, `${name}: la empresa es el primer parámetro`);
   }
 });
+
+// Un pool que no tolera que lo toquen: si el dry-run abriera una conexión o
+// consultara la base, el test se entera por el error y no por una convención.
+const poolIntocable = {
+  connect() {
+    throw new Error('el dry-run no debe abrir una conexión');
+  },
+  query() {
+    throw new Error('el dry-run no debe consultar la base');
+  },
+};
+
+test('el dry-run devuelve el plan lógico junto al SQL, sin abrir una conexión', () => {
+  const catalog = createCatalog();
+  for (const definicion of [reviews, employees, departments]) catalog.register(definicion);
+  const engine = createEngine({ catalog, pool: poolIntocable });
+
+  const { sql, params, plan } = engine.plan(
+    { ...completitudPorDepartamento, limit: 500 },
+    CTX,
+  );
+
+  assert.match(sql, /^WITH reviews AS \(/);
+  assert.deepEqual(params, [EMPRESA, 'completed', 500]);
+
+  // El plan lógico es lo que un agente lee para decidir si vale la pena
+  // ejecutar: de dónde salen los datos, por dónde pasa, qué se agrega y con qué
+  // presupuesto (historia 25).
+  assert.equal(plan.entity, 'reviews');
+  assert.deepEqual(plan.joins, [
+    { from: 'reviews', to: 'employees', foreignKey: 'employee_id', primaryKey: 'id' },
+    { from: 'employees', to: 'departments', foreignKey: 'department_id', primaryKey: 'id' },
+  ]);
+  assert.deepEqual(plan.dimensions, ['departments.name']);
+  assert.deepEqual(plan.measures, ['reviews.completion_rate']);
+  // Las medidas base que la razón necesita, aunque el consumidor no las pidió.
+  assert.deepEqual(plan.baseMeasures, ['reviews.completed_count', 'reviews.count']);
+  assert.deepEqual(plan.derived, [
+    {
+      name: 'reviews.completion_rate',
+      numerator: 'reviews.completed_count',
+      denominator: 'reviews.count',
+      scale: 100,
+    },
+  ]);
+  // Filtros: los globales por separado de los que cada medida trae puestos.
+  assert.deepEqual(plan.globalFilters, []);
+  assert.deepEqual(plan.filtersByMeasure, {
+    'reviews.completed_count': [
+      { member: 'reviews.status', operator: 'equals', values: ['completed'] },
+    ],
+  });
+  assert.equal(plan.budget.consumer, 'api');
+  assert.equal(plan.budget.timeoutMs, 15000);
+  assert.equal(plan.budget.rowLimit, 500, 'el límite efectivo, ya recortado al máximo de la clase');
+  assert.deepEqual(plan.warnings, []);
+});
+
+test('el dry-run de una consulta con filtro global trae el filtro y su advertencia', () => {
+  const catalog = createCatalog();
+  for (const definicion of [reviews, employees, departments]) catalog.register(definicion);
+
+  const { plan } = createEngine({ catalog, pool: poolIntocable }).plan(
+    {
+      ...completitudPorDepartamento,
+      filters: [{ member: 'reviews.status', operator: 'equals', values: ['completed'] }],
+    },
+    CTX,
+  );
+
+  assert.deepEqual(plan.globalFilters, [
+    { member: 'reviews.status', operator: 'equals', values: ['completed'] },
+  ]);
+  assert.equal(plan.warnings.length, 1);
+  assert.equal(plan.warnings[0].member, 'reviews.completion_rate');
+});
+
+test('una consulta inválida en dry-run vuelve como error estructurado, sin tocar la base', () => {
+  const catalog = createCatalog();
+  for (const definicion of [reviews, employees, departments]) catalog.register(definicion);
+
+  const error = errorDe(() =>
+    createEngine({ catalog, pool: poolIntocable }).plan({ measures: ['reviews.completion_rat'] }, CTX),
+  );
+
+  assert.equal(error.code, 'UNKNOWN_MEMBER');
+  assert.equal(error.member, 'reviews.completion_rat');
+  assert.match(error.suggestion, /reviews\.completion_rate/);
+});
