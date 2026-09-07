@@ -1,0 +1,34 @@
+# Entorno local de la capa semántica.
+# La base es efímera a propósito: no hay volumen persistente, así que recrear
+# el contenedor vuelve a aplicar el esquema y el seed de docker/init.
+services:
+  db:
+    image: postgres:16
+    container_name: capa-semantica-db
+    environment:
+      POSTGRES_USER: capa
+      POSTGRES_PASSWORD: capa
+      POSTGRES_DB: capa_semantica
+    ports:
+      # 5433 en el host para no chocar con un Postgres local en 5432.
+      - "5433:5432"
+    volumes:
+      - ./docker/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U capa -d capa_semantica"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # Caché L2 compartida. Se usa recién en la última fase del plan; queda
+  # levantada desde ya para que el entorno sea uno solo.
+  redis:
+    image: redis:7-alpine
+    container_name: capa-semantica-redis
+    ports:
+      - "6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
