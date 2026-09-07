@@ -8,6 +8,7 @@ import { canonica } from './canonical.js';
 import { postgres } from './dialect/postgres.js';
 import { SemanticError } from './errors.js';
 import { crearPlanificador } from './planner.js';
+import { crearTelemetria } from './telemetry.js';
 
 // `presupuestos` se inyecta para poder probar el comportamiento bajo un
 // presupuesto extremo (por ejemplo un timeout de 1 ms) sin tocar la tabla real.
@@ -16,6 +17,7 @@ export function createEngine({
   pool,
   dialect = postgres,
   presupuestos = presupuestosPorDefecto,
+  telemetria = crearTelemetria(),
 }) {
   const planificar = crearPlanificador({ catalog, dialect, presupuestos });
 
@@ -49,19 +51,37 @@ export function createEngine({
   }
 
   async function run(query, ctx) {
-    const { sql, params, medidas, presupuesto, advertencias } = planificar(query, ctx);
+    // El dry-run no cuenta en la telemetría: no responde a nadie ni toca la
+    // base. Lo que se mide es lo que se sirvió.
+    let plan;
+    try {
+      plan = planificar(query, ctx);
+    } catch (error) {
+      telemetria.registrarError({ consumer: ctx?.consumer, code: error?.code, gate: error?.gate });
+      throw error;
+    }
+    const { sql, params, medidas, presupuesto, advertencias } = plan;
 
+    const queryId = identificarConsulta(query, ctx, catalog.version());
     // Instante en que se ejecutó la consulta que produjo el resultado; cuando
     // haya caché, la entrada guardada conserva su propio asOf.
     const asOf = new Date().toISOString();
-    const filas = await ejecutar(sql, params, presupuesto);
+    const comienzo = performance.now();
+    let filas;
+    try {
+      filas = await ejecutar(marcado(sql, queryId, ctx), params, presupuesto);
+    } catch (error) {
+      telemetria.registrarError({ consumer: ctx?.consumer, code: error?.code, gate: 'ejecutar' });
+      throw error;
+    }
+    telemetria.registrarOk({ consumer: ctx?.consumer, dbMs: performance.now() - comienzo });
 
     return {
       rows: aNumeros(filas, medidas),
       meta: {
         servedFrom: 'live',
         asOf,
-        queryId: identificarConsulta(query, ctx, catalog.version()),
+        queryId,
         // Siempre presente, aunque esté vacía: quien la lee no tiene que
         // preguntarse si el campo existe.
         warnings: advertencias,
@@ -69,7 +89,16 @@ export function createEngine({
     };
   }
 
-  return { plan, run };
+  return { plan, run, telemetry: telemetria.snapshot };
+}
+
+// El SQL que sale a la base va marcado con la consulta y el consumidor que lo
+// pidieron: es lo que permite reconocer en `pg_stat_activity` o en los logs de
+// Postgres a quién pertenece una consulta lenta. Se marca sólo lo que se
+// ejecuta, no lo que devuelve `plan()`: el dry-run sigue mostrando el SQL puro
+// y los snapshots del repo no cambian.
+function marcado(sql, queryId, ctx) {
+  return `/* ${queryId} ${ctx?.consumer ?? 'desconocido'} */\n${sql}`;
 }
 
 function milisegundos(presupuesto) {

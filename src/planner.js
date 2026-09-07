@@ -33,10 +33,25 @@ export function crearPlanificador({ catalog, dialect, presupuestos }) {
 
   return function planificar(query, ctx) {
     let paso = { catalog, dialect, presupuestos, query, ctx };
-    for (const puerta of puertas) paso = puerta(paso);
+    for (const puerta of puertas) paso = anotandoLaPuerta(puerta, paso);
     const { sql, params, medidas, presupuesto, advertencias, logico } = paso;
     return { sql, params, medidas, presupuesto, advertencias, logico };
   };
+}
+
+// Qué puerta cortó es la señal que le sirve a plataforma para saber si los
+// rechazos vienen del vocabulario o del presupuesto (historia 31). Se anota en
+// el error sin hacerla enumerable: no forma parte del error estructurado que ve
+// el consumidor, así que no cambia ninguna respuesta.
+function anotandoLaPuerta(puerta, paso) {
+  try {
+    return puerta(paso);
+  } catch (error) {
+    if (error && error.gate === undefined) {
+      Object.defineProperty(error, 'gate', { value: puerta.name, enumerable: false });
+    }
+    throw error;
+  }
 }
 
 // Puerta 1 · Validar: lo que se puede rechazar sin mirar el catálogo. El
