@@ -51,10 +51,15 @@ export function crearTelemetria() {
     // se quiere medir es cuántas de ellas se ahorraron la base. Un engine sin
     // caché no llama a esta función: sin caché no hay miss que reportar, y un
     // hit ratio de 0 sobre nada diría algo falso.
-    registrarCache({ consumer, resultado }) {
+    registrarCache({ consumer, resultado, nivel }) {
       const esHit = resultado === 'hit';
       contadores.cache[esHit ? 'hits' : 'misses'] += 1;
       porConsumidor(consumer)[esHit ? 'cacheHits' : 'cacheMisses'] += 1;
+      // De qué nivel salió el hit. Un hit de L1 no salió del proceso y uno de L2
+      // cruzó la red: contarlos juntos deja invisible lo único que dice si la L2
+      // sirve de algo —cuántas respuestas se ahorraron la base gracias a lo que
+      // ya había calculado otra instancia—. Un miss no tiene nivel.
+      if (esHit) sumar(contadores.cache.porNivel, nivel);
     },
 
     // Un fallo de la caché, por nivel. No es un error de la consulta —la
@@ -90,7 +95,7 @@ function vacios() {
     byConsumer: {},
     // Hits y misses de la caché; el `hitRatio` lo calcula `snapshot()` a partir
     // de estos dos, para que no haya dos números que puedan contradecirse.
-    cache: { hits: 0, misses: 0 },
+    cache: { hits: 0, misses: 0, porNivel: {} },
     // Fallos de la caché por nivel (`cache-l2`, …). Una caché caída no rechaza
     // ninguna consulta, así que sin este contador sería invisible.
     cacheErrors: {},

@@ -23,8 +23,8 @@ services:
       timeout: 3s
       retries: 30
 
-  # Caché L2 compartida. Se usa recién en la última fase del plan; queda
-  # levantada desde ya para que el entorno sea uno solo.
+  # Caché L2 compartida entre instancias del servicio. Sin volumen a propósito:
+  # una caché que sobrevive al reinicio no es una caché, es una base.
   redis:
     image: redis:7-alpine
     container_name: capa-semantica-redis
@@ -39,16 +39,22 @@ services:
   # El servicio HTTP. Arranca después de que la base esté sana porque lo
   # primero que hace es introspectar el esquema para registrar las definiciones
   # con snapshot: sin base no puede validar el contrato y no debe escuchar.
+  #
+  # De Redis también espera a que esté sano, pero por comodidad y no por
+  # necesidad: si Redis no está, el servicio arranca igual y sirve con sólo L1.
   api:
     build: .
     container_name: capa-semantica-api
     depends_on:
       db:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     environment:
-      # Dentro de la red de compose la base es `db:5432`; el 5433 es sólo la
-      # publicación al host.
+      # Dentro de la red de compose la base es `db:5432` y Redis `redis:6379`;
+      # el 5433 y el 6380 son sólo la publicación al host.
       DATABASE_URL: postgres://capa:capa@db:5432/capa_semantica
+      REDIS_URL: redis://redis:6379
       PORT: "3000"
       # Tokens de demo (ver .env.example): valores falsos y públicos a
       # propósito. La autenticación real está fuera de alcance.

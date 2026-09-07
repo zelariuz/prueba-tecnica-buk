@@ -11,12 +11,12 @@ import pg from 'pg';
 
 import { createCatalog } from './catalog.js';
 import { createEngine } from './engine.js';
-import { crearMemoryStore } from './cache/store.js';
+import { crearCacheDelServicio } from './cache/index.js';
 import { crearTelemetria } from './telemetry.js';
 import { introspect } from './introspect.js';
 import { registrarModulos } from './definitions/index.js';
 
-const { DATABASE_URL } = process.env;
+const { DATABASE_URL, REDIS_URL } = process.env;
 if (!DATABASE_URL) {
   console.error('Falta DATABASE_URL. Levanta la base con `docker compose up -d db` (ver README).');
   process.exit(1);
@@ -50,6 +50,8 @@ const PREGUNTAS = [
 
 const pool = new pg.Pool({ connectionString: DATABASE_URL });
 const telemetria = crearTelemetria();
+// Lo que haya que cerrar al final: los clientes de Redis de las dos instancias.
+const caches = [];
 
 try {
   // En producción el registro va siempre con el snapshot del esquema real: si
@@ -57,7 +59,9 @@ try {
   const snapshot = await introspect(pool);
   const catalog = createCatalog();
   const advertencias = registrarModulos(catalog, snapshot);
-  const engine = createEngine({ catalog, pool, telemetria, cache: crearMemoryStore() });
+  const estaInstancia = crearCacheDelServicio({ redisUrl: REDIS_URL, telemetria });
+  caches.push(estaInstancia);
+  const engine = createEngine({ catalog, pool, telemetria, cache: estaInstancia.cache });
 
   titulo('CATÁLOGO PÚBLICO');
   imprimirCatalogo(catalog.describe(CTX));
@@ -96,6 +100,36 @@ try {
     );
   }
 
+  // La L2 es lo que hace que dos procesos distintos compartan lo ya calculado.
+  // Se demuestra con una segunda instancia completa —otro engine, otra L1 vacía,
+  // otro cliente de Redis— pidiendo lo mismo que ya respondió la primera: si la
+  // caché fuera sólo de proceso, esto diría `live`.
+  titulo('SEGUNDA INSTANCIA · CACHÉ L2 COMPARTIDA');
+  if (!REDIS_URL) {
+    console.log('\nSin REDIS_URL no hay L2: cada instancia tendría su propia caché en memoria y');
+    console.log('esta consulta volvería a la base. Levanta Redis y define REDIS_URL para verlo');
+    console.log('(ver .env.example). Se salta esta parte.');
+  } else {
+    const otraInstancia = crearCacheDelServicio({ redisUrl: REDIS_URL, telemetria });
+    caches.push(otraInstancia);
+    const otroEngine = createEngine({ catalog, pool, telemetria, cache: otraInstancia.cache });
+    const consulta = catalog.query(PREGUNTAS[0].consulta, PREGUNTAS[0].params);
+
+    const compartida = await otroEngine.run(consulta, CTX);
+    const yaEnSuMemoria = await otroEngine.run(consulta, CTX);
+
+    console.log(`\nCaché de esta instancia: ${otraInstancia.descripcion}`);
+    console.log(`\n${PREGUNTAS[0].titulo}`);
+    console.log(
+      `\nprimera vez en esta instancia: servedFrom=${compartida.meta.servedFrom} ` +
+        `asOf=${compartida.meta.asOf} · ${compartida.rows.length} filas`,
+    );
+    console.log(
+      `segunda vez en esta instancia: servedFrom=${yaEnSuMemoria.meta.servedFrom} ` +
+        `(el hit de L2 dejó la copia en su L1)`,
+    );
+  }
+
   // Una consulta mal escrita, a propósito: así se ve el error estructurado y
   // así queda un rechazo en la telemetría.
   titulo('UN ERROR, A PROPÓSITO');
@@ -114,12 +148,17 @@ try {
   const { count, totalMs } = contadores.database;
   const promedio = count > 0 ? (totalMs / count).toFixed(1) : '0.0';
   console.log(`Base de datos: ${count} consultas, ${totalMs.toFixed(1)} ms en total (${promedio} ms de promedio)`);
-  const { hits, misses, hitRatio } = contadores.cache;
+  const { hits, misses, hitRatio, porNivel } = contadores.cache;
   console.log(
-    `Caché L1: ${hits} hits, ${misses} misses, hit ratio ${(hitRatio * 100).toFixed(0)} % ` +
-      `(${hits} de las ${contadores.byResult.ok} respuestas no tocaron la base)\n`,
+    `Caché: ${hits} hits, ${misses} misses, hit ratio ${(hitRatio * 100).toFixed(0)} % ` +
+      `(${hits} de las ${contadores.byResult.ok} respuestas no tocaron la base)`,
   );
+  console.log(`Hits por nivel: ${JSON.stringify(porNivel)}`);
+  // Una caché caída no rechaza ninguna consulta, así que sin este contador
+  // sería invisible: aquí es donde se ve un Redis muerto.
+  console.log(`Errores de caché por nivel: ${JSON.stringify(contadores.cacheErrors)}\n`);
 } finally {
+  for (const armada of caches) await armada.cerrar();
   await pool.end();
 }
 

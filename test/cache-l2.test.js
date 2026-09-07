@@ -87,6 +87,25 @@ describe('caché de dos niveles', { ...conBase, timeout: 15_000 }, () => {
     assert.deepEqual(yaEstabaEnCasa.rows, bajoALaL2.rows);
   });
 
+  // Un hit de L1 y uno de L2 no valen lo mismo: el primero no salió del proceso
+  // y el segundo cruzó la red. Contarlos juntos deja invisible lo único que
+  // dice si la L2 sirve de algo —cuántas respuestas se ahorraron la base
+  // gracias a lo que había calculado otra instancia—.
+  it('la telemetría separa los hits por nivel', async () => {
+    const compartida = crearMemoryStore();
+    const primera = armarInstancia({ l2: compartida });
+    const segunda = armarInstancia({ l2: compartida });
+
+    await primera.engine.run(CONTEO_POR_ESTADO, DASHBOARD_A);
+    await segunda.engine.run(CONTEO_POR_ESTADO, DASHBOARD_A);
+    await segunda.engine.run(CONTEO_POR_ESTADO, DASHBOARD_A);
+
+    const contadores = segunda.engine.telemetry();
+    assert.equal(contadores.cache.hits, 2);
+    assert.deepEqual(contadores.cache.porNivel, { 'cache-l2': 1, 'cache-l1': 1 });
+    assert.deepEqual(primera.engine.telemetry().cache.porNivel, {}, 'la primera no tuvo hits');
+  });
+
   // La caché existe para abaratar, no para poner en riesgo. Una L2 que se cayó
   // —Redis apagado, red cortada, timeout— no puede costarle al consumidor ni una
   // sola consulta: se sirve en vivo y el fallo queda contado en la telemetría,

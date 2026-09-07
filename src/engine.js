@@ -99,10 +99,7 @@ export function createEngine({
       return {
         rows: guardado.rows,
         meta: {
-          // De qué nivel salió lo dice la caché: un store compuesto marca la
-          // entrada con su nivel. Una caché de un solo nivel no marca nada y es,
-          // por definición, el primero que el engine consulta.
-          servedFrom: guardado.nivel ?? 'cache-l1',
+          servedFrom: nivelDe(guardado),
           // El instante de la ejecución que produjo estas filas, no el de
           // ahora: es lo que le dice al consumidor qué tan viejo es el dato.
           asOf: guardado.asOf,
@@ -168,7 +165,11 @@ export function createEngine({
       guardado = undefined;
     }
     const utilizable = guardado && !demasiadoVieja(guardado, presupuesto);
-    telemetria.registrarCache({ consumer: ctx?.consumer, resultado: utilizable ? 'hit' : 'miss' });
+    telemetria.registrarCache({
+      consumer: ctx?.consumer,
+      resultado: utilizable ? 'hit' : 'miss',
+      nivel: utilizable ? nivelDe(guardado) : undefined,
+    });
     return utilizable ? guardado : undefined;
   }
 
@@ -200,6 +201,13 @@ export function createEngine({
 // y los snapshots del repo no cambian.
 function marcado(sql, queryId, ctx) {
   return `/* ${queryId} ${ctx?.consumer ?? 'desconocido'} */\n${sql}`;
+}
+
+// De qué nivel salió una entrada lo dice la caché: un store compuesto la marca.
+// Una caché de un solo nivel no marca nada y es, por definición, el primero que
+// el engine consulta.
+function nivelDe(guardado) {
+  return guardado.nivel ?? 'cache-l1';
 }
 
 function milisegundos(presupuesto) {

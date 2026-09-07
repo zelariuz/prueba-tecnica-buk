@@ -10,13 +10,14 @@ import pg from 'pg';
 
 import { createCatalog } from './catalog.js';
 import { createEngine } from './engine.js';
-import { crearMemoryStore, MAXIMO_DE_ENTRADAS } from './cache/store.js';
+import { crearCacheDelServicio } from './cache/index.js';
+import { crearTelemetria } from './telemetry.js';
 import { introspect } from './introspect.js';
 import { registrarModulos } from './definitions/index.js';
 import { crearServidor } from './http/server.js';
 import { tokensDeDemo } from './http/tokens.js';
 
-const { DATABASE_URL, PORT = '3000', HOST = '0.0.0.0' } = process.env;
+const { DATABASE_URL, REDIS_URL, PORT = '3000', HOST = '0.0.0.0' } = process.env;
 
 if (!DATABASE_URL) {
   console.error('Falta DATABASE_URL: el servicio necesita la conexión a Postgres (ver .env.example).');
@@ -33,21 +34,27 @@ for (const aviso of advertencias) {
   console.warn(`[registro] ${aviso.entity} · ${aviso.member}: ${aviso.warning}`);
 }
 
-// Caché L1: vive en el proceso, así que cada instancia del servicio tiene la
-// suya. Compartirla entre instancias es trabajo de la L2 en Redis (fase 8), que
-// entra por esta misma costura sin que el engine cambie.
-const engine = createEngine({ catalog, pool, cache: crearMemoryStore() });
+// La L1 vive en el proceso: cada instancia del servicio tiene la suya. La L2 en
+// Redis es la que hace que dos instancias compartan lo que ya se calculó, y es
+// opcional: sin `REDIS_URL` el servicio arranca igual, sólo con L1.
+const telemetria = crearTelemetria();
+const caches = crearCacheDelServicio({ redisUrl: REDIS_URL, telemetria });
+if (!REDIS_URL) {
+  console.warn('[caché] sin REDIS_URL: sólo L1 en memoria, cada instancia con la suya.');
+}
+const engine = createEngine({ catalog, pool, telemetria, cache: caches.cache });
 const servidor = crearServidor({ engine, catalog, tokens });
 
 servidor.listen(Number(PORT), HOST, () => {
   console.log(`Capa semántica escuchando en http://${HOST}:${PORT}`);
   console.log(`Catálogo versión ${catalog.version()} · ${Object.keys(tokens).length} tokens de demo`);
-  console.log(`Caché L1 en memoria: hasta ${MAXIMO_DE_ENTRADAS} entradas, TTL por clase de consumidor`);
+  console.log(`Caché: ${caches.descripcion} · TTL por clase de consumidor`);
 });
 
 for (const senal of ['SIGTERM', 'SIGINT']) {
   process.on(senal, () => {
     servidor.close(async () => {
+      await caches.cerrar();
       await pool.end();
       process.exit(0);
     });

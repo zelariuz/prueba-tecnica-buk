@@ -78,7 +78,13 @@ describe('caché L1 en memoria', { ...conBase, timeout: 15_000 }, () => {
     const contadores = engine.telemetry();
     assert.equal(consultasALaBase, 1);
     assert.equal(contadores.database.count, 1, 'la segunda respuesta no tocó la base');
-    assert.deepEqual(contadores.cache, { hits: 1, misses: 1, hitRatio: 0.5 });
+    assert.deepEqual(contadores.cache, {
+      hits: 1,
+      misses: 1,
+      // Una caché de un solo nivel es, para el engine, el primero que consulta.
+      porNivel: { 'cache-l1': 1 },
+      hitRatio: 0.5,
+    });
     assert.deepEqual(contadores.byConsumer.dashboard, {
       ok: 2,
       error: 0,
