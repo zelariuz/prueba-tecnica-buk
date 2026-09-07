@@ -62,11 +62,11 @@ semánticos. Sin joins, sin tiempo, sin validación elaborada.
 
 ### Criterios de aceptación
 
-- [ ] `docker compose up -d db` levanta Postgres 16 con el esquema del caso y el seed de dos empresas.
-- [ ] `npm test` corre con `node:test`; los tests con base se saltan con aviso si falta `DATABASE_URL`.
-- [ ] Conteo de evaluaciones por estado para la empresa A coincide con el seed; el mismo JSON para la empresa B da otros números.
-- [ ] El SQL generado contiene una CTE sobre `performance_reviews` con `company_id = $1` y ningún valor de empresa interpolado.
-- [ ] Faltar el contexto produce `MISSING_TENANT`.
+- [x] `docker compose up -d db` levanta Postgres 16 con el esquema del caso y el seed de dos empresas.
+- [x] `npm test` corre con `node:test`; los tests con base se saltan con aviso si falta `DATABASE_URL`.
+- [x] Conteo de evaluaciones por estado para la empresa A coincide con el seed; el mismo JSON para la empresa B da otros números.
+- [x] El SQL generado contiene una CTE sobre `performance_reviews` con `company_id = $1` y ningún valor de empresa interpolado.
+- [x] Faltar el contexto produce `MISSING_TENANT`.
 
 ---
 
@@ -88,11 +88,11 @@ dialecto Postgres con `DATE_TRUNC` y `COUNT(*) FILTER`; conversión de `int8` y
 
 ### Criterios de aceptación
 
-- [ ] La consulta declarativa del caso devuelve, por departamento y trimestre, los valores calculados a mano desde el seed.
-- [ ] Toda CTE sobre una tabla con `company_id` contiene `company_id = $1`; el rango temporal viaja como parámetros.
-- [ ] La empresa B, con departamentos del mismo nombre, obtiene sus propios números y nunca los de A.
-- [ ] Snapshot del SQL generado del caso obligatorio.
-- [ ] `COUNT` y `AVG` llegan como número; una fila inconsistente entre tablas queda excluida y un test lo muestra.
+- [x] La consulta declarativa del caso devuelve, por departamento y trimestre, los valores calculados a mano desde el seed.
+- [x] Toda CTE sobre una tabla con `company_id` contiene `company_id = $1`; el rango temporal viaja como parámetros.
+- [x] La empresa B, con departamentos del mismo nombre, obtiene sus propios números y nunca los de A.
+- [x] Snapshot del SQL generado del caso obligatorio.
+- [x] `COUNT` y `AVG` llegan como número; una fila inconsistente entre tablas queda excluida y un test lo muestra.
 
 ---
 
@@ -113,12 +113,12 @@ conexión vuelve limpia al pool tras un error.
 
 ### Criterios de aceptación
 
-- [ ] `companyId` o `consumer` en el JSON → `FORBIDDEN_FIELD`.
-- [ ] Medidas de evaluaciones y de empleados en la misma consulta → `MULTI_ENTITY_MEASURES` con mensaje que nombra ambas entidades.
-- [ ] Consumidor `agent` sin rango temporal → `MISSING_TIME_RANGE`; `dashboard` con la misma consulta ejecuta.
-- [ ] Una consulta que excede el timeout del consumidor termina con error estructurado y la conexión queda usable (pool de tamaño 1, siguiente consulta funciona).
-- [ ] Pool de tamaño 1 con empresas A y B alternadas: ningún cruce en cien iteraciones.
-- [ ] El `limit` pedido nunca supera el máximo del consumidor.
+- [x] `companyId` o `consumer` en el JSON → `FORBIDDEN_FIELD`.
+- [x] Medidas de evaluaciones y de empleados en la misma consulta → `MULTI_ENTITY_MEASURES` con mensaje que nombra ambas entidades.
+- [x] Consumidor `agent` sin rango temporal → `MISSING_TIME_RANGE`; `dashboard` con la misma consulta ejecuta.
+- [x] Una consulta que excede el timeout del consumidor termina con error estructurado y la conexión queda usable (pool de tamaño 1, siguiente consulta funciona).
+- [x] Pool de tamaño 1 con empresas A y B alternadas: ningún cruce en cien iteraciones.
+- [x] El `limit` pedido nunca supera el máximo del consumidor.
 
 ---
 
@@ -140,13 +140,13 @@ sugerencia: `UNKNOWN_MEMBER` por distancia de edición, `NO_JOIN_PATH`,
 
 ### Criterios de aceptación
 
-- [ ] Registrar una definición con columna inexistente en el snapshot falla al registrar, no al consultar.
-- [ ] Definición sin descripción o sin columna de empresa se rechaza.
-- [ ] El introspector contra la base de Docker produce un snapshot con el que las definiciones del caso registran sin error.
-- [ ] `describe(ctx)` no contiene ningún nombre de tabla ni columna física, y lista entidades, dimensiones con tipo y operadores, medidas, segmentos y granularidades.
-- [ ] `avg_scor` → `UNKNOWN_MEMBER` con sugerencia `reviews.avg_score`; dos entidades sin relación → `NO_JOIN_PATH`.
-- [ ] Cada consulta tipo registrada genera su SQL esperado y devuelve filas; un test las recorre todas y verifica el invariante de `company_id = $1`.
-- [ ] Todos los tests del catálogo corren sin base, con snapshot inyectado.
+- [x] Registrar una definición con columna inexistente en el snapshot falla al registrar, no al consultar.
+- [x] Definición sin descripción o sin columna de empresa se rechaza.
+- [x] El introspector contra la base de Docker produce un snapshot con el que las definiciones del caso registran sin error.
+- [x] `describe(ctx)` no contiene ningún nombre de tabla ni columna física, y lista entidades, dimensiones con tipo y operadores, medidas, segmentos y granularidades.
+- [x] `avg_scor` → `UNKNOWN_MEMBER` con sugerencia `reviews.avg_score`; dos entidades sin relación → `NO_JOIN_PATH`.
+- [x] Cada consulta tipo registrada genera su SQL esperado y devuelve filas; un test las recorre todas y verifica el invariante de `company_id = $1`.
+- [x] Todos los tests del catálogo corren sin base, con snapshot inyectado.
 
 ---
 
@@ -168,11 +168,11 @@ global anula el denominador de una razón. `engine.plan` devuelve
 
 ### Criterios de aceptación
 
-- [ ] Departamento con 3 completadas de 4 → `completion_rate` = 75, ejecutado contra Postgres.
-- [ ] Derivada que se referencia en círculo → rechazo al registrar.
-- [ ] Consulta con filtro global `status = completed` y `completion_rate` → filas con 100 y advertencia en `meta`; la misma consulta sin filtro global → 75.
-- [ ] `engine.plan` devuelve SQL, parámetros y plan lógico sin abrir conexión; una consulta inválida devuelve el error estructurado.
-- [ ] Snapshot del SQL de `completion_rate` junto al del caso obligatorio.
+- [x] Departamento con 3 completadas de 4 → `completion_rate` = 75, ejecutado contra Postgres.
+- [x] Derivada que se referencia en círculo → rechazo al registrar.
+- [x] Consulta con filtro global `status = completed` y `completion_rate` → filas con 100 y advertencia en `meta`; la misma consulta sin filtro global → 75.
+- [x] `engine.plan` devuelve SQL, parámetros y plan lógico sin abrir conexión; una consulta inválida devuelve el error estructurado.
+- [x] Snapshot del SQL de `completion_rate` junto al del caso obligatorio.
 
 ---
 
@@ -195,11 +195,11 @@ El servicio `api` corre en docker-compose.
 
 ### Criterios de aceptación
 
-- [ ] Prueba de humo HTTP: consulta válida → 200 con filas; sin token → 401; `UNKNOWN_MEMBER` → 400 con el cuerpo estructurado.
-- [ ] Tasa de asistencia por departamento de los últimos tres meses responde con los valores del seed, sin cambios en el engine.
-- [ ] `npm run demo` imprime las tres preguntas con JSON, SQL y filas, y los contadores de telemetría cuadran con lo ejecutado.
-- [ ] `docker compose up` levanta `db` y `api`, y el endpoint responde.
-- [ ] `meta` incluye `servedFrom`, `asOf` y `queryId` reproducible para la misma forma y empresa.
+- [x] Prueba de humo HTTP: consulta válida → 200 con filas; sin token → 401; `UNKNOWN_MEMBER` → 400 con el cuerpo estructurado.
+- [x] Tasa de asistencia por departamento de los últimos tres meses responde con los valores del seed, sin cambios en el engine.
+- [x] `npm run demo` imprime las tres preguntas con JSON, SQL y filas, y los contadores de telemetría cuadran con lo ejecutado.
+- [x] `docker compose up` levanta `db` y `api`, y el endpoint responde.
+- [x] `meta` incluye `servedFrom`, `asOf` y `queryId` reproducible para la misma forma y empresa.
 
 ---
 
@@ -219,11 +219,11 @@ demo ejecuta cada pregunta dos veces.
 
 ### Criterios de aceptación
 
-- [ ] Segunda ejecución de la misma consulta → `cache-l1`, mismas filas, sin consulta a la base (verificable por telemetría).
-- [ ] La empresa B con la misma forma no recibe la entrada de la A.
-- [ ] Cambiar la versión del catálogo invalida las entradas.
-- [ ] La entrada expira según el TTL configurado.
-- [ ] El dry-run nunca toca la caché.
+- [x] Segunda ejecución de la misma consulta → `cache-l1`, mismas filas, sin consulta a la base (verificable por telemetría).
+- [x] La empresa B con la misma forma no recibe la entrada de la A.
+- [x] Cambiar la versión del catálogo invalida las entradas.
+- [x] La entrada expira según el TTL configurado.
+- [x] El dry-run nunca toca la caché.
 
 ---
 
@@ -242,8 +242,8 @@ muestra una segunda instancia del engine respondiendo `cache-l2`.
 
 ### Criterios de aceptación
 
-- [ ] Con Redis disponible, una segunda instancia del engine responde `cache-l2` a una consulta ya ejecutada por la primera.
-- [ ] Con Redis caído, la consulta se sirve (`live` o `cache-l1`) y la telemetría registra el fallo.
-- [ ] Las llaves en Redis incluyen la empresa; un test verifica que no existe entrada sin ella.
-- [ ] Los tests de Redis se saltan con aviso si falta `REDIS_URL`.
-- [ ] `docker compose up` levanta `db`, `redis` y `api`.
+- [x] Con Redis disponible, una segunda instancia del engine responde `cache-l2` a una consulta ya ejecutada por la primera.
+- [x] Con Redis caído, la consulta se sirve (`live` o `cache-l1`) y la telemetría registra el fallo.
+- [x] Las llaves en Redis incluyen la empresa; un test verifica que no existe entrada sin ella.
+- [x] Los tests de Redis se saltan con aviso si falta `REDIS_URL`.
+- [x] `docker compose up` levanta `db`, `redis` y `api`.
