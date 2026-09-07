@@ -14,6 +14,7 @@ import { crearTelemetria } from '../src/telemetry.js';
 import { departments } from '../src/definitions/departments.js';
 import { employees } from '../src/definitions/employees.js';
 import { reviews } from '../src/definitions/reviews.js';
+import { attendance } from '../src/definitions/attendance.js';
 
 const { DATABASE_URL } = process.env;
 const conBase = DATABASE_URL
@@ -80,5 +81,36 @@ describe('caché L1 en memoria', { ...conBase, timeout: 15_000 }, () => {
       cacheHits: 1,
       cacheMisses: 1,
     });
+  });
+
+  // Literales del seed: la empresa 2 tiene sus propias evaluaciones. Si la
+  // entrada de la empresa 1 le sirviera, estos números serían los de la otra.
+  const ESTADOS_EMPRESA_B = { completed: 3, pending: 1, calibrated: 1 };
+
+  it('la empresa B con la misma forma no recibe la entrada de la A', async () => {
+    const { engine } = armar({ cache: crearMemoryStore() });
+
+    await engine.run(CONTEO_POR_ESTADO, DASHBOARD_A);
+    const b = await engine.run(CONTEO_POR_ESTADO, DASHBOARD_B);
+
+    assert.equal(b.meta.servedFrom, 'live', 'la empresa B no puede tener un hit de la A');
+    assert.deepEqual(porEstado(b.rows), ESTADOS_EMPRESA_B);
+  });
+
+  // La versión del catálogo entra al hash de la llave, así que un contrato de
+  // datos distinto no puede reusar las respuestas del anterior: registrar una
+  // definición nueva deja las entradas viejas inalcanzables, sin recorrerlas.
+  it('cambiar la versión del catálogo invalida las entradas', async () => {
+    const { engine, catalog } = armar({ cache: crearMemoryStore() });
+
+    const primera = await engine.run(CONTEO_POR_ESTADO, DASHBOARD_A);
+    const versionPrevia = catalog.version();
+    catalog.register(attendance);
+    const segunda = await engine.run(CONTEO_POR_ESTADO, DASHBOARD_A);
+
+    assert.notEqual(catalog.version(), versionPrevia, 'registrar cambió la versión');
+    assert.equal(segunda.meta.servedFrom, 'live');
+    assert.notEqual(segunda.meta.queryId, primera.meta.queryId);
+    assert.deepEqual(porEstado(segunda.rows), ESTADOS_EMPRESA_A);
   });
 });
