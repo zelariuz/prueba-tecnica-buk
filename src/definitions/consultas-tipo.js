@@ -23,6 +23,21 @@ export const consultasTipo = [
     },
   },
   {
+    name: 'completitud-por-departamento',
+    description:
+      'Porcentaje de evaluaciones completadas por departamento dentro del rango pedido.',
+    params: ['dateRange'],
+    query: {
+      measures: ['reviews.completion_rate'],
+      dimensions: ['departments.name'],
+      timeDimensions: [
+        { dimension: 'reviews.period', granularity: 'year', dateRange: ':dateRange' },
+      ],
+      order: { 'departments.name': 'asc' },
+      limit: 500,
+    },
+  },
+  {
     name: 'conteo-de-evaluaciones-por-estado',
     description: 'Cuántas evaluaciones hay en cada estado: pending, completed o calibrated.',
     params: [],

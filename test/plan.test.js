@@ -263,6 +263,23 @@ test('el SQL del caso obligatorio es el del snapshot del repo', () => {
   assert.deepEqual(params, [EMPRESA, '2025-01-01', '2025-12-31', 'completed', 500]);
 });
 
+test('el SQL de la completitud por departamento es el del snapshot del repo', () => {
+  const catalog = createCatalog();
+  for (const definicion of [reviews, employees, departments]) catalog.register(definicion);
+  for (const consulta of consultasTipo) catalog.registerQuery(consulta);
+
+  const { sql, params } = createEngine({ catalog }).plan(
+    catalog.query('completitud-por-departamento', { dateRange: ['2025-01-01', '2025-12-31'] }),
+    CTX,
+  );
+
+  // Segundo snapshot legible del repo, junto al del caso obligatorio: es donde
+  // se ve de un vistazo la consulta agregada y la fórmula escrita sobre ella.
+  const esperado = readFileSync(new URL('./snapshots/completion-rate.sql', import.meta.url), 'utf8');
+  assert.equal(sql, esperado.trimEnd());
+  assert.deepEqual(params, [EMPRESA, '2025-01-01', '2025-12-31', 'completed', 500]);
+});
+
 test('order solo acepta miembros que la consulta devuelve', () => {
   // La llave de order termina como identificador entre comillas en el SQL: si
   // no se valida contra lo que la consulta devuelve, una comilla dentro de la
