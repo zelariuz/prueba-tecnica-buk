@@ -9,7 +9,7 @@ semánticos. El aislamiento por empresa es del motor, no del consumidor.
 - Plan de construcción por fases: `plans/plan-capa-semantica.md`.
 - Vocabulario: `CONTEXT.md`.
 
-Estado actual: **fase 7** — el caso obligatorio de punta a punta, los
+Estado actual: **fase 8, la última del plan** — el caso obligatorio de punta a punta, los
 guardarraíles del consumidor (presupuesto por clase: timeout, máximo de filas,
 rango temporal obligatorio), el catálogo como contrato (valida las definiciones
 contra el esquema real, se describe en dos vistas, se versiona por hash y
@@ -18,8 +18,15 @@ agregados, con la semántica de filtros escrita y un dry-run que devuelve el pla
 lógico sin tocar la base) y **el servicio HTTP**: `POST /analytics/query` y
 `GET /analytics/catalog` con contexto derivado del token, telemetría en memoria,
 un segundo módulo (asistencia, con `attendance_rate`) y una demo por consola.
-La fase 7 agrega la **caché L1 en memoria**: la segunda ejecución de la misma
-consulta no toca la base.
+Las dos últimas fases agregan la **caché de dos niveles**: la L1 en memoria del
+proceso (fase 7) y la **L2 en Redis** compartida entre instancias (fase 8). La
+segunda ejecución de una consulta no toca la base, y lo que calculó una instancia
+le sirve a las demás. Si Redis no responde, la respuesta se sirve igual: ninguna
+consulta falla por la caché.
+
+Fuera de alcance, documentado como evolución con su costura: invalidación de la
+caché por escrituras de los módulos, single-flight, pre-agregaciones y
+Parquet/S3.
 
 ## Requisitos
 
@@ -34,6 +41,7 @@ docker compose up -d --build     # db (Postgres 16 con esquema y seed), redis y 
 cp .env.example .env             # referencia de variables
 
 export DATABASE_URL=postgres://capa:capa@localhost:5433/capa_semantica
+export REDIS_URL=redis://localhost:6380
 npm test                         # suite completa
 npm run demo                     # las tres preguntas del caso, por consola
 ```
@@ -52,9 +60,9 @@ está definida:
 ﹣ conteo de evaluaciones por estado # falta DATABASE_URL — levanta la base con `docker compose up -d db` (ver README)
 ```
 
-`docker compose up -d redis` deja levantada la caché L2; todavía no la usa nadie
-(entra en la última fase del plan). La caché L1 vive en el proceso y no necesita
-nada levantado.
+Lo mismo con Redis y `REDIS_URL`: los tests de la caché L2 se saltan con aviso si
+falta, y `npm test` **sin ninguna de las dos variables queda verde**. La caché L1
+vive en el proceso y no necesita nada levantado.
 
 ## Base de datos
 
@@ -320,11 +328,16 @@ es lo que permite reconocer en los logs de Postgres a quién pertenece una
 consulta lenta. El SQL de `plan()` no lleva la marca, así que el dry-run muestra
 el SQL puro y los snapshots del repo no cambian.
 
-`meta.queryId` es el hash de tres cosas y de ninguna más: la forma de la consulta
-con sus parámetros (serializada de forma canónica, así que reordenar las claves
-del JSON no lo cambia), la empresa y la versión del catálogo.
+`meta.queryId` es el hash de lo que realmente se va a ejecutar y de nada más: el
+SQL sin su marca, sus parámetros (serializados de forma canónica, así que
+reordenar las claves del JSON no lo cambia), la empresa y la versión del
+catálogo. Sale del SQL y no del JSON pedido porque entre los dos hay decisiones
+del engine que cambian el resultado sin cambiar la consulta —sobre todo el
+**límite efectivo**, que lo pone el presupuesto de la clase de consumidor—: si la
+identidad no lo mirara, el tablero (techo de 5000 filas) le dejaría servida a la
+API (10000) una entrada recortada.
 
-## Caché L1
+## Caché
 
 Interfaz `CacheStore` (`src/cache/store.js`): `get(key)`, `set(key, value,
 ttlMs)` y `delete(key)`, los tres **async** aunque `MemoryStore` no necesite
@@ -336,17 +349,28 @@ Dos puertas nuevas en el pipeline: **buscar en caché** después de planificar
 —una consulta inválida se rechaza igual, esté o no guardada— y **guardar en
 caché** después de ejecutar en vivo.
 
-- **La llave es el `queryId`**, no un valor aparte: ya es el hash de la forma
-  canónica de la consulta con sus parámetros, más la empresa, más la versión del
-  catálogo. La empresa dentro del hash hace imposible que una entrada de A sirva
-  a B; la versión del catálogo invalida todo al cambiar una definición, sin
-  recorrer nada.
-- **`meta.servedFrom`** vale `live` o `cache-l1`. En un hit, `asOf` es el
-  instante de la ejecución que produjo las filas —no el de ahora— y las
-  `warnings` son las de esa ejecución.
+- **La llave es el `queryId`**, no un valor aparte, con su procedencia escrita al
+  lado: `capa:{versión del catálogo}:{empresa}:{queryId}`. La empresa dentro del
+  hash hace imposible que una entrada de A sirva a B; la versión del catálogo
+  invalida todo al cambiar una definición, sin recorrer nada. Que además esté en
+  el **texto** de la llave es lo que permite auditar una caché compartida con un
+  `SCAN` en vez de confiar en el hash.
+- **`meta.servedFrom`** dice de dónde salió la respuesta:
+
+  | valor | significa |
+  | --- | --- |
+  | `live` | se ejecutó contra la base |
+  | `cache-l1` | estaba en memoria de este proceso |
+  | `cache-l2` | estaba en Redis: la calculó otra instancia, o este mismo proceso antes de reiniciar |
+
+  En un hit, `asOf` es el instante de la ejecución que produjo las filas —no el
+  de ahora— y las `warnings` son las de esa ejecución.
 - **TTL por clase de consumidor**, en la tabla de presupuestos: `dashboard` 60 s,
   `api` y `agent` 30 s. Cuánta antigüedad se tolera es parte de lo que la clase
-  puede gastar, igual que el timeout; la consulta no puede elegírselo.
+  puede gastar, igual que el timeout; la consulta no puede elegírselo. **Lo
+  evalúa quien lee**, contra el `asOf` de la entrada: una que el tablero dejó
+  hace 50 s le sirve a él y la API la trata como miss. Compartir una entrada no
+  puede significar heredar la tolerancia del otro.
 - **Acotada** a 200 entradas con desalojo LRU y expiración perezosa (se borra al
   leerla vencida): una caché sin techo es una fuga de memoria con otro nombre, y
   un temporizador por entrada mantendría el proceso despierto para borrar algo
@@ -355,21 +379,72 @@ caché** después de ejecutar en vivo.
   filas que recibió no puede cambiarle la respuesta al siguiente.
 - **El dry-run nunca la toca**, ni para leer ni para escribir.
 
-La L1 vive en el proceso: cada instancia del servicio tiene la suya. Compartirla
-entre instancias es trabajo de la L2 en Redis (fase 8), que entra por esta misma
-costura sin que el engine cambie.
+### Los dos niveles
+
+La L1 vive en el proceso: cada instancia del servicio tiene la suya y se pierde
+al reiniciar. La **L2** es Redis (`src/cache/redis-store.js`), compartida por
+todas las instancias, y entra por esa misma costura sin que el engine cambie: es
+otra implementación de `CacheStore`, con los valores en JSON y el vencimiento por
+entrada con `PX`.
+
+Quien las junta es `TieredStore` (`src/cache/tiered.js`), que **también** es un
+`CacheStore`: lee L1 → L2, escribe en los dos, deja en L1 la copia de lo que
+encontró en L2 y marca la entrada con el nivel del que salió. El engine sólo
+traduce eso a `servedFrom` y no sabe cuántos niveles hay.
+
+**Si Redis no responde, no pasa nada.** Cualquier error o timeout de la L2 —200
+ms como techo por operación— degrada la respuesta a `cache-l1` o `live` y se
+cuenta en `telemetry().cacheErrors` por nivel; ninguna consulta falla por la
+caché. `REDIS_URL` es opcional: sin ella el servicio arranca con sólo L1 y lo
+dice en el log.
+
+Verlo en marcha:
+
+```bash
+Q='{"measures":["reviews.count"],"dimensions":["reviews.status"]}'
+post() { curl -s -X POST http://localhost:3000/analytics/query \
+  -H 'Authorization: Bearer demo-dashboard-empresa-a' \
+  -H 'content-type: application/json' -d "$Q"; }
+
+post; post                       # → servedFrom: live, después cache-l1
+docker compose restart api       # reiniciar vacía la L1, no Redis
+post                             # → servedFrom: cache-l2, con el asOf original
+
+docker compose stop redis
+post                             # → se sirve igual, con 200 y sin esperar
+docker compose start redis
+
+# Las llaves, con la empresa a la vista
+docker compose exec redis redis-cli --scan --pattern 'capa:*'
+# → capa:f711d8d2af20d291:1:265ed64157294826
+```
 
 ## La demo
 
 ```bash
-DATABASE_URL=postgres://capa:capa@localhost:5433/capa_semantica npm run demo
+DATABASE_URL=postgres://capa:capa@localhost:5433/capa_semantica \
+  REDIS_URL=redis://localhost:6380 npm run demo
 ```
 
 Registra los módulos contra el esquema real, imprime el catálogo público y
 responde las tres preguntas del caso mostrando, para cada una, el JSON de la
 consulta, el SQL que generó el planificador y las filas que devolvió Postgres.
+Cada pregunta se ejecuta dos veces, para ver `live` y después `cache-l1`.
+
+Después levanta una **segunda instancia** del engine —otro proceso lógico, con su
+propia L1 vacía y su propio cliente de Redis— y le pide lo mismo que ya respondió
+la primera: sale `cache-l2`, con el `asOf` de la ejecución original. Sin
+`REDIS_URL` lo dice y salta esa parte.
+
 Termina con un error a propósito —para ver el error estructurado con su
-sugerencia— y con la telemetría de lo que acaba de correr.
+sugerencia— y con la telemetría de lo que acaba de correr, incluidos los hits por
+nivel y los fallos de caché:
+
+```
+Caché: 5 hits, 3 misses, hit ratio 63 % (5 de las 8 respuestas no tocaron la base)
+Hits por nivel: {"cache-l1":4,"cache-l2":1}
+Errores de caché por nivel: {}
+```
 
 El seed vive en 2025, así que "los últimos tres meses" de la tercera pregunta
 son los últimos tres meses **de los datos** (junio a agosto de 2025), no los del

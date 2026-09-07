@@ -117,17 +117,36 @@ equivalente en Cube, se indica para facilitar la lectura al equipo.
 - **CacheStore**: la interfaz de caché del engine —`get(key)`, `set(key, value,
   ttlMs)`, `delete(key)`, los tres async—. `MemoryStore` es su implementación L1,
   en memoria del proceso; `RedisStore` (L2, compartida entre instancias) es la
-  misma interfaz.
+  misma interfaz; `TieredStore` **también** es la misma interfaz y no guarda
+  nada: compone las otras dos. El engine recibe una caché y no sabe cuántos
+  niveles tiene.
 - **Llave de caché**: **es** el `queryId`. No hay dos hashes: lo que se va a
   ejecutar —el SQL, sus parámetros, la empresa y la versión del catálogo— es
   exactamente lo que decide si dos consultas son la misma consulta, tanto para
   identificarla como para reusar su resultado. Nace del SQL y no del JSON pedido
   porque entre los dos hay decisiones del engine que cambian el resultado sin
   cambiar la consulta: sobre todo el **límite efectivo**, que lo pone el
-  presupuesto de la clase de consumidor y viaja en los parámetros.
+  presupuesto de la clase de consumidor y viaja en los parámetros. La llave con
+  la que se guarda escribe al lado la procedencia que el hash ya lleva adentro:
+  `{versión del catálogo}:{empresa}:{queryId}`, y en Redis con el prefijo del
+  servicio: `capa:{versión}:{empresa}:{queryId}`. El aislamiento no depende de
+  ese texto —depende del hash—, pero en una caché compartida lo que no se ve no
+  se puede auditar: con la empresa escrita, comprobar que ninguna entrada quedó
+  sin dueño es un `SCAN`.
 - **`servedFrom`**: de dónde salió la respuesta: `live` (se ejecutó contra la
-  base) o `cache-l1` (estaba guardada en memoria del proceso). Viaja en
-  `meta.servedFrom`.
+  base), `cache-l1` (estaba guardada en memoria de este proceso) o `cache-l2`
+  (estaba en la caché compartida: la calculó otra instancia, o este mismo
+  proceso antes de reiniciar). Viaja en `meta.servedFrom`.
+- **L1 y L2**: los dos niveles de la caché. **L1** vive en memoria del proceso:
+  rapidísima, acotada, y se pierde al reiniciar. **L2** es Redis, compartida por
+  todas las instancias del servicio: sobrevive al reinicio y es lo que hace que
+  lo que calculó una instancia le sirva a otra. Se lee L1, luego L2, luego la
+  base; se escribe en los dos; un hit de L2 deja la copia en L1.
+- **Degradación de la caché**: el fallo de un nivel nunca es el fallo de la
+  consulta. Si la L2 no responde —Redis caído, red cortada, timeout de 200 ms—,
+  la respuesta se sirve igual (`cache-l1` o `live`) y el fallo se cuenta en
+  `cacheErrors` por nivel. La caché existe para abaratar, no para poner en
+  riesgo.
 - **`asOf`**: instante en que se ejecutó la consulta que produjo estas filas. En
   un hit es el de la ejecución original, no el de ahora: es lo que le permite al
   consumidor mostrar la antigüedad del dato.
@@ -149,7 +168,10 @@ equivalente en Cube, se indica para facilitar la lectura al equipo.
   "métrica" para no confundir con las medidas de negocio. Vive en memoria del
   proceso, se lee con `engine.telemetry()` y cuenta, por consumidor: consultas
   servidas y rechazadas, código de error, **puerta que rechazó**, hits y misses
-  de caché y tiempo de base (suma y cuenta). Una respuesta servida desde la
+  de caché —con los hits desglosados por nivel— y tiempo de base (suma y
+  cuenta), más los **fallos de caché por nivel** (`cacheErrors`), que son la
+  única señal de que un nivel está caído: como ninguna consulta falla por eso,
+  sin ese contador sería invisible. Una respuesta servida desde la
   caché cuenta como servida pero no suma al tiempo de base. Es reinicializable;
   exportarla está fuera de alcance.
 - **Identidad de la consulta (`queryId`)**: hash del SQL que se va a ejecutar

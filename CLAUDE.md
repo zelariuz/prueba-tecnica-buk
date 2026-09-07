@@ -40,6 +40,14 @@ src/
   cache/store.js             interfaz CacheStore (get/set/delete async) y
                              MemoryStore: L1 acotada, LRU, TTL por entrada y
                              reloj inyectable
+  cache/redis-store.js       RedisStore: la L2 sobre node-redis, prefijo de
+                             llave, TTL con PX, timeout de 200 ms, listener de
+                             error y reconexión con tope
+  cache/tiered.js            TieredStore: compone L1 y L2 detrás de la misma
+                             interfaz; marca de qué nivel salió la entrada y se
+                             traga los fallos de la L2
+  cache/index.js             cómo arma su caché un proceso según REDIS_URL
+                             (L1+L2, o sólo L1 con aviso)
   catalog.js                 registro y validación de definiciones, resolución de
                              miembros, vistas pública e interna, versión y
                              consultas tipo
@@ -55,7 +63,8 @@ src/
                              buscarEnCache y guardarEnCache
   errors.js                  SemanticError { code, member, suggestion }
   telemetry.js               contadores en memoria por resultado, código, puerta,
-                             consumidor, hits/misses de caché y tiempo de base;
+                             consumidor, hits/misses de caché (hits por nivel),
+                             fallos de caché por nivel y tiempo de base;
                              inyectable y reiniciable
   canonical.js               serialización canónica compartida (versión del
                              catálogo y queryId)
@@ -76,6 +85,12 @@ test/
   telemetry.test.js          contadores por el seam engine.run
   cache.test.js              caché L1 por el seam engine.run (contra Postgres) y
                              el dry-run sin caché por engine.plan (sin base)
+  cache-l2.test.js           los dos niveles por engine.run con dos MemoryStore:
+                             cache-l2, relleno de L1, hits por nivel y las dos
+                             redes de seguridad (contra Postgres)
+  redis.test.js              caché L2 contra Redis de verdad: dos instancias,
+                             llaves con empresa por SCAN y Redis inalcanzable;
+                             se salta sin REDIS_URL
   snapshots/caso-obligatorio.sql  SQL esperado del caso, comparado por igualdad
   snapshots/completion-rate.sql   SQL esperado de la derivada, con su etapa agregada
   fixtures/snapshot.json     foto del esquema generada desde la base del caso
@@ -86,7 +101,7 @@ docs/
   adr/                     decisiones arquitectónicas numeradas
   semantica-de-filtros.md  qué filtra a qué y cuándo una razón queda en 100
 docker-compose.yml         db (Postgres 16, host 5433), redis (host 6380) y api
-                           (host 3000, espera a que db esté sana)
+                           (host 3000, espera a que db y redis estén sanos)
 Dockerfile                 imagen del servicio api (node:24-alpine, USER node)
 ```
 
@@ -96,8 +111,12 @@ Dockerfile                 imagen del servicio api (node:24-alpine, USER node)
 npm install
 docker compose up -d db                       # base con esquema y seed
 docker compose up -d --build                  # todo: db, redis y api (host 3000)
-DATABASE_URL=postgres://capa:capa@localhost:5433/capa_semantica npm test
-DATABASE_URL=postgres://capa:capa@localhost:5433/capa_semantica npm run demo
+# `npm test` sin variables corre y queda verde: los tests de base se saltan sin
+# DATABASE_URL y los de Redis sin REDIS_URL.
+DATABASE_URL=postgres://capa:capa@localhost:5433/capa_semantica \
+  REDIS_URL=redis://localhost:6380 npm test
+DATABASE_URL=postgres://capa:capa@localhost:5433/capa_semantica \
+  REDIS_URL=redis://localhost:6380 npm run demo   # la segunda instancia da cache-l2
 
 # Re-aplicar esquema y seed. `--renew-anon-volumes` NO sobra: la imagen
 # postgres declara un VOLUME anónimo que sobrevive a recrear el contenedor,
@@ -394,7 +413,72 @@ curl -s -H 'Authorization: Bearer demo-dashboard-empresa-a' \
   (`createEngine({ reloj })`) porque el `asOf` y esa edad son el mismo tiempo y
   tienen que salir de la misma fuente.
 
+## Decisiones de la fase 8
+
+- **`RedisStore`** (`src/cache/redis-store.js`) es una implementación más de
+  `CacheStore`, no un caso especial: el engine sigue recibiendo una sola caché.
+  Valores en JSON —serializar es además lo que le da la misma semántica de copia
+  que el `structuredClone` de la L1— y vencimiento por entrada con `PX`, que lo
+  aplica Redis y ahorra cualquier barrido nuestro.
+- **Conexión perezosa**: el store se crea sin tocar la red, así que un Redis que
+  no está no impide arrancar el servicio. La promesa de conexión se memoriza y se
+  descarta cuando el cliente muere, para que el siguiente intento abra uno nuevo:
+  rendirse no es rendirse para siempre (verificado: con Redis parado y vuelto a
+  levantar, el servicio pasa a `live` y después vuelve a `cache-l2` sin
+  reiniciarse por eso).
+- **Listener de `error` obligatorio**: sin él, un error de socket es un `error`
+  sin manejar en un EventEmitter, y eso **tumba el proceso** — la caché mataría
+  al servicio que vino a abaratar. Se registra por el callback `alFallar` y no se
+  propaga.
+- **Timeout de 200 ms por operación** (`TIMEOUT_DE_REDIS_MS`) y **tope de 5
+  reintentos** de reconexión. Una caché que se cuelga es peor que no tener caché:
+  agrega latencia a cada respuesta a cambio de nada. Medido con `docker compose
+  stop redis`: la consulta nueva se sirvió `live` con HTTP 200 en 230 ms en vez
+  de colgarse, y la repetida en 2 ms desde L1.
+- **`TieredStore`** (`src/cache/tiered.js`) es dónde vive la composición, y es
+  otra implementación de `CacheStore`: lee L1 → L2, escribe en los dos y marca la
+  entrada con el **nivel** del que salió. El engine sólo traduce eso a
+  `servedFrom` (`live` | `cache-l1` | `cache-l2`) y no sabe cuántos niveles hay;
+  agregar un tercero no toca el pipeline de puertas.
+- **Un hit de L2 rellena L1** con `TTL_DE_RELLENO_MS`. Ese TTL no pretende ser la
+  vida que le quedaba en L2 —no se sabe desde ahí— y no hace falta que lo sea: la
+  frescura la decide el lector contra el `asOf`, así que este número sólo acota
+  cuánto ocupa un lugar la copia.
+- **Dos redes de seguridad, no una**: `TieredStore` se defiende de su L2 porque
+  sabe que la tiene; el engine envuelve sus dos puertas de caché en `try/catch`
+  porque **no sabe qué implementación le pasaron**, y la garantía "ninguna
+  consulta falla por la caché" no puede depender de eso. Una lectura que revienta
+  cuenta como miss —se va a la base igual—.
+- **Los fallos no viajan como excepción**: salen por el callback `alFallar` y se
+  cuentan en `cacheErrors` por nivel. La caché no conoce la telemetría (recibe un
+  callback), y como ninguna consulta falla por un nivel caído, sin ese contador
+  un Redis muerto sería invisible hasta que alguien mirara la latencia.
+- **La llave lleva la empresa en el texto**: `capa:{versión del catálogo}:{empresa}:{queryId}`.
+  El aislamiento no depende de ese texto —depende del hash, que ya lleva las dos
+  cosas adentro—, pero en una caché compartida lo que no se ve no se puede
+  auditar: con la empresa escrita, comprobar que ninguna entrada quedó sin dueño
+  es un `SCAN`. El prefijo `capa` separa nuestras llaves de las de cualquier otro
+  que comparta el Redis, y es inyectable para que los tests usen el suyo y limpien
+  sólo lo suyo (nunca `FLUSHALL`).
+- **La L2 es opcional** (`src/cache/index.js`): con `REDIS_URL` hay dos niveles,
+  sin él sólo L1 y se dice en el log. No es una concesión: es la historia 35, y
+  tenerlo así hace que el modo degradado sea el que corre cada vez que alguien
+  levanta sólo la base.
+- **Redis sin volumen** en el compose: una caché que sobrevive al reinicio no es
+  una caché, es una base.
+
 ## Estado
+
+Fase 8 terminada — **última del plan**. Caché L2 en Redis detrás de la misma
+interfaz `CacheStore`, compuesta con la L1 por `TieredStore`. Verificado contra
+Docker: dos POST iguales dan `live` y `cache-l1`; tras `docker compose restart
+api` (que vacía la L1) el mismo POST vuelve `cache-l2` con el `asOf` de la
+ejecución original; con `docker compose stop redis` una consulta nueva se sirve
+`live` con HTTP 200 en 230 ms y la repetida en 2 ms desde L1. Las llaves reales
+son `capa:{versión}:{empresa}:{queryId}`. `npm run demo` levanta una segunda
+instancia del engine que responde `cache-l2` y cierra con hits por nivel y
+errores de caché. Fuera de alcance, documentado como evolución: invalidación por
+escritura de los módulos, single-flight, pre-agregaciones y Parquet/S3.
 
 Fase 7 terminada: caché L1 en memoria detrás de la interfaz `CacheStore`. La
 segunda ejecución de la misma consulta vuelve con `servedFrom: 'cache-l1'`, las
