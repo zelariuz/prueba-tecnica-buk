@@ -509,15 +509,29 @@ function exigirOperador(filtro, tipo) {
 // Camino de joins: BFS sobre relaciones `many_to_one` desde la entidad de
 // hechos. Solo se recorren aristas que no multiplican filas (ADR 0006), así que
 // agregar una dimensión de otra entidad nunca cambia el valor de las medidas.
+//
+// Una relación puede apuntar a una entidad que no está registrada: el módulo
+// dueño no se instaló, o todavía no se registró cuando el que la nombra sí. No
+// se valida al registrar porque el orden importa —`reviews` nombra a
+// `employees` antes de que exista— y una validación diferida sería un segundo
+// momento de verdad para el mismo contrato. La respuesta es más simple: esa
+// relación no produce arista. Si el destino que el consumidor pidió era
+// alcanzable sólo por ahí, el camino no existe y sale `NO_JOIN_PATH` nombrando
+// la entidad que falta; el diagnóstico queda donde se nota el problema.
 function caminoDeJoins(catalog, raiz, destinos) {
   const previa = new Map([[raiz, null]]);
   const pendientes = [raiz];
+  const ausentes = new Set();
 
   while (pendientes.length > 0) {
     const actual = pendientes.shift();
     const relaciones = catalog.entity(actual).relationships ?? {};
     for (const relacion of Object.values(relaciones)) {
       if (relacion.type !== 'many_to_one' || previa.has(relacion.target)) continue;
+      if (catalog.entity(relacion.target) === undefined) {
+        ausentes.add(relacion.target);
+        continue;
+      }
       previa.set(relacion.target, { desde: actual, relacion });
       pendientes.push(relacion.target);
     }
@@ -532,7 +546,10 @@ function caminoDeJoins(catalog, raiz, destinos) {
       throw new SemanticError({
         code: 'NO_JOIN_PATH',
         member: destino,
-        suggestion: `No hay relaciones declaradas que lleven de ${raiz} a ${destino}.`,
+        suggestion:
+          ausentes.size > 0
+            ? `No hay relaciones declaradas que lleven de ${raiz} a ${destino}: el camino pasa por ${[...ausentes].join(', ')}, que no está registrada en el catálogo.`
+            : `No hay relaciones declaradas que lleven de ${raiz} a ${destino}.`,
       });
     }
     const rama = [];

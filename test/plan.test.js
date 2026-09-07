@@ -692,3 +692,34 @@ test('una consulta inválida en dry-run vuelve como error estructurado, sin toca
   assert.equal(error.member, 'reviews.completion_rat');
   assert.match(error.suggestion, /reviews\.completion_rate/);
 });
+
+// Un módulo puede declarar una relación hacia una entidad que todavía no se
+// registró —o que nunca se registrará, porque su módulo no está instalado—. Eso
+// es una capa semántica incompleta, no un servidor roto: la arista simplemente
+// no existe.
+test('una relación hacia una entidad no registrada no rompe una consulta que no la necesita', () => {
+  const catalog = createCatalog();
+  // `employees` declara una relación hacia `departments`, que aquí no se registra.
+  for (const definicion of [reviews, employees]) catalog.register(definicion);
+
+  const { sql } = createEngine({ catalog, pool: poolIntocable }).plan(conteoPorEstado, CTX);
+
+  assert.match(sql, /WITH reviews AS \(/);
+});
+
+test('el destino alcanzable sólo por la entidad ausente cae en NO_JOIN_PATH que la nombra', () => {
+  const catalog = createCatalog();
+  // El camino de `reviews` a `departments` pasa por `employees`, que falta.
+  for (const definicion of [reviews, departments]) catalog.register(definicion);
+
+  const error = errorDe(() =>
+    createEngine({ catalog, pool: poolIntocable }).plan(
+      { measures: ['reviews.count'], dimensions: ['departments.name'] },
+      CTX,
+    ),
+  );
+
+  assert.equal(error.code, 'NO_JOIN_PATH');
+  assert.equal(error.member, 'departments');
+  assert.match(error.suggestion, /employees/);
+});

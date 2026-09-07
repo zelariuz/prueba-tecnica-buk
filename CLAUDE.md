@@ -303,6 +303,24 @@ curl -s -H 'Authorization: Bearer demo-dashboard-empresa-a' \
   con `registrarModulos`, la composición real. Antes registraban tres módulos a
   mano y agregar uno los dejaba desactualizados.
 
+## Arreglos de revisión de la fase 6
+
+- **Techo del cuerpo HTTP**: `cuerpoDe()` acumulaba sin límite. Ahora cuenta
+  bytes (no caracteres) y corta en `LIMITE_DE_CUERPO` = 64 KiB con
+  `PAYLOAD_TOO_LARGE` → 413, decidido antes de que el engine vea nada. El
+  iterador va con `destroyOnReturn: false`: salir del bucle con un throw
+  destruiría el socket y el 413 no llegaría; la conexión se corta recién cuando
+  la respuesta terminó de salir.
+- **La api corre como `node`**, el usuario sin privilegios que la imagen oficial
+  ya trae, con los archivos copiados con `--chown=node:node`.
+- **Relación hacia una entidad no registrada**: el BFS de `caminoDeJoins`
+  reventaba con `TypeError`. Decisión: **no** se valida al registrar —el orden
+  importa, `reviews` nombra a `employees` antes de que exista, y una validación
+  diferida sería un segundo momento de verdad para el mismo contrato—. La
+  relación simplemente no produce arista, y si el destino pedido era alcanzable
+  sólo por ahí sale `NO_JOIN_PATH` con la entidad faltante nombrada en la
+  sugerencia.
+
 ## Estado
 
 Fase 6 terminada: servicio HTTP (`POST /analytics/query`, `GET
