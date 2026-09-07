@@ -9,11 +9,13 @@ semánticos. El aislamiento por empresa es del motor, no del consumidor.
 - Plan de construcción por fases: `plans/plan-capa-semantica.md`.
 - Vocabulario: `CONTEXT.md`.
 
-Estado actual: **fase 4** — el caso obligatorio de punta a punta, los
+Estado actual: **fase 5** — el caso obligatorio de punta a punta, los
 guardarraíles del consumidor (presupuesto por clase: timeout, máximo de filas,
-rango temporal obligatorio) y el catálogo como contrato: valida las definiciones
+rango temporal obligatorio), el catálogo como contrato (valida las definiciones
 contra el esquema real, se describe en dos vistas, se versiona por hash y
-registra consultas tipo.
+registra consultas tipo) y las medidas derivadas: razones calculadas sobre
+agregados, con la semántica de filtros escrita y un dry-run que devuelve el plan
+lógico sin tocar la base.
 
 ## Requisitos
 
@@ -110,6 +112,60 @@ igualdad en cada corrida de tests. El rango temporal es cerrado en ambos
 extremos (`>= $2 AND <= $3`, como el `dateRange` de Cube) y viaja dentro de la
 CTE de las evaluaciones; el trimestre vuelve como texto ISO (`2025-01-01`) para
 que no dependa de la zona horaria del proceso.
+
+## Medidas derivadas: razones sobre agregados
+
+`completion_rate` no se declara como una fórmula: se declara como la razón entre
+dos medidas de la misma entidad.
+
+```js
+completion_rate: {
+  type: 'ratio',
+  numerator: 'completed_count',
+  denominator: 'count',
+  scale: 100,
+  description: 'Porcentaje de evaluaciones completadas sobre el total de evaluaciones.',
+}
+```
+
+El planificador agrega el numerador y el denominador en una consulta agregada y
+escribe la fórmula **afuera, sobre sus alias**; así solo puede ver valores ya
+agregados. `::numeric` evita la división entera (dos `COUNT` son enteros y 3/4
+daría 0) y `NULLIF` convierte el denominador cero en NULL:
+
+```sql
+SELECT "departments.name",
+       "reviews.completed_count"::numeric / NULLIF("reviews.count", 0) * 100 AS "reviews.completion_rate"
+FROM (
+  SELECT departments.name AS "departments.name",
+         COUNT(*) FILTER (WHERE reviews.status = $4) AS "reviews.completed_count",
+         COUNT(*) AS "reviews.count"
+  …
+) AS agregada
+```
+
+El SQL completo está en `test/snapshots/completion-rate.sql`. Las medidas base
+que el consumidor no pidió se quedan en la etapa agregada y no salen en las
+filas. Una derivada puede apoyarse en otra: el catálogo las ordena al registrar y
+rechaza los círculos con `INVALID_DEFINITION`.
+
+**Filtros y advertencias**: los filtros de la consulta y sus segmentos afectan a
+todas las medidas; el filtro propio de una medida se suma al global. Si un filtro
+global repite lo que distingue al numerador (`reviews.status = completed` junto a
+`completion_rate`), la tasa vale 100 en todas las filas y la respuesta lo dice en
+`meta.warnings`. La regla completa está en `docs/semantica-de-filtros.md`.
+
+## Dry-run: el plan antes de gastar la base
+
+```js
+const { sql, params, plan } = engine.plan(consulta, { companyId: 1, consumer: 'agent' });
+```
+
+`plan` trae la entidad de hechos, el camino de joins, las dimensiones, las
+medidas pedidas, las medidas base que hizo falta resolver, las derivadas con su
+numerador y denominador, los filtros globales, los filtros de cada medida, el
+presupuesto aplicado con el límite efectivo y las advertencias. No abre ninguna
+conexión: un agente puede revisar la consulta antes de ejecutarla.
 
 ## El catálogo como contrato
 

@@ -31,8 +31,15 @@ equivalente en Cube, se indica para facilitar la lectura al equipo.
 - **Segmento**: filtro con nombre que fija una regla de negocio una sola vez
   (`completed` = `status = 'completed'`). Se declara de forma declarativa,
   nunca como SQL.
+- **Medida base**: la que se agrega directamente sobre las filas (`count`,
+  `sum`, `avg`). Es lo contrario de una derivada, y lo que una derivada combina.
 - **Medida derivada**: se calcula a partir de otras medidas ya agregadas.
-  En v1 solo el tipo `ratio`: `{ numerator, denominator, scale }`.
+  En v1 solo el tipo `ratio`: `{ numerator, denominator, scale }`. Sus medidas
+  base entran a la consulta agregada aunque el consumidor no las pida, y no
+  salen en las filas si no las pidió.
+- **Orden de cálculo de las derivadas**: el orden topológico en que pueden
+  calcularse las derivadas de una entidad, cada una después de aquellas de las
+  que depende. El catálogo lo resuelve al registrar y rechaza los círculos.
 - **Relación**: arista tipada entre entidades (`reviews.employee → employees`,
   `many_to_one`). El engine resuelve los JOIN recorriendo relaciones; el
   consumidor nunca las nombra. Equivalente Cube: `join`.
@@ -72,8 +79,21 @@ equivalente en Cube, se indica para facilitar la lectura al equipo.
 - **Puerta**: etapa del pipeline del engine: validar, planificar, ejecutar,
   post-procesar. Cada puerta recibe un contexto y lo devuelve enriquecido, o
   corta con una respuesta. Patrón middleware.
-- **Plan lógico**: resultado de planificar sin ejecutar: entidades, camino de
-  joins, medidas y dimensiones resueltas. Es lo que devuelve el dry-run.
+- **Plan lógico**: resultado de planificar sin ejecutar: entidad de hechos,
+  camino de joins, dimensiones, medidas pedidas, medidas base resueltas,
+  derivadas, filtros globales, filtros por medida, presupuesto aplicado y
+  advertencias. Es lo que devuelve el dry-run (`plan(consulta, ctx)`), sin abrir
+  conexión.
+- **Filtro global**: el que afecta a todas las medidas de la consulta —los
+  `filters` del JSON y los `segments` que la consulta nombra—. Se aplica dentro
+  de la CTE de la entidad de su dimensión, antes de agregar.
+- **Filtro propio de una medida**: el que su dueño le declaró como segmento; se
+  suma al global dentro del `FILTER` de esa medida. La regla completa está en
+  `docs/semantica-de-filtros.md`.
+- **Advertencia de consulta**: `{ member, warning }` que la respuesta trae en
+  `meta.warnings` (y el plan lógico en `warnings`) cuando el resultado es
+  correcto pero engañoso; por ejemplo, un filtro global que deja una razón en
+  100 %. Nunca impide devolver las filas.
 - **Error estructurado**: `{ code, member?, suggestion? }`. Códigos:
   `UNKNOWN_MEMBER`, `NO_JOIN_PATH`, `MISSING_TENANT`, `FORBIDDEN_FIELD`,
   `MULTI_ENTITY_MEASURES`, `MISSING_TIME_RANGE`, `INVALID_OPERATOR`,

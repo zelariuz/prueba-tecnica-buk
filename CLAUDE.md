@@ -15,6 +15,8 @@ TypeScript, Node 24, `node:test`, node-postgres.
 - `prds/prd-capa-semantica.md` — PRD: decisiones de implementación y de testing.
 - `plans/plan-capa-semantica.md` — 8 fases verticales; los criterios de
   aceptación de cada fase son la definición de terminado.
+- `docs/semantica-de-filtros.md` — filtros globales, propios de medida y la
+  advertencia de la razón anulada.
 - `docs/adr/` — decisiones arquitectónicas (0001 tres piezas, 0002 contexto de
   sesión separado, 0003 CTE por entidad con empresa, 0004 derivadas ratio,
   0005 segmentos sin SQL, 0006 medidas de una sola entidad, 0007 vocabulario
@@ -27,7 +29,7 @@ src/
   definitions/reviews.js     evaluaciones: dimensiones, medidas, segmento y relación
   definitions/employees.js   empleados: puente hacia departamentos
   definitions/departments.js departamentos: dimensión name
-  definitions/consultas-tipo.js  tres plantillas del caso con parámetros `:nombre`
+  definitions/consultas-tipo.js  cuatro plantillas del caso con parámetros `:nombre`
   dialect/postgres.js        capacidades del motor (dateTrunc, agregadoFiltrado)
   budgets.js                 presupuesto por clase de consumidor (timeout, filas, rango)
   catalog.js                 registro y validación de definiciones, resolución de
@@ -36,8 +38,12 @@ src/
   introspect.js              snapshot del esquema desde information_schema/pg_indexes
   suggest.js                 distancia de edición y sugerencia del nombre más parecido
   vocabulary.js              operadores por tipo de dimensión y granularidades
-  engine.js                  planificación (BFS de joins + CTE + agregación) y ejecución
-                             transaccional con SET LOCAL statement_timeout
+  planner.js                 el planificador: pipeline de puertas (validar, resolver
+                             miembros, filtros, joins, agregación y derivadas,
+                             emitir SQL, describir el plan lógico). Única pieza
+                             que escribe SQL
+  engine.js                  plan() y run(): dry-run y ejecución transaccional con
+                             SET LOCAL statement_timeout
   errors.js                  SemanticError { code, member, suggestion }
 test/
   plan.test.js               seam engine.plan — sin base
@@ -45,10 +51,14 @@ test/
   catalog.test.js            seams catalog.register y catalog.describe — sin base
                              salvo el único test del introspector
   snapshots/caso-obligatorio.sql  SQL esperado del caso, comparado por igualdad
+  snapshots/completion-rate.sql   SQL esperado de la derivada, con su etapa agregada
   fixtures/snapshot.json     foto del esquema generada desde la base del caso
 docker/init/
   01-schema.sql            DDL del caso, copiado sin cambios
   02-seed.sql              seed determinista + conteos esperados en el encabezado
+docs/
+  adr/                     decisiones arquitectónicas numeradas
+  semantica-de-filtros.md  qué filtra a qué y cuándo una razón queda en 100
 docker-compose.yml         db (Postgres 16, host 5433) y redis (host 6380)
 ```
 
@@ -171,15 +181,63 @@ docker compose up -d --force-recreate db      # re-aplicar esquema y seed
   - `UNKNOWN_QUERY`: no existe una consulta tipo con ese nombre.
   - `MISSING_PARAM`: la consulta tipo declara un parámetro que la llamada no trae.
 
+## Decisiones de la fase 5
+
+- Una medida derivada se declara como una medida más, con tipo propio:
+  `completion_rate: { type: 'ratio', numerator, denominator, scale, description }`.
+  Así el consumidor la pide igual que cualquier otra y el catálogo la publica en
+  la vista pública con su tipo; `numerator` y `denominator` son nombres de
+  medidas de la misma entidad, nunca una expresión (ADR 0004).
+- El SQL sale en dos etapas **solo si la consulta lleva derivadas**: la
+  agregación pasa a ser una subconsulta y la fórmula se escribe afuera, sobre sus
+  alias (`"reviews.completed_count"::numeric / NULLIF("reviews.count", 0) * 100`).
+  La garantía "sobre agregados" queda estructural: la fórmula no puede ver una
+  fila. Una consulta sin derivadas genera exactamente el SQL de antes, y por eso
+  el snapshot del caso obligatorio no cambió.
+- **Las medidas base que el consumidor no pidió no salen en las filas**: se
+  calculan en la etapa agregada y se quedan ahí. La consulta devuelve lo que
+  pidió.
+- La escala se interpola en el SQL, así que el catálogo la valida como número
+  finito; `scale` ausente significa fracción (sin multiplicar).
+- El catálogo ordena las derivadas de cada entidad al registrar, con un recorrido
+  en profundidad que de paso delata el ciclo (`INVALID_DEFINITION`), y expone el
+  orden con `derivedOrder(entidad)`. El planificador lo recorre una vez: cuando
+  le toca una razón, las que necesita ya están escritas. Una razón que se
+  referencia a sí misma cae antes, al validar la forma.
+- Semántica de filtros (`docs/semantica-de-filtros.md`): los filtros de la
+  consulta y sus segmentos son globales y se aplican en la CTE; el filtro propio
+  de una medida se suma dentro del `FILTER`. Cuando un filtro global repite lo
+  que distingue al numerador de una razón, la razón vale 100 y la respuesta trae
+  `meta.warnings` explicándolo. La comparación es por igualdad exacta del filtro:
+  un equivalente escrito de otra forma no se detecta, y está documentado.
+- `meta.warnings` viaja siempre, vacío cuando no hay nada que advertir.
+- `plan(consulta, ctx)` devuelve `{ sql, params, plan }` sin abrir conexión: el
+  plan lógico trae entidad de hechos, camino de joins, dimensiones, medidas
+  pedidas, medidas base resueltas, derivadas, filtros globales, filtros por
+  medida, presupuesto con el límite efectivo y advertencias. El test lo prueba
+  con un pool que lanza si alguien lo toca.
+- El planificador salió de `engine.js` a `src/planner.js` y quedó escrito como el
+  pipeline de puertas del PRD: `validar → resolver miembros → filtros → joins →
+  agregación y derivadas → emitir SQL → describir el plan`. El orden de las
+  puertas es parte del contrato: los filtros aportan entidades al camino de
+  joins, y los parámetros `$n` se numeran en el orden en que se piden.
+
 ## Estado
+
+Fase 5 terminada: medidas derivadas de tipo `ratio` calculadas sobre agregados
+(el departamento con 3 completadas de 4 da 75 contra Postgres), orden topológico
+y rechazo de ciclos al registrar, semántica de filtros escrita y aplicada con
+advertencia en `meta.warnings` cuando un filtro global anula el denominador,
+dry-run con plan lógico sin conexión, snapshot del SQL de `completion_rate`,
+consulta tipo `completitud-por-departamento` y planificador partido en puertas.
+Siguiente: fase 6 (según el plan).
 
 Fase 4 terminada: el catálogo como contrato — validación de forma y de esquema
 al registrar, advertencias, introspector con foto fija en el repo, vistas
 pública e interna, versión por hash, `UNKNOWN_MEMBER` con sugerencia por
 distancia de edición, `INVALID_OPERATOR`/`UNSUPPORTED_OPERATOR` contra la tabla
-de operadores por tipo, filtros y segmentos de consulta y tres consultas tipo
+de operadores por tipo, filtros y segmentos de consulta y las consultas tipo
 recorridas por un test que verifica el invariante de empresa en cada CTE.
-Siguiente: fase 5 (medidas derivadas ratio, semántica de filtros y dry-run).
 
 Fase 3 terminada: guardarraíles del consumidor — presupuestos por clase,
 `FORBIDDEN_FIELD` para `companyId`/`consumer` en el JSON, `MISSING_TIME_RANGE`
