@@ -8,6 +8,7 @@ import pg from 'pg';
 
 import { createCatalog } from '../src/catalog.js';
 import { createEngine } from '../src/engine.js';
+import { crearMemoryStore } from '../src/cache/store.js';
 import { crearServidor } from '../src/http/server.js';
 import { tokensDeDemo } from '../src/http/tokens.js';
 import { departments } from '../src/definitions/departments.js';
@@ -39,7 +40,9 @@ describe('capa HTTP', { ...conBase, timeout: 10_000 }, () => {
     pool = new pg.Pool({ connectionString: DATABASE_URL });
     const catalog = createCatalog();
     for (const definicion of [reviews, employees, departments]) catalog.register(definicion);
-    const engine = createEngine({ catalog, pool });
+    // Como en producción (`src/server.js`): el servicio arma su engine con la
+    // caché L1 del proceso.
+    const engine = createEngine({ catalog, pool, cache: crearMemoryStore() });
     servidor = crearServidor({ engine, catalog, tokens });
     await new Promise((listo) => servidor.listen(0, '127.0.0.1', listo));
     base = `http://127.0.0.1:${servidor.address().port}`;
@@ -64,6 +67,21 @@ describe('capa HTTP', { ...conBase, timeout: 10_000 }, () => {
       { completed: 5, pending: 4, calibrated: 2 },
     );
     assert.equal(meta.servedFrom, 'live');
+  });
+  it('dos peticiones iguales: la segunda vuelve servida desde cache-l1', async () => {
+    const peticion = () =>
+      fetch(`${base}/analytics/query`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${TOKEN_A}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ measures: ['reviews.avg_score'], dimensions: ['reviews.period'] }),
+      });
+
+    const primera = await (await peticion()).json();
+    const segunda = await (await peticion()).json();
+
+    assert.equal(primera.meta.servedFrom, 'live');
+    assert.equal(segunda.meta.servedFrom, 'cache-l1');
+    assert.deepEqual(segunda.rows, primera.rows);
   });
   it('rechaza con 401 la petición sin token y la de un token desconocido', async () => {
     const sinToken = await fetch(`${base}/analytics/query`, {

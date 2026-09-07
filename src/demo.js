@@ -11,6 +11,7 @@ import pg from 'pg';
 
 import { createCatalog } from './catalog.js';
 import { createEngine } from './engine.js';
+import { crearMemoryStore } from './cache/store.js';
 import { crearTelemetria } from './telemetry.js';
 import { introspect } from './introspect.js';
 import { registrarModulos } from './definitions/index.js';
@@ -56,7 +57,7 @@ try {
   const snapshot = await introspect(pool);
   const catalog = createCatalog();
   const advertencias = registrarModulos(catalog, snapshot);
-  const engine = createEngine({ catalog, pool, telemetria });
+  const engine = createEngine({ catalog, pool, telemetria, cache: crearMemoryStore() });
 
   titulo('CATÁLOGO PÚBLICO');
   imprimirCatalogo(catalog.describe(CTX));
@@ -78,6 +79,9 @@ try {
     console.log(sangrar(sql));
     console.log(`\nParámetros: ${JSON.stringify(params)}`);
 
+    // Cada pregunta se ejecuta dos veces: la primera va a la base, la segunda
+    // sale de la caché L1. Las filas son las mismas y el `asOf` también —el de
+    // la ejecución que las produjo—; lo único que cambia es `servedFrom`.
     const { rows, meta } = await engine.run(consulta, CTX);
     console.log('\nFilas:');
     console.log(sangrar(tabla(rows)));
@@ -85,6 +89,11 @@ try {
     if (meta.warnings.length > 0) {
       for (const aviso of meta.warnings) console.log(`  ⚠ ${aviso.member}: ${aviso.warning}`);
     }
+
+    const repetida = await engine.run(consulta, CTX);
+    console.log(
+      `\nsegunda ejecución: servedFrom=${repetida.meta.servedFrom} asOf=${repetida.meta.asOf} · ${repetida.rows.length} filas iguales`,
+    );
   }
 
   // Una consulta mal escrita, a propósito: así se ve el error estructurado y
@@ -104,7 +113,12 @@ try {
   console.log(`Por puerta que rechazó: ${JSON.stringify(contadores.byGate)}`);
   const { count, totalMs } = contadores.database;
   const promedio = count > 0 ? (totalMs / count).toFixed(1) : '0.0';
-  console.log(`Base de datos: ${count} consultas, ${totalMs.toFixed(1)} ms en total (${promedio} ms de promedio)\n`);
+  console.log(`Base de datos: ${count} consultas, ${totalMs.toFixed(1)} ms en total (${promedio} ms de promedio)`);
+  const { hits, misses, hitRatio } = contadores.cache;
+  console.log(
+    `Caché L1: ${hits} hits, ${misses} misses, hit ratio ${(hitRatio * 100).toFixed(0)} % ` +
+      `(${hits} de las ${contadores.byResult.ok} respuestas no tocaron la base)\n`,
+  );
 } finally {
   await pool.end();
 }

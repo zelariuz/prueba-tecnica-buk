@@ -10,6 +10,7 @@ import pg from 'pg';
 
 import { createCatalog } from './catalog.js';
 import { createEngine } from './engine.js';
+import { crearMemoryStore, MAXIMO_DE_ENTRADAS } from './cache/store.js';
 import { introspect } from './introspect.js';
 import { registrarModulos } from './definitions/index.js';
 import { crearServidor } from './http/server.js';
@@ -32,12 +33,16 @@ for (const aviso of advertencias) {
   console.warn(`[registro] ${aviso.entity} · ${aviso.member}: ${aviso.warning}`);
 }
 
-const engine = createEngine({ catalog, pool });
+// Caché L1: vive en el proceso, así que cada instancia del servicio tiene la
+// suya. Compartirla entre instancias es trabajo de la L2 en Redis (fase 8), que
+// entra por esta misma costura sin que el engine cambie.
+const engine = createEngine({ catalog, pool, cache: crearMemoryStore() });
 const servidor = crearServidor({ engine, catalog, tokens });
 
 servidor.listen(Number(PORT), HOST, () => {
   console.log(`Capa semántica escuchando en http://${HOST}:${PORT}`);
   console.log(`Catálogo versión ${catalog.version()} · ${Object.keys(tokens).length} tokens de demo`);
+  console.log(`Caché L1 en memoria: hasta ${MAXIMO_DE_ENTRADAS} entradas, TTL por clase de consumidor`);
 });
 
 for (const senal of ['SIGTERM', 'SIGINT']) {
