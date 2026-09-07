@@ -12,6 +12,9 @@
 //   * `INVALID_JSON` es el único código que nace en la capa HTTP: el cuerpo no
 //     llegó a ser una consulta declarativa, así que ninguna puerta del engine
 //     pudo opinar.
+//   * `PAYLOAD_TOO_LARGE` es 413: el cuerpo superó el techo que la capa HTTP le
+//     pone antes de leerlo entero. Nace aquí, como `INVALID_JSON`: ninguna
+//     puerta del engine llegó a ver una consulta.
 //   * `INVALID_DEFINITION` no está en la tabla a propósito: una definición mal
 //     declarada es un error del servidor, no de quien consulta.
 export const CODIGOS_HTTP = {
@@ -27,5 +30,6 @@ export const CODIGOS_HTTP = {
   UNKNOWN_QUERY: 400,
   MISSING_PARAM: 400,
   INVALID_JSON: 400,
+  PAYLOAD_TOO_LARGE: 413,
   QUERY_TIMEOUT: 504,
 };

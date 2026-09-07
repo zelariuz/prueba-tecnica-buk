@@ -57,7 +57,14 @@ export function crearServidor({ engine, catalog, tokens, registrarFallo = consol
       responder(respuesta, estado, cuerpo);
     } catch (error) {
       const estado = CODIGOS_HTTP[error?.code];
-      if (estado) return responder(respuesta, estado, cuerpoDeError(error));
+      if (estado) {
+        responder(respuesta, estado, cuerpoDeError(error));
+        // Un cuerpo que superó el techo deja bytes sin leer en el socket: no se
+        // siguen recibiendo los de algo que ya se rechazó. Se corta recién
+        // cuando la respuesta salió, para que el 413 alcance a llegar.
+        if (error.code === 'PAYLOAD_TOO_LARGE') respuesta.on('finish', () => peticion.destroy());
+        return;
+      }
       // Lo que no está en la tabla no es del consumidor: el detalle se queda en
       // el servidor y afuera sale sólo que algo falló.
       registrarFallo(error);
@@ -74,10 +81,32 @@ function tokenDe(peticion) {
   return encabezado.startsWith('Bearer ') ? encabezado.slice('Bearer '.length) : '';
 }
 
+// Techo del cuerpo de una petición. Una consulta declarativa son unos cientos
+// de bytes; 64 KiB deja margen para una lista de valores larga y sigue siendo
+// dos órdenes de magnitud menos de lo que hace falta para que un cliente llene
+// la memoria del servidor mandando un cuerpo sin fin.
+export const LIMITE_DE_CUERPO = 64 * 1024;
+
+// Se cuentan bytes y no caracteres: `texto.length` mide unidades UTF-16, así
+// que un cuerpo de acentos o emojis pasaría el techo sin que el contador lo
+// note. El iterador va con `destroyOnReturn: false` porque salir del bucle con
+// un throw destruiría el socket —y con él la respuesta 413 que el cliente
+// tiene que poder leer—; cortar la conexión es trabajo del handler, después de
+// que la respuesta salió.
 async function cuerpoDe(peticion) {
-  let texto = '';
-  for await (const trozo of peticion) texto += trozo;
-  return texto;
+  const trozos = [];
+  let bytes = 0;
+  for await (const trozo of peticion.iterator({ destroyOnReturn: false })) {
+    bytes += trozo.length;
+    if (bytes > LIMITE_DE_CUERPO) {
+      throw new SemanticError({
+        code: 'PAYLOAD_TOO_LARGE',
+        suggestion: `El cuerpo de la petición no puede superar los ${LIMITE_DE_CUERPO} bytes: una consulta declarativa no los necesita, revisa si estás mandando datos en vez de una consulta.`,
+      });
+    }
+    trozos.push(trozo);
+  }
+  return Buffer.concat(trozos).toString('utf8');
 }
 
 // Un cuerpo que no es JSON no llegó a ser una consulta declarativa: se rechaza

@@ -53,8 +53,9 @@ src/
                              consumidor y tiempo de base; inyectable y reiniciable
   canonical.js               serialización canónica compartida (versión del
                              catálogo y queryId)
-  http/server.js             las dos rutas con node:http; token → ctx y delega
-  http/codigos.js            mapa código de error → código HTTP
+  http/server.js             las dos rutas con node:http; token → ctx, techo de
+                             64 KiB al cuerpo y delega
+  http/codigos.js            mapa código de error → código HTTP (incluido 413)
   http/tokens.js             tabla de tokens de demo desde DEMO_TOKENS
   server.js                  bin del servicio `api`: introspecta, registra con
                              snapshot y escucha

@@ -102,8 +102,9 @@ equivalente en Cube, se indica para facilitar la lectura al equipo.
   `INVALID_DEFINITION` (la definición no cumple la forma o nombra algo que el
   esquema físico no tiene), `UNSUPPORTED_OPERATOR` (operador válido para el tipo
   de la dimensión que el planificador todavía no emite), `UNKNOWN_QUERY`
-  (consulta tipo inexistente) y `MISSING_PARAM` (falta un parámetro declarado
-  por la consulta tipo).
+  (consulta tipo inexistente), `MISSING_PARAM` (falta un parámetro declarado
+  por la consulta tipo) y `PAYLOAD_TOO_LARGE` (el cuerpo de la petición superó
+  el techo de la capa HTTP).
 - **Sugerencia**: el campo `suggestion` de un error. Cuando el problema es un
   nombre, sale de la **distancia de edición** (Levenshtein) contra los miembros
   conocidos, y solo se propone si el candidato está a menos de un tercio del
@@ -137,9 +138,15 @@ equivalente en Cube, se indica para facilitar la lectura al equipo.
   conocido no hay empresa que consultar: `MISSING_TENANT`.
 - **Mapa de códigos HTTP**: la tabla que traduce el código del error
   estructurado al código de estado (`src/http/codigos.js`). Lo que no está en
-  ella es un error del servidor: 500 sin detalles. `INVALID_JSON` es el único
-  código que nace en la capa HTTP —el cuerpo no llegó a ser una consulta
-  declarativa— y `QUERY_TIMEOUT` sale como 504.
+  ella es un error del servidor: 500 sin detalles. `INVALID_JSON` y
+  `PAYLOAD_TOO_LARGE` son los códigos que nacen en la capa HTTP —el cuerpo no
+  llegó a ser una consulta declarativa, o no llegó a leerse entero— y salen como
+  400 y 413; `QUERY_TIMEOUT` sale como 504.
+- **Techo del cuerpo**: los 64 KiB (`LIMITE_DE_CUERPO`) que la capa HTTP acepta
+  como máximo en el cuerpo de una petición. Se cuentan bytes mientras se lee,
+  así que un cuerpo sin fin nunca llega a crecer en memoria: al pasarse, la
+  lectura se corta con `PAYLOAD_TOO_LARGE` sin que el engine vea nada, y la
+  conexión se cierra una vez que la respuesta salió.
 - **Dry-run por la API**: `POST /analytics/query?dryRun=true` devuelve
   `{ sql, params, plan }` sin tocar la base. Va en la URL y no en el cuerpo
   porque el cuerpo es la consulta declarativa y nada más.

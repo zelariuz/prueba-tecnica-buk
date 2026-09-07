@@ -145,3 +145,66 @@ describe('capa HTTP', { ...conBase, timeout: 10_000 }, () => {
     assert.equal(plan.budget.consumer, 'dashboard');
   });
 });
+
+// Límite del cuerpo: un cuerpo gigante no puede crecer sin techo en memoria del
+// servidor. Se decide antes de que el engine vea nada, así que este bloque no
+// necesita base: el engine y el catálogo son dobles que fallan si alguien los
+// toca.
+const engineQueNadieDebeTocar = {
+  plan() {
+    throw new Error('un cuerpo demasiado grande no debe llegar al engine');
+  },
+  run() {
+    throw new Error('un cuerpo demasiado grande no debe llegar al engine');
+  },
+};
+
+const catalogQueNadieDebeTocar = {
+  describe() {
+    throw new Error('un cuerpo demasiado grande no debe llegar al catálogo');
+  },
+};
+
+describe('límite del cuerpo de la petición', { timeout: 10_000 }, () => {
+  let servidor;
+  let base;
+
+  before(async () => {
+    servidor = crearServidor({
+      engine: engineQueNadieDebeTocar,
+      catalog: catalogQueNadieDebeTocar,
+      tokens,
+    });
+    await new Promise((listo) => servidor.listen(0, '127.0.0.1', listo));
+    base = `http://127.0.0.1:${servidor.address().port}`;
+  });
+
+  after(async () => {
+    await new Promise((listo) => servidor.close(listo));
+  });
+
+  it('rechaza con 413 un cuerpo mayor a 64 KiB sin llegar al engine', async () => {
+    const respuesta = await fetch(`${base}/analytics/query`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${TOKEN_A}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ measures: ['reviews.count'], relleno: 'x'.repeat(70 * 1024) }),
+    });
+
+    assert.equal(respuesta.status, 413);
+    const error = await respuesta.json();
+    assert.equal(error.code, 'PAYLOAD_TOO_LARGE');
+    assert.match(error.suggestion, /65536/);
+  });
+
+  it('deja pasar un cuerpo dentro del límite', async () => {
+    const respuesta = await fetch(`${base}/analytics/query`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${TOKEN_A}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ measures: ['reviews.count'], relleno: 'x'.repeat(1024) }),
+    });
+
+    // El doble del engine lanza: lo que importa es que el cuerpo se leyó
+    // entero y la petición llegó hasta él, no la respuesta.
+    assert.equal(respuesta.status, 500);
+  });
+});
