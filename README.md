@@ -81,6 +81,17 @@ su directorio de datos, así que Docker crea un volumen anónimo que **sobrevive
 a recrear el contenedor. Sin esa opción el contenedor es nuevo pero los datos son
 los viejos, y el seed no se vuelve a aplicar.
 
+### Fechas y zonas horarias (supuesto v1)
+
+Las columnas temporales del caso (`hire_date`, `period`, `date`) son `DATE`: un
+día calendario sin zona, que se asume **ya resuelto al día local de la empresa**
+por quien lo escribió. La capa no convierte fechas y las devuelve como texto
+`YYYY-MM-DD` desde SQL, así que la zona del proceso o del servidor (convención:
+UTC-0) no cambia el resultado. Si una entidad futura trae un `timestamptz`, la
+zona pasa a ser un dato de la empresa en el catálogo y el dialecto la aplica con
+`AT TIME ZONE`; un `timestamp` sin zona se rechaza al registrar. Detalle en
+`docs/riesgos.md`.
+
 ## Cómo se consulta
 
 ```js
