@@ -77,6 +77,7 @@ describe('conteo de evaluaciones por estado', conBase, () => {
 const casoObligatorio = {
   measures: ['reviews.avg_score', 'reviews.completed_count'],
   dimensions: ['departments.name'],
+  segments: ['reviews.completed'],
   timeDimensions: [
     {
       dimension: 'reviews.period',
@@ -128,6 +129,8 @@ describe('score promedio y evaluaciones completadas por departamento y trimestre
     const periodos = rows.map((fila) => fila['reviews.period']);
     assert.deepEqual(periodos, [...periodos].sort(), 'las filas vienen por trimestre ascendente');
 
+    // Solo evaluaciones completadas, como el SQL de referencia del caso: Ventas
+    // no tiene ninguna en 2025 (una calibrada y una pendiente) y no aparece.
     assert.deepEqual(porDepartamentoYTrimestre(rows), [
       {
         'departments.name': 'Ingeniería',
@@ -136,22 +139,10 @@ describe('score promedio y evaluaciones completadas por departamento y trimestre
         'reviews.completed_count': 2,
       },
       {
-        'departments.name': 'Ventas',
-        'reviews.period': '2025-01-01',
-        'reviews.avg_score': 3.5,
-        'reviews.completed_count': 0,
-      },
-      {
         'departments.name': 'Ingeniería',
         'reviews.period': '2025-04-01',
-        'reviews.avg_score': 3.4,
+        'reviews.avg_score': 3.8,
         'reviews.completed_count': 1,
-      },
-      {
-        'departments.name': 'Ventas',
-        'reviews.period': '2025-04-01',
-        'reviews.avg_score': 2.9,
-        'reviews.completed_count': 0,
       },
     ]);
   });
@@ -164,12 +155,6 @@ describe('score promedio y evaluaciones completadas por departamento y trimestre
         'reviews.period': '2025-01-01',
         'reviews.avg_score': 4.1,
         'reviews.completed_count': 1,
-      },
-      {
-        'departments.name': 'Ventas',
-        'reviews.period': '2025-01-01',
-        'reviews.avg_score': 3.2,
-        'reviews.completed_count': 0,
       },
       {
         'departments.name': 'Ingeniería',

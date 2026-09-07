@@ -130,6 +130,7 @@ await engine.run(
   {
     measures: ['reviews.avg_score', 'reviews.completed_count'],
     dimensions: ['departments.name'],
+    segments: ['reviews.completed'],
     timeDimensions: [
       { dimension: 'reviews.period', granularity: 'quarter', dateRange: ['2025-01-01', '2025-12-31'] },
     ],
@@ -141,7 +142,12 @@ await engine.run(
 ```
 
 El SQL que genera está en `test/snapshots/caso-obligatorio.sql`, comparado por
-igualdad en cada corrida de tests. El rango temporal es cerrado en ambos
+igualdad en cada corrida de tests. El segmento `reviews.completed` va como
+filtro global porque el SQL de referencia del caso aplica `status = 'completed'`
+a toda la consulta: el promedio se calcula solo sobre evaluaciones completadas,
+no sobre pendientes ni calibradas. Dentro de ese conjunto `completed_count`
+cuenta lo mismo que `count`; se pide por su nombre de negocio (regla 2 de
+`docs/semantica-de-filtros.md`). El rango temporal es cerrado en ambos
 extremos (`>= $2 AND <= $3`, como el `dateRange` de Cube) y viaja dentro de la
 CTE de las evaluaciones; el trimestre vuelve como texto ISO (`2025-01-01`) para
 que no dependa de la zona horaria del proceso.

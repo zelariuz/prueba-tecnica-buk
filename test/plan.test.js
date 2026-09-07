@@ -243,6 +243,7 @@ test('medidas de dos entidades cortan con MULTI_ENTITY_MEASURES', () => {
 const casoObligatorio = {
   measures: ['reviews.avg_score', 'reviews.completed_count'],
   dimensions: ['departments.name'],
+  segments: ['reviews.completed'],
   timeDimensions: [
     {
       dimension: 'reviews.period',
@@ -261,7 +262,7 @@ test('el SQL del caso obligatorio es el del snapshot del repo', () => {
   // en el repo; si el SQL cambia a propósito, se edita ese archivo.
   const esperado = readFileSync(new URL('./snapshots/caso-obligatorio.sql', import.meta.url), 'utf8');
   assert.equal(sql, esperado.trimEnd());
-  assert.deepEqual(params, [EMPRESA, '2025-01-01', '2025-12-31', 'completed', 500]);
+  assert.deepEqual(params, [EMPRESA, '2025-01-01', '2025-12-31', 'completed', 'completed', 500]);
 });
 
 test('el SQL de la completitud por departamento es el del snapshot del repo', () => {

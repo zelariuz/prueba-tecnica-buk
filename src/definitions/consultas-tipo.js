@@ -15,6 +15,10 @@ export const consultasTipo = [
     query: {
       measures: ['reviews.avg_score', 'reviews.completed_count'],
       dimensions: ['departments.name'],
+      // El segmento como filtro global: el promedio y el conteo se calculan
+      // sobre las evaluaciones completadas, igual que el SQL de referencia del
+      // caso (docs/semantica-de-filtros.md, regla 1).
+      segments: ['reviews.completed'],
       timeDimensions: [
         { dimension: 'reviews.period', granularity: 'quarter', dateRange: ':dateRange' },
       ],
