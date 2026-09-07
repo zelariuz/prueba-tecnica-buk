@@ -1,0 +1,82 @@
+# Capa Semántica de Analítica
+
+Capa que expone los datos de cada módulo bajo nombres de negocio: un módulo
+declara su **definición semántica**, el **catálogo** la registra y el **engine**
+traduce una consulta declarativa a SQL, la ejecuta y devuelve filas con nombres
+semánticos. El aislamiento por empresa es del motor, no del consumidor.
+
+- Diseño y decisiones: `prds/prd-capa-semantica.md`, `docs/adr/`.
+- Plan de construcción por fases: `plans/plan-capa-semantica.md`.
+- Vocabulario: `CONTEXT.md`.
+
+Estado actual: **fase 1** — una consulta de punta a punta (conteo de
+evaluaciones por estado, para una empresa).
+
+## Requisitos
+
+- Node 24 o superior.
+- Docker con Compose.
+
+## Cómo correr
+
+```bash
+npm install
+docker compose up -d db          # Postgres 16 con el esquema del caso y el seed
+cp .env.example .env             # opcional: referencia de variables
+
+export DATABASE_URL=postgres://capa:capa@localhost:5433/capa_semantica
+npm test
+```
+
+El host publica Postgres en el puerto **5433** (no 5432) para no chocar con un
+Postgres instalado localmente. La contraseña del compose es de juguete y sirve
+solo para este entorno local.
+
+Los tests que necesitan base leen `DATABASE_URL` y **se saltan con aviso** si no
+está definida:
+
+```
+﹣ conteo de evaluaciones por estado # falta DATABASE_URL — levanta la base con `docker compose up -d db` (ver README)
+```
+
+`docker compose up -d redis` deja levantada la caché L2; todavía no la usa nadie
+(entra en la última fase del plan).
+
+## Base de datos
+
+La base es **efímera a propósito**: el compose no monta volumen persistente, así
+que recrear el contenedor vuelve a aplicar `docker/init/01-schema.sql` (el
+esquema del caso, sin cambios) y `docker/init/02-seed.sql` (seed determinista de
+dos empresas). Los conteos esperados están calculados a mano en el encabezado
+del seed; los tests los usan como literales.
+
+```bash
+docker compose up -d --force-recreate db   # vuelve a cero: esquema + seed
+```
+
+## Cómo se consulta
+
+```js
+const catalog = createCatalog();
+catalog.register(reviews);
+const engine = createEngine({ catalog, pool });
+
+await engine.run(
+  { measures: ['reviews.count'], dimensions: ['reviews.status'] },
+  { companyId: 1, consumer: 'api' },
+);
+```
+
+La empresa viaja en el contexto de sesión, nunca en la consulta, y aterriza como
+parámetro dentro de la CTE de cada entidad (ADR 0003):
+
+```sql
+WITH reviews AS (
+  SELECT status
+  FROM performance_reviews
+  WHERE company_id = $1
+)
+SELECT status AS "reviews.status", COUNT(*) AS "reviews.count"
+FROM reviews
+GROUP BY status
+```
