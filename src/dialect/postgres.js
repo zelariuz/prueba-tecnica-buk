@@ -2,7 +2,9 @@
 // planificador para elegir la sintaxis (CONTEXT.md, "Dialecto"). Es la única
 // pieza que conoce sintaxis específica de PostgreSQL; el engine emite SQL
 // estándar y le pide a esta tabla lo que varía entre motores.
-const GRANULARIDADES = new Set(['day', 'week', 'month', 'quarter', 'year']);
+import { GRANULARIDADES } from '../vocabulary.js';
+
+const SOPORTADAS = new Set(GRANULARIDADES);
 
 export const postgres = {
   name: 'postgres',
@@ -17,7 +19,7 @@ export const postgres = {
   // convierte DATE a un Date de JavaScript corrido a la zona del proceso, y el
   // valor de una dimensión temporal debe ser el mismo en cualquier máquina.
   dateTrunc(granularidad, expresion) {
-    if (!GRANULARIDADES.has(granularidad)) {
+    if (!SOPORTADAS.has(granularidad)) {
       throw new Error(`Granularidad no soportada por el dialecto: ${granularidad}`);
     }
     return `TO_CHAR(DATE_TRUNC('${granularidad}', ${expresion}), 'YYYY-MM-DD')`;
