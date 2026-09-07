@@ -32,7 +32,8 @@ test('el plan encierra las evaluaciones en una CTE filtrada por empresa', () => 
 
   assert.match(sql, /WITH reviews AS \(/);
   assert.match(sql, /FROM performance_reviews\s+WHERE company_id = \$1/);
-  assert.deepEqual(params, [EMPRESA]);
+  // El último parámetro es el límite del consumidor: ninguna consulta sale sin LIMIT.
+  assert.deepEqual(params, [EMPRESA, 10000]);
   assert.ok(
     !sql.includes(String(EMPRESA)),
     'la empresa viaja como parámetro, nunca interpolada en el SQL',
@@ -89,7 +90,7 @@ test('cada entidad del camino viaja en su propia CTE filtrada por empresa', () =
     );
   }
   assert.equal(sql.match(/company_id = \$1/g).length, 3);
-  assert.deepEqual(params, [EMPRESA]);
+  assert.deepEqual(params, [EMPRESA, 10000]);
 });
 
 test('la medida avg promedia la columna declarada de su entidad', () => {
@@ -123,7 +124,7 @@ test('la dimensión temporal agrupa por granularidad y su rango viaja como pará
   );
   // El rango acota la CTE de la entidad temporal, no el resultado ya agregado.
   assert.match(sql, /WHERE company_id = \$1\s+AND period >= \$2\s+AND period <= \$3/);
-  assert.deepEqual(params, [EMPRESA, '2025-01-01', '2025-12-31']);
+  assert.deepEqual(params, [EMPRESA, '2025-01-01', '2025-12-31', 10000]);
 });
 
 test('la medida con segmento se agrega con COUNT FILTER y su valor viaja como parámetro', () => {
@@ -136,7 +137,7 @@ test('la medida con segmento se agrega con COUNT FILTER y su valor viaja como pa
     sql,
     /COUNT\(\*\) FILTER \(WHERE reviews\.status = \$2\) AS "reviews\.completed_count"/,
   );
-  assert.deepEqual(params, [EMPRESA, 'completed']);
+  assert.deepEqual(params, [EMPRESA, 'completed', 10000]);
 });
 
 test('order ordena por el nombre semántico y limit viaja como parámetro', () => {
@@ -161,7 +162,10 @@ test('medidas de dos entidades cortan con MULTI_ENTITY_MEASURES', () => {
 
   assert.equal(error.code, 'MULTI_ENTITY_MEASURES');
   assert.equal(error.member, 'employees.headcount');
-  assert.ok(error.suggestion.length > 0, 'el error estructurado trae sugerencia');
+  // El mensaje nombra las dos entidades en conflicto: quien lo lee sabe cuál
+  // es la entidad de hechos y cuál la medida que sobra.
+  assert.match(error.suggestion, /\breviews\b/);
+  assert.match(error.suggestion, /\bemployees\b/);
 });
 
 // La consulta del caso, tal cual la escribiría un dashboard.
@@ -212,4 +216,77 @@ test('order acepta una medida o una dimensión temporal de la consulta', () => {
   );
 
   assert.match(sql, /ORDER BY "reviews\.count" DESC, "reviews\.period" ASC/);
+});
+
+test('companyId o consumer dentro del JSON cortan con FORBIDDEN_FIELD', () => {
+  // El contexto de sesión lo construye el servidor desde el token (ADR 0002):
+  // no existe forma de expresar otra empresa ni otra clase de consumidor en la
+  // consulta.
+  for (const campo of ['companyId', 'consumer']) {
+    const error = errorDe(() => engineDePrueba().plan({ ...conteoPorEstado, [campo]: 7 }, CTX));
+
+    assert.equal(error.code, 'FORBIDDEN_FIELD');
+    assert.equal(error.member, campo);
+    assert.match(error.suggestion, /token/);
+  }
+});
+
+test('un consumidor desconocido o ausente no obtiene presupuesto', () => {
+  const engine = engineDePrueba();
+
+  for (const consumer of [undefined, 'root', 'API']) {
+    const error = errorDe(() => engine.plan(conteoPorEstado, { companyId: EMPRESA, consumer }));
+
+    assert.equal(error.code, 'INVALID_CONSUMER');
+    assert.equal(error.member, 'consumer');
+    assert.match(error.suggestion, /dashboard/);
+  }
+});
+
+test('el límite efectivo es el menor entre el pedido y el máximo del consumidor', () => {
+  const engine = engineDePrueba();
+
+  // El agente tiene el presupuesto más chico: 1000 filas.
+  const ctxAgente = { companyId: EMPRESA, consumer: 'agent' };
+  const { params: recortado } = engine.plan({ ...porTrimestreDe2025, limit: 50000 }, ctxAgente);
+  assert.deepEqual(recortado, [EMPRESA, '2025-01-01', '2025-12-31', 1000]);
+
+  const { params: respetado } = engine.plan({ ...porTrimestreDe2025, limit: 10 }, ctxAgente);
+  assert.deepEqual(respetado, [EMPRESA, '2025-01-01', '2025-12-31', 10]);
+
+  // Sin limit pedido, manda el máximo del consumidor: ninguna consulta sale sin
+  // LIMIT hacia la base.
+  const { sql, params } = engine.plan(porTrimestreDe2025, { companyId: EMPRESA, consumer: 'api' });
+  assert.match(sql, /LIMIT \$4$/);
+  assert.deepEqual(params, [EMPRESA, '2025-01-01', '2025-12-31', 10000]);
+});
+
+const sinRango = {
+  measures: ['reviews.count'],
+  timeDimensions: [{ dimension: 'reviews.period', granularity: 'quarter' }],
+};
+
+test('el consumidor con rango obligatorio no puede consultar sin dateRange', () => {
+  const engine = engineDePrueba();
+
+  // Sin dimensión temporal siquiera.
+  const sinTemporal = errorDe(() =>
+    engine.plan(conteoPorEstado, { companyId: EMPRESA, consumer: 'agent' }),
+  );
+  assert.equal(sinTemporal.code, 'MISSING_TIME_RANGE');
+  assert.equal(sinTemporal.member, 'timeDimensions');
+  assert.ok(sinTemporal.suggestion.length > 0, 'el error estructurado trae sugerencia');
+
+  // Con dimensión temporal, pero sin acotar el rango.
+  const conTemporal = errorDe(() =>
+    engine.plan(sinRango, { companyId: EMPRESA, consumer: 'agent' }),
+  );
+  assert.equal(conTemporal.code, 'MISSING_TIME_RANGE');
+  assert.equal(conTemporal.member, 'reviews.period');
+});
+
+test('la misma consulta sin rango la planifica un consumidor sin rango obligatorio', () => {
+  const { sql } = engineDePrueba().plan(sinRango, { companyId: EMPRESA, consumer: 'dashboard' });
+
+  assert.match(sql, /GROUP BY TO_CHAR\(DATE_TRUNC\('quarter', reviews\.period\)/);
 });

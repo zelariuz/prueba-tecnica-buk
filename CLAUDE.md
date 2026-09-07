@@ -28,8 +28,10 @@ src/
   definitions/employees.js   empleados: puente hacia departamentos
   definitions/departments.js departamentos: dimensión name
   dialect/postgres.js        capacidades del motor (dateTrunc, agregadoFiltrado)
+  budgets.js                 presupuesto por clase de consumidor (timeout, filas, rango)
   catalog.js                 registro de definiciones en memoria
   engine.js                  planificación (BFS de joins + CTE + agregación) y ejecución
+                             transaccional con SET LOCAL statement_timeout
   errors.js                  SemanticError { code, member, suggestion }
 test/
   plan.test.js               seam engine.plan — sin base
@@ -76,11 +78,44 @@ docker compose up -d --force-recreate db      # re-aplicar esquema y seed
 - El snapshot del SQL es un archivo `.sql` legible del repo comparado por
   igualdad; si el SQL cambia a propósito, se edita ese archivo.
 
+## Decisiones de la fase 3
+
+- El presupuesto lo fija la clase de consumidor del contexto de sesión, nunca la
+  consulta: `dashboard` 5 s y 5000 filas, `api` 15 s y 10000, `agent` 10 s, 1000
+  y rango temporal obligatorio. Clase desconocida o ausente → `INVALID_CONSUMER`
+  (código nuevo, no estaba en el PRD): sin clase no hay presupuesto y sin
+  presupuesto no se ejecuta.
+- Ninguna consulta sale sin `LIMIT`: el límite efectivo es el menor entre el
+  pedido y el máximo de la clase; sin `limit` pedido manda el máximo. Por eso
+  todos los planes llevan un parámetro más que en la fase 2.
+- La llave de `order` solo puede ser un miembro que la consulta devuelve
+  (`UNKNOWN_MEMBER` si no): termina como identificador entre comillas en el SQL.
+- Ejecución: cliente del pool, `BEGIN`, `SET LOCAL statement_timeout`, consulta,
+  `COMMIT`; `ROLLBACK` ante error y `release()` en el `finally`. `SET LOCAL`
+  fuera de una transacción se ignora y dentro se deshace al cerrarla: la
+  conexión vuelve al pool sin el estado de la petición. El valor se interpola
+  (SET no acepta parámetros) y por eso se valida como entero del presupuesto.
+- Postgres corta con `57014` (query_canceled); el engine lo traduce a
+  `QUERY_TIMEOUT` (código nuevo, no estaba en el PRD) con sugerencia de qué
+  reducir.
+- `createEngine` acepta `presupuestos` inyectados: es la costura que permite
+  probar un presupuesto extremo sin tocar la tabla real. El timeout no se puede
+  forzar bajando el presupuesto a 1 ms (medido: la consulta del caso termina
+  antes en 48 de 50 corridas), así que el test de timeout usa un doble delgado
+  del pool que cambia el texto de la consulta principal por `pg_sleep`: sin SQL
+  en las definiciones y sin tocar el seed.
+
 ## Estado
+
+Fase 3 terminada: guardarraíles del consumidor — presupuestos por clase,
+`FORBIDDEN_FIELD` para `companyId`/`consumer` en el JSON, `MISSING_TIME_RANGE`
+para el agente sin rango, límite efectivo, timeout transaccional con conexión
+que vuelve limpia al pool y aislamiento verificado en cien consultas alternadas
+sobre una sola conexión. Siguiente: fase 4 (catálogo validado, `describe()` y
+sugerencias por distancia de edición).
 
 Fase 2 terminada: el caso obligatorio de punta a punta —joins por relaciones,
 CTE por entidad con su filtro de empresa, `timeDimensions` con granularidad y
 rango, medida `avg`, medida filtrada por segmento con `COUNT(*) FILTER`,
 `order`, `limit`, conversión de `int8`/`numeric` a número y error
-`MULTI_ENTITY_MEASURES`. Siguiente: fase 3 (guardarraíles: presupuestos por
-consumidor, `UNKNOWN_MEMBER` con sugerencia, `MISSING_TIME_RANGE`).
+`MULTI_ENTITY_MEASURES`.

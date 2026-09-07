@@ -2,6 +2,7 @@
 // contra el catálogo y genera el SQL. No conoce módulos concretos (ADR 0001).
 import { createHash } from 'node:crypto';
 
+import { presupuestos as presupuestosPorDefecto, presupuestoDe } from './budgets.js';
 import { postgres } from './dialect/postgres.js';
 import { SemanticError } from './errors.js';
 
@@ -16,6 +17,21 @@ function exigirEmpresa(ctx) {
       member: 'companyId',
       suggestion:
         'La aplicación debe pasar el contexto de sesión { companyId, consumer } como segundo argumento; no se acepta dentro de la consulta.',
+    });
+  }
+}
+
+// El contexto de sesión no tiene forma de expresarse en la consulta: si el JSON
+// trae uno de sus campos, es un intento de elegir empresa o presupuesto propio.
+const CAMPOS_PROHIBIDOS = ['companyId', 'consumer'];
+
+function rechazarCamposDeContexto(query) {
+  for (const campo of CAMPOS_PROHIBIDOS) {
+    if (query?.[campo] === undefined) continue;
+    throw new SemanticError({
+      code: 'FORBIDDEN_FIELD',
+      member: campo,
+      suggestion: 'El contexto lo construye el servidor desde el token; quita este campo de la consulta.',
     });
   }
 }
@@ -80,9 +96,18 @@ function caminoDeJoins(catalog, raiz, destinos) {
   return aristas;
 }
 
-export function createEngine({ catalog, pool, dialect = postgres }) {
+// `presupuestos` se inyecta para poder probar el comportamiento bajo un
+// presupuesto extremo (por ejemplo un timeout de 1 ms) sin tocar la tabla real.
+export function createEngine({
+  catalog,
+  pool,
+  dialect = postgres,
+  presupuestos = presupuestosPorDefecto,
+}) {
   function planificar(query, ctx) {
+    rechazarCamposDeContexto(query);
     exigirEmpresa(ctx);
+    const presupuesto = presupuestoDe(ctx.consumer, presupuestos);
 
     // Los valores literales de la consulta viajan como parámetros: dos
     // consultas con la misma forma generan exactamente el mismo SQL.
@@ -118,6 +143,21 @@ export function createEngine({ catalog, pool, dialect = postgres }) {
         `${columna} >= ${parametro(desde)}`,
         `${columna} <= ${parametro(hasta)}`,
       ]);
+    }
+
+    // El presupuesto del agente exige acotar el tiempo: una consulta sin rango
+    // sobre toda la historia es la forma más fácil de fabricar una consulta que
+    // no termina.
+    if (presupuesto.rangoObligatorio) {
+      const temporales = query.timeDimensions ?? [];
+      if (!temporales.some((temporal) => temporal.dateRange)) {
+        throw new SemanticError({
+          code: 'MISSING_TIME_RANGE',
+          member: temporales[0]?.dimension ?? 'timeDimensions',
+          suggestion:
+            'Tu clase de consumidor exige acotar el tiempo: agrega timeDimensions con dateRange [desde, hasta].',
+        });
+      }
     }
 
     // Una sola entidad de hechos en v1: medidas de dos entidades en el mismo
@@ -234,10 +274,12 @@ export function createEngine({ catalog, pool, dialect = postgres }) {
       `FROM ${raiz}${joins.join('')}`,
       ...(agrupacion.length ? [`GROUP BY ${agrupacion.join(', ')}`] : []),
       ...(orden.length ? [`ORDER BY ${orden.join(', ')}`] : []),
-      ...(query.limit == null ? [] : [`LIMIT ${parametro(query.limit)}`]),
+      // Ninguna consulta sale sin LIMIT: el pedido nunca supera el máximo de
+      // la clase de consumidor, y si no pide, manda ese máximo.
+      `LIMIT ${parametro(Math.min(query.limit ?? presupuesto.maxFilas, presupuesto.maxFilas))}`,
     ].join('\n');
 
-    return { sql, params, medidas };
+    return { sql, params, medidas, presupuesto };
   }
 
   // Dry-run: el plan sin tocar la base.
@@ -246,21 +288,62 @@ export function createEngine({ catalog, pool, dialect = postgres }) {
     return { sql, params };
   }
 
+  // El timeout se fija con SET LOCAL dentro de la transacción: fuera de una
+  // transacción Postgres lo ignora, y dentro se deshace al cerrarla, así que la
+  // conexión vuelve al pool sin el estado de esta petición. El cliente se
+  // libera siempre, y ante un error se hace ROLLBACK antes de soltarlo para que
+  // la siguiente petición no herede una transacción abierta.
+  async function ejecutar(sql, params, presupuesto) {
+    const cliente = await pool.connect();
+    try {
+      await cliente.query('BEGIN');
+      // SET no admite parámetros: el valor se interpola y por eso solo puede
+      // venir de la tabla de presupuestos, ya validado como entero.
+      await cliente.query(`SET LOCAL statement_timeout = ${milisegundos(presupuesto)}`);
+      const resultado = await cliente.query(sql, params);
+      await cliente.query('COMMIT');
+      return resultado.rows;
+    } catch (error) {
+      await cliente.query('ROLLBACK').catch(() => {});
+      throw traducirErrorDeBase(error, presupuesto);
+    } finally {
+      cliente.release();
+    }
+  }
+
   async function run(query, ctx) {
-    const { sql, params, medidas } = planificar(query, ctx);
+    const { sql, params, medidas, presupuesto } = planificar(query, ctx);
 
     // Instante en que se ejecutó la consulta que produjo el resultado; cuando
     // haya caché, la entrada guardada conserva su propio asOf.
     const asOf = new Date().toISOString();
-    const resultado = await pool.query(sql, params);
+    const filas = await ejecutar(sql, params, presupuesto);
 
     return {
-      rows: aNumeros(resultado.rows, medidas),
+      rows: aNumeros(filas, medidas),
       meta: { servedFrom: 'live', asOf, queryId: identificarConsulta(query, ctx) },
     };
   }
 
   return { plan, run };
+}
+
+function milisegundos(presupuesto) {
+  if (!Number.isInteger(presupuesto.timeoutMs) || presupuesto.timeoutMs <= 0) {
+    throw new Error(`Timeout de presupuesto inválido: ${presupuesto.timeoutMs}`);
+  }
+  return presupuesto.timeoutMs;
+}
+
+// Postgres cancela la consulta que pasa el statement_timeout con el código
+// 57014 (query_canceled). Para el consumidor no es un fallo de la base: es su
+// presupuesto agotado, y como tal vuelve con sugerencia de qué reducir.
+function traducirErrorDeBase(error, presupuesto) {
+  if (error?.code !== '57014') return error;
+  return new SemanticError({
+    code: 'QUERY_TIMEOUT',
+    suggestion: `La consulta superó los ${presupuesto.timeoutMs} ms de presupuesto de tu clase de consumidor: acota el rango temporal, sube la granularidad o pide menos dimensiones.`,
+  });
 }
 
 // Postgres devuelve int8 y numeric como texto para no perder precisión; las

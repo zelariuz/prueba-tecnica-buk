@@ -9,8 +9,9 @@ semánticos. El aislamiento por empresa es del motor, no del consumidor.
 - Plan de construcción por fases: `plans/plan-capa-semantica.md`.
 - Vocabulario: `CONTEXT.md`.
 
-Estado actual: **fase 1** — una consulta de punta a punta (conteo de
-evaluaciones por estado, para una empresa).
+Estado actual: **fase 3** — el caso obligatorio de punta a punta más los
+guardarraíles del consumidor: presupuesto por clase (timeout, máximo de filas,
+rango temporal obligatorio) y rechazos con error estructurado.
 
 ## Requisitos
 

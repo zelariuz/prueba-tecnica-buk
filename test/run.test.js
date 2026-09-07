@@ -206,3 +206,122 @@ describe('score promedio y evaluaciones completadas por departamento y trimestre
     assert.deepEqual(conteoPorTrimestre(conJoin), { '2025-01-01': 3, '2025-04-01': 3 });
   });
 });
+
+// Doble delgado del pool: entrega clientes reales y solo reemplaza el texto de
+// la consulta principal —la única que viaja con parámetros— por una que duerme.
+// Es la forma de provocar un timeout real sin meter SQL en una definición ni
+// cambiar el seed; todo lo demás (BEGIN, SET LOCAL, COMMIT, ROLLBACK) es el que
+// emite el engine.
+function poolQueDuerme(pool, segundos) {
+  return {
+    async connect() {
+      const cliente = await pool.connect();
+      return {
+        query: (texto, params) =>
+          params === undefined ? cliente.query(texto) : cliente.query(`SELECT pg_sleep(${segundos})`),
+        release: (destruir) => cliente.release(destruir),
+      };
+    },
+  };
+}
+
+async function errorAlEsperar(promesa) {
+  try {
+    await promesa;
+  } catch (error) {
+    return error;
+  }
+  assert.fail('se esperaba un error estructurado y la llamada no falló');
+}
+
+describe('guardarraíles del consumidor', conBase, () => {
+  let pool;
+  let catalog;
+  let engine;
+
+  before(() => {
+    // Tamaño 1 a propósito: si una petición dejara la conexión sucia o sin
+    // liberar, la siguiente lo nota de inmediato.
+    pool = new pg.Pool({ connectionString: DATABASE_URL, max: 1 });
+    catalog = createCatalog();
+    for (const definicion of [reviews, employees, departments]) catalog.register(definicion);
+    engine = createEngine({ catalog, pool });
+  });
+
+  after(async () => {
+    await pool.end();
+  });
+
+  it('la consulta que excede el timeout corta y devuelve la conexión limpia al pool', async () => {
+    const impaciente = createEngine({
+      catalog,
+      pool: poolQueDuerme(pool, 1),
+      presupuestos: { api: { timeoutMs: 50, maxFilas: 10_000, rangoObligatorio: false } },
+    });
+
+    const error = await errorAlEsperar(
+      impaciente.run(conteoPorEstado, { companyId: EMPRESA_A, consumer: 'api' }),
+    );
+    assert.equal(error.code, 'QUERY_TIMEOUT');
+    assert.ok(error.suggestion.length > 0, 'el error estructurado trae sugerencia');
+
+    // Con el pool en tamaño 1, esto solo funciona si la conexión volvió con su
+    // transacción cerrada y disponible.
+    const { rows } = await engine.run(conteoPorEstado, { companyId: EMPRESA_A, consumer: 'api' });
+    assert.deepEqual(porEstado(rows), { completed: 5, pending: 4, calibrated: 2 });
+  });
+
+  it('el agente sin rango temporal no ejecuta; el dashboard con la misma consulta sí', async () => {
+    const error = await errorAlEsperar(
+      engine.run(conteoPorEstado, { companyId: EMPRESA_A, consumer: 'agent' }),
+    );
+    assert.equal(error.code, 'MISSING_TIME_RANGE');
+
+    const { rows } = await engine.run(conteoPorEstado, {
+      companyId: EMPRESA_A,
+      consumer: 'dashboard',
+    });
+    assert.deepEqual(porEstado(rows), { completed: 5, pending: 4, calibrated: 2 });
+  });
+
+  it('cien consultas alternando empresas sobre una sola conexión no cruzan datos', async () => {
+    // Los valores son los literales del seed, no recalculados desde los datos.
+    const esperado = {
+      [EMPRESA_A]: { completed: 5, pending: 4, calibrated: 2 },
+      [EMPRESA_B]: { completed: 3, pending: 1, calibrated: 1 },
+    };
+
+    for (let vuelta = 0; vuelta < 100; vuelta += 1) {
+      const companyId = vuelta % 2 === 0 ? EMPRESA_A : EMPRESA_B;
+      const { rows } = await engine.run(conteoPorEstado, { companyId, consumer: 'api' });
+
+      assert.deepEqual(porEstado(rows), esperado[companyId], `vuelta ${vuelta}`);
+    }
+  });
+
+  it('el máximo de filas del consumidor recorta lo que llega desde la base', async () => {
+    const acotado = createEngine({
+      catalog,
+      pool,
+      presupuestos: { dashboard: { timeoutMs: 5_000, maxFilas: 2, rangoObligatorio: false } },
+    });
+    const ctx = { companyId: EMPRESA_A, consumer: 'dashboard' };
+
+    // La consulta pide 100 filas; su clase de consumidor solo le permite 2.
+    const { rows } = await acotado.run({ ...conteoPorEstado, limit: 100 }, ctx);
+    assert.equal(rows.length, 2);
+
+    // Con el presupuesto real de dashboard (5000 filas) vuelven los tres estados.
+    const { rows: completas } = await engine.run(conteoPorEstado, ctx);
+    assert.equal(completas.length, 3);
+  });
+
+  it('el timeout de una petición no contamina la siguiente que usa la misma conexión', async () => {
+    // Un segundo durmiendo sobre el presupuesto real de `api` (15 s) pasa; si
+    // el SET LOCAL de la petición anterior hubiera quedado pegado a la
+    // conexión, esta consulta moriría a los 50 ms.
+    const dormilon = createEngine({ catalog, pool: poolQueDuerme(pool, 1) });
+
+    await dormilon.run(conteoPorEstado, { companyId: EMPRESA_A, consumer: 'api' });
+  });
+});

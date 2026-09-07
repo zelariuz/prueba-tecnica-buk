@@ -66,7 +66,9 @@ equivalente en Cube, se indica para facilitar la lectura al equipo.
   joins, medidas y dimensiones resueltas. Es lo que devuelve el dry-run.
 - **Error estructurado**: `{ code, member?, suggestion? }`. Códigos:
   `UNKNOWN_MEMBER`, `NO_JOIN_PATH`, `MISSING_TENANT`, `FORBIDDEN_FIELD`,
-  `MULTI_ENTITY_MEASURES`, `MISSING_TIME_RANGE`, `INVALID_OPERATOR`.
+  `MULTI_ENTITY_MEASURES`, `MISSING_TIME_RANGE`, `INVALID_OPERATOR`,
+  `INVALID_CONSUMER` (clase de consumidor desconocida o ausente en el contexto)
+  y `QUERY_TIMEOUT` (la ejecución superó el timeout del presupuesto).
 - **Forma de la consulta**: la consulta con sus valores literales reemplazados
   por parámetros. Dos consultas con la misma forma generan el mismo SQL.
 - **Fuente**: conexión física a una base: motor, versión, dialecto, presupuesto.
