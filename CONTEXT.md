@@ -114,18 +114,40 @@ equivalente en Cube, se indica para facilitar la lectura al equipo.
   catálogo la publica y el engine la aplica.
 - **Forma de la consulta**: la consulta con sus valores literales reemplazados
   por parámetros. Dos consultas con la misma forma generan el mismo SQL.
+- **CacheStore**: la interfaz de caché del engine —`get(key)`, `set(key, value,
+  ttlMs)`, `delete(key)`, los tres async—. `MemoryStore` es su implementación L1,
+  en memoria del proceso; `RedisStore` (L2, compartida entre instancias) es la
+  misma interfaz.
+- **Llave de caché**: **es** el `queryId`. No hay dos hashes: la forma canónica
+  de la consulta con sus parámetros, la empresa y la versión del catálogo son
+  exactamente lo que decide si dos consultas son la misma consulta, tanto para
+  identificarla como para reusar su resultado.
+- **`servedFrom`**: de dónde salió la respuesta: `live` (se ejecutó contra la
+  base) o `cache-l1` (estaba guardada en memoria del proceso). Viaja en
+  `meta.servedFrom`.
+- **`asOf`**: instante en que se ejecutó la consulta que produjo estas filas. En
+  un hit es el de la ejecución original, no el de ahora: es lo que le permite al
+  consumidor mostrar la antigüedad del dato.
+- **TTL**: cuánto vive una entrada de caché. Lo fija la clase de consumidor en su
+  presupuesto (`cacheTtlMs`), como el timeout y el límite de filas: cuánta
+  antigüedad se tolera es parte de lo que esa clase puede gastar.
+- **Hit ratio**: proporción de respuestas servidas desde la caché sobre las que
+  la consultaron. Sale de `cache.hits` y `cache.misses` de la telemetría; un
+  engine sin caché no reporta ninguno de los dos.
 - **Fuente**: conexión física a una base: motor, versión, dialecto, presupuesto.
 - **Dialecto**: tabla de capacidades del motor (`agregadoFiltrado`,
   `dateTrunc`, …) que consulta el planificador para elegir la sintaxis.
 - **Telemetría**: señales de monitoreo del engine. Se dice "telemetría" y no
   "métrica" para no confundir con las medidas de negocio. Vive en memoria del
   proceso, se lee con `engine.telemetry()` y cuenta, por consumidor: consultas
-  servidas y rechazadas, código de error, **puerta que rechazó** y tiempo de
-  base (suma y cuenta). Es reinicializable; exportarla está fuera de alcance.
+  servidas y rechazadas, código de error, **puerta que rechazó**, hits y misses
+  de caché y tiempo de base (suma y cuenta). Una respuesta servida desde la
+  caché cuenta como servida pero no suma al tiempo de base. Es reinicializable;
+  exportarla está fuera de alcance.
 - **Identidad de la consulta (`queryId`)**: hash de la forma de la consulta con
   sus parámetros, más la empresa, más la versión del catálogo. La serialización
   es canónica, así que reordenar las claves del JSON no lo cambia. Viaja en
-  `meta.queryId`, marca el SQL que se ejecuta (`/* queryId consumer */`) y será
+  `meta.queryId`, marca el SQL que se ejecuta (`/* queryId consumer */`) y **es**
   la llave de la caché.
 
 ## Capa HTTP

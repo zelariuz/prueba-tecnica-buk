@@ -163,6 +163,26 @@ describe('caché L1 en memoria', { ...conBase, timeout: 15_000 }, () => {
     assert.equal(segunda.meta.queryId, primera.meta.queryId);
   });
 
+  // El consumidor recibe filas que son suyas: si las ordena, las recorta o les
+  // agrega un total, la entrada guardada no puede enterarse. Una caché que
+  // entrega el mismo objeto que guardó convierte cualquier post-proceso del
+  // consumidor en un dato corrupto para el siguiente.
+  it('mutar las filas de una respuesta no corrompe la entrada de la caché', async () => {
+    const { engine } = armar({ cache: crearMemoryStore() });
+
+    const primera = await engine.run(CONTEO_POR_ESTADO, DASHBOARD_A);
+    primera.rows[0]['reviews.count'] = -1;
+    primera.rows.push({ 'reviews.status': 'inventado', 'reviews.count': 999 });
+
+    const segunda = await engine.run(CONTEO_POR_ESTADO, DASHBOARD_A);
+    segunda.rows.length = 0;
+    const tercera = await engine.run(CONTEO_POR_ESTADO, DASHBOARD_A);
+
+    assert.equal(segunda.meta.servedFrom, 'cache-l1');
+    assert.equal(tercera.meta.servedFrom, 'cache-l1');
+    assert.deepEqual(porEstado(tercera.rows), ESTADOS_EMPRESA_A);
+  });
+
   it('acotada a dos entradas, desaloja la menos usada recientemente', async () => {
     const { engine } = armar({ cache: crearMemoryStore({ maximo: 2 }) });
     const soloConteo = { measures: ['reviews.count'] };

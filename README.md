@@ -9,7 +9,7 @@ semánticos. El aislamiento por empresa es del motor, no del consumidor.
 - Plan de construcción por fases: `plans/plan-capa-semantica.md`.
 - Vocabulario: `CONTEXT.md`.
 
-Estado actual: **fase 6** — el caso obligatorio de punta a punta, los
+Estado actual: **fase 7** — el caso obligatorio de punta a punta, los
 guardarraíles del consumidor (presupuesto por clase: timeout, máximo de filas,
 rango temporal obligatorio), el catálogo como contrato (valida las definiciones
 contra el esquema real, se describe en dos vistas, se versiona por hash y
@@ -18,6 +18,8 @@ agregados, con la semántica de filtros escrita y un dry-run que devuelve el pla
 lógico sin tocar la base) y **el servicio HTTP**: `POST /analytics/query` y
 `GET /analytics/catalog` con contexto derivado del token, telemetría en memoria,
 un segundo módulo (asistencia, con `attendance_rate`) y una demo por consola.
+La fase 7 agrega la **caché L1 en memoria**: la segunda ejecución de la misma
+consulta no toca la base.
 
 ## Requisitos
 
@@ -51,7 +53,8 @@ está definida:
 ```
 
 `docker compose up -d redis` deja levantada la caché L2; todavía no la usa nadie
-(entra en la última fase del plan).
+(entra en la última fase del plan). La caché L1 vive en el proceso y no necesita
+nada levantado.
 
 ## Base de datos
 
@@ -279,6 +282,7 @@ queda en el log del servidor.
 | --- | --- |
 | 401 | `MISSING_TENANT` (sin token o token desconocido) |
 | 400 | `FORBIDDEN_FIELD`, `UNKNOWN_MEMBER`, `NO_JOIN_PATH`, `INVALID_OPERATOR`, `UNSUPPORTED_OPERATOR`, `MULTI_ENTITY_MEASURES`, `MISSING_TIME_RANGE`, `INVALID_CONSUMER`, `UNKNOWN_QUERY`, `MISSING_PARAM`, `INVALID_JSON` |
+| 413 | `PAYLOAD_TOO_LARGE` (el cuerpo pasó los 64 KiB) |
 | 504 | `QUERY_TIMEOUT` |
 | 500 | cualquier otro error, sin filtrar detalles internos |
 
@@ -299,10 +303,17 @@ dónde se va el tiempo de base — todo desglosado por consumidor.
   "byResult": { "ok": 3, "error": 1 },
   "byErrorCode": { "UNKNOWN_MEMBER": 1 },
   "byGate": { "resolverMiembros": 1 },
-  "byConsumer": { "dashboard": { "ok": 3, "error": 1 } },
-  "database": { "count": 3, "totalMs": 8.0 }
+  "byConsumer": { "dashboard": { "ok": 3, "error": 1, "cacheHits": 1, "cacheMisses": 2 } },
+  "cache": { "hits": 1, "misses": 2, "hitRatio": 0.3333333333333333 },
+  "database": { "count": 2, "totalMs": 5.4 }
 }
 ```
+
+`cache.hits` más `cache.misses` son las respuestas que pasaron por la caché, y
+`hitRatio` es la proporción que se ahorró la base. Un engine sin caché no reporta
+ninguno de los dos: sin caché no hay miss. Una respuesta servida desde la caché
+cuenta como `ok` pero **no** suma a `database`, así que el promedio de tiempo de
+base sigue siendo el de las consultas que de verdad se ejecutaron.
 
 El SQL que sale a la base va marcado con `/* <queryId> <consumer> */` al inicio:
 es lo que permite reconocer en los logs de Postgres a quién pertenece una
@@ -312,6 +323,41 @@ el SQL puro y los snapshots del repo no cambian.
 `meta.queryId` es el hash de tres cosas y de ninguna más: la forma de la consulta
 con sus parámetros (serializada de forma canónica, así que reordenar las claves
 del JSON no lo cambia), la empresa y la versión del catálogo.
+
+## Caché L1
+
+Interfaz `CacheStore` (`src/cache/store.js`): `get(key)`, `set(key, value,
+ttlMs)` y `delete(key)`, los tres **async** aunque `MemoryStore` no necesite
+esperar nada — la L2 en Redis es otra implementación de la misma interfaz y la
+forma la fija el más lento. El engine la recibe en `createEngine({ cache })` y
+sin ella sirve todo en vivo.
+
+Dos puertas nuevas en el pipeline: **buscar en caché** después de planificar
+—una consulta inválida se rechaza igual, esté o no guardada— y **guardar en
+caché** después de ejecutar en vivo.
+
+- **La llave es el `queryId`**, no un valor aparte: ya es el hash de la forma
+  canónica de la consulta con sus parámetros, más la empresa, más la versión del
+  catálogo. La empresa dentro del hash hace imposible que una entrada de A sirva
+  a B; la versión del catálogo invalida todo al cambiar una definición, sin
+  recorrer nada.
+- **`meta.servedFrom`** vale `live` o `cache-l1`. En un hit, `asOf` es el
+  instante de la ejecución que produjo las filas —no el de ahora— y las
+  `warnings` son las de esa ejecución.
+- **TTL por clase de consumidor**, en la tabla de presupuestos: `dashboard` 60 s,
+  `api` y `agent` 30 s. Cuánta antigüedad se tolera es parte de lo que la clase
+  puede gastar, igual que el timeout; la consulta no puede elegírselo.
+- **Acotada** a 200 entradas con desalojo LRU y expiración perezosa (se borra al
+  leerla vencida): una caché sin techo es una fuga de memoria con otro nombre, y
+  un temporizador por entrada mantendría el proceso despierto para borrar algo
+  que a nadie le importa.
+- **Guarda una copia y entrega copias**: el consumidor que ordena o recorta las
+  filas que recibió no puede cambiarle la respuesta al siguiente.
+- **El dry-run nunca la toca**, ni para leer ni para escribir.
+
+La L1 vive en el proceso: cada instancia del servicio tiene la suya. Compartirla
+entre instancias es trabajo de la L2 en Redis (fase 8), que entra por esta misma
+costura sin que el engine cambie.
 
 ## La demo
 

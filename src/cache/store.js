@@ -16,6 +16,12 @@ export const MAXIMO_DE_ENTRADAS = 200;
 // `now` es el reloj, inyectable: la expiración es comportamiento, y un
 // comportamiento que sólo se puede observar esperando un minuto real no se
 // puede probar. Por defecto es el del sistema.
+// El store guarda una copia y entrega copias: lo que hay dentro es suyo y nadie
+// de afuera lo puede mutar. Sin eso, el consumidor que ordena o recorta las
+// filas que recibió le estaría cambiando la respuesta al siguiente —y de la
+// forma más difícil de diagnosticar, porque el síntoma aparece en otra
+// petición—. Es además lo que la L2 en Redis hace gratis al serializar: copiar
+// aquí deja a las dos implementaciones con la misma semántica.
 export function crearMemoryStore({ maximo = MAXIMO_DE_ENTRADAS, now = Date.now } = {}) {
   const entradas = new Map();
 
@@ -37,14 +43,14 @@ export function crearMemoryStore({ maximo = MAXIMO_DE_ENTRADAS, now = Date.now }
       // que una entrada muy pedida no se vuelve eterna.
       entradas.delete(key);
       entradas.set(key, entrada);
-      return entrada.valor;
+      return structuredClone(entrada.valor);
     },
 
     async set(key, value, ttlMs) {
       // Reinsertar al final: `Map` conserva el orden de inserción, así que el
       // primero es siempre el menos usado recientemente.
       entradas.delete(key);
-      entradas.set(key, { valor: value, expiraEn: now() + ttlMs });
+      entradas.set(key, { valor: structuredClone(value), expiraEn: now() + ttlMs });
       if (entradas.size > maximo) entradas.delete(entradas.keys().next().value);
       return undefined;
     },

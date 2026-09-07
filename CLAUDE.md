@@ -35,7 +35,11 @@ src/
   definitions/index.js       composición: qué módulos y qué consultas tipo
                              existen, y `registrarModulos(catalog, snapshot)`
   dialect/postgres.js        capacidades del motor (dateTrunc, agregadoFiltrado)
-  budgets.js                 presupuesto por clase de consumidor (timeout, filas, rango)
+  budgets.js                 presupuesto por clase de consumidor (timeout, filas,
+                             rango y TTL de caché)
+  cache/store.js             interfaz CacheStore (get/set/delete async) y
+                             MemoryStore: L1 acotada, LRU, TTL por entrada y
+                             reloj inyectable
   catalog.js                 registro y validación de definiciones, resolución de
                              miembros, vistas pública e interna, versión y
                              consultas tipo
@@ -47,10 +51,12 @@ src/
                              emitir SQL, describir el plan lógico). Única pieza
                              que escribe SQL
   engine.js                  plan() y run(): dry-run y ejecución transaccional con
-                             SET LOCAL statement_timeout
+                             SET LOCAL statement_timeout, más las puertas
+                             buscarEnCache y guardarEnCache
   errors.js                  SemanticError { code, member, suggestion }
   telemetry.js               contadores en memoria por resultado, código, puerta,
-                             consumidor y tiempo de base; inyectable y reiniciable
+                             consumidor, hits/misses de caché y tiempo de base;
+                             inyectable y reiniciable
   canonical.js               serialización canónica compartida (versión del
                              catálogo y queryId)
   http/server.js             las dos rutas con node:http; token → ctx, techo de
@@ -68,6 +74,8 @@ test/
   http.test.js               prueba de humo HTTP contra un servidor en puerto
                              efímero, contra Postgres
   telemetry.test.js          contadores por el seam engine.run
+  cache.test.js              caché L1 por el seam engine.run (contra Postgres) y
+                             el dry-run sin caché por engine.plan (sin base)
   snapshots/caso-obligatorio.sql  SQL esperado del caso, comparado por igualdad
   snapshots/completion-rate.sql   SQL esperado de la derivada, con su etapa agregada
   fixtures/snapshot.json     foto del esquema generada desde la base del caso
@@ -79,7 +87,7 @@ docs/
   semantica-de-filtros.md  qué filtra a qué y cuándo una razón queda en 100
 docker-compose.yml         db (Postgres 16, host 5433), redis (host 6380) y api
                            (host 3000, espera a que db esté sana)
-Dockerfile                 imagen del servicio api (node:24-alpine)
+Dockerfile                 imagen del servicio api (node:24-alpine, USER node)
 ```
 
 ## Comandos
@@ -303,6 +311,53 @@ curl -s -H 'Authorization: Bearer demo-dashboard-empresa-a' \
   con `registrarModulos`, la composición real. Antes registraban tres módulos a
   mano y agregar uno los dejaba desactualizados.
 
+## Decisiones de la fase 7
+
+- **`CacheStore`** (`src/cache/store.js`): `get(key)`, `set(key, value, ttlMs)`,
+  `delete(key)`. Los tres **async** aunque `MemoryStore` no espere nada: la L2 en
+  Redis es otra implementación de la misma interfaz, y si la interfaz fuera
+  síncrona habría que cambiar el engine para que quepa. La forma la fija el más
+  lento.
+- **La llave ES el `queryId`**, no un valor derivado aparte. Ya es el hash de la
+  forma canónica de la consulta con sus parámetros, más la empresa, más la
+  versión del catálogo — exactamente las tres cosas que deciden si dos consultas
+  son la misma. Tener un segundo hash sería tener dos definiciones de "la misma
+  consulta" que pueden separarse sin que nadie lo note.
+- **Dos puertas nuevas en el engine**: `buscarEnCache` **después** de planificar
+  (una consulta inválida se rechaza igual, esté o no guardada) y `guardarEnCache`
+  después de ejecutar en vivo. Un resultado servido desde la caché no se vuelve a
+  guardar: su TTL cuenta desde la ejecución real y una entrada muy pedida no se
+  renueva sola para siempre.
+- **`servedFrom`** vale `live` o `cache-l1`; en un hit, `asOf` es el instante de
+  la ejecución original y `meta.warnings` son las de esa ejecución. `cache` es
+  opcional en `createEngine`: sin caché, todo es `live`.
+- **TTL por clase de consumidor**, en la tabla de presupuestos (`cacheTtlMs`):
+  `dashboard` 60 s, `api` y `agent` 30 s. Cuánta antigüedad tolera quien pregunta
+  es parte de lo que su clase puede gastar, igual que el timeout; no algo que la
+  consulta pueda elegirse sola. Va ahí y no en una constante global por eso.
+- **`MemoryStore` acotado** a `MAXIMO_DE_ENTRADAS` = 200 con desalojo **LRU**
+  (leer una entrada la manda al final de la fila, sin correrle el vencimiento) y
+  **expiración perezosa**: se borra al leerla vencida, no con un temporizador de
+  fondo que mantendría vivo el proceso para borrar algo que a nadie le importa.
+- **El reloj es inyectable** (`crearMemoryStore({ now })`): la expiración es
+  comportamiento, y un comportamiento que sólo se observa esperando un minuto
+  real no se puede probar.
+- **Guarda una copia y entrega copias** (`structuredClone` en `set` y en `get`):
+  el consumidor que ordena o recorta las filas que recibió no puede cambiarle la
+  respuesta al siguiente. Es además lo que la L2 hace gratis al serializar, así
+  que las dos implementaciones quedan con la misma semántica.
+- **Telemetría**: `cache: { hits, misses, hitRatio }` y `cacheHits`/`cacheMisses`
+  por consumidor. `registrarCache` se llama sólo si hay caché —sin caché no hay
+  miss que reportar— y `registrarOk` sin `dbMs` marca la respuesta que no tocó la
+  base: si contara 0 ms, el promedio de tiempo de base mentiría hacia abajo
+  justo cuando la caché está funcionando.
+- **El dry-run nunca toca la caché**, ni para leer ni para escribir: no ejecutó
+  nada que guardar, y devolver el resultado de otra ejecución sería mentir sobre
+  lo que muestra el plan.
+- El servicio HTTP (`src/server.js`) y la demo arman su engine con
+  `crearMemoryStore()`. La L1 vive en el proceso: cada instancia tiene la suya, y
+  compartirla es trabajo de la L2 (fase 8), que entra por la misma costura.
+
 ## Arreglos de revisión de la fase 6
 
 - **Techo del cuerpo HTTP**: `cuerpoDe()` acumulaba sin límite. Ahora cuenta
@@ -322,6 +377,16 @@ curl -s -H 'Authorization: Bearer demo-dashboard-empresa-a' \
   sugerencia.
 
 ## Estado
+
+Fase 7 terminada: caché L1 en memoria detrás de la interfaz `CacheStore`. La
+segunda ejecución de la misma consulta vuelve con `servedFrom: 'cache-l1'`, las
+mismas filas y el `asOf` de la ejecución original, y la telemetría muestra que la
+base no se consultó (3 consultas para 6 respuestas en la demo, hit ratio 50 %).
+La empresa B no recibe la entrada de la A, registrar una definición nueva
+invalida todo por la versión del catálogo, la entrada expira según el TTL de la
+clase de consumidor (probado con reloj inyectado), el store está acotado con
+desalojo LRU y el dry-run no la toca. El servicio HTTP y la demo la usan.
+Siguiente: fase 8 (caché L2 en Redis).
 
 Fase 6 terminada: servicio HTTP (`POST /analytics/query`, `GET
 /analytics/catalog`, `?dryRun=true`) con contexto derivado del token de demo y
