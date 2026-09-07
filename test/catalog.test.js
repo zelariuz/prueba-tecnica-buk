@@ -9,6 +9,7 @@ import { introspect } from '../src/introspect.js';
 import { departments } from '../src/definitions/departments.js';
 import { employees } from '../src/definitions/employees.js';
 import { reviews } from '../src/definitions/reviews.js';
+import { consultasTipo } from '../src/definitions/consultas-tipo.js';
 
 function errorDe(fn) {
   try {
@@ -308,4 +309,49 @@ test('la vista pública no contiene ningún nombre de tabla ni de columna físic
     JSON.stringify(catalog.describe({ companyId: 1, internal: true })),
     /performance_reviews/,
   );
+});
+
+function catalogoConConsultas() {
+  const catalog = catalogoDelCaso(esquema);
+  for (const consulta of consultasTipo) catalog.registerQuery(consulta);
+  return catalog;
+}
+
+test('una consulta tipo se recupera con sus parámetros puestos, lista para el engine', () => {
+  const catalog = catalogoConConsultas();
+
+  // El catálogo público las lista con nombre, descripción y parámetros: un
+  // dashboard fijo no necesita nada más para llamarlas.
+  assert.deepEqual(
+    catalog.describe({ companyId: 1 }).queries.map((c) => c.name),
+    consultasTipo.map((c) => c.name),
+  );
+
+  const consulta = catalog.query('evaluaciones-por-departamento-y-trimestre', {
+    dateRange: ['2025-01-01', '2025-12-31'],
+  });
+
+  assert.deepEqual(consulta.measures, ['reviews.avg_score', 'reviews.completed_count']);
+  assert.deepEqual(consulta.timeDimensions[0].dateRange, ['2025-01-01', '2025-12-31']);
+  // La plantilla no se modifica al usarla: dos llamadas con rangos distintos no
+  // se pisan.
+  const otra = catalog.query('evaluaciones-por-departamento-y-trimestre', {
+    dateRange: ['2024-01-01', '2024-12-31'],
+  });
+  assert.deepEqual(consulta.timeDimensions[0].dateRange, ['2025-01-01', '2025-12-31']);
+  assert.deepEqual(otra.timeDimensions[0].dateRange, ['2024-01-01', '2024-12-31']);
+});
+
+test('una consulta tipo desconocida o sin sus parámetros no se entrega', () => {
+  const catalog = catalogoConConsultas();
+
+  const desconocida = errorDe(() => catalog.query('headcount-por-departmento'));
+  assert.equal(desconocida.code, 'UNKNOWN_QUERY');
+  assert.match(desconocida.suggestion, /headcount-por-departamento/);
+
+  const sinParametro = errorDe(() =>
+    catalog.query('evaluaciones-por-departamento-y-trimestre', {}),
+  );
+  assert.equal(sinParametro.code, 'MISSING_PARAM');
+  assert.equal(sinParametro.member, 'dateRange');
 });

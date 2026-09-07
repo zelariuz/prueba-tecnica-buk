@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto';
 import { presupuestos as presupuestosPorDefecto, presupuestoDe } from './budgets.js';
 import { postgres } from './dialect/postgres.js';
 import { SemanticError } from './errors.js';
+import { OPERADORES_EN_SQL, operadoresDe } from './vocabulary.js';
 
 const PARAMETRO_EMPRESA = '$1';
 
@@ -36,22 +37,32 @@ function rechazarCamposDeContexto(query) {
   }
 }
 
-function partirMiembro(miembro) {
-  const [entidad, nombre] = miembro.split('.');
-  return { entidad, nombre };
-}
-
-// Un miembro se nombra `entidad.miembro`; resolverlo es traducir ese nombre de
-// negocio a la columna física de su entidad (ADR 0007).
-function dimensionDe(catalog, miembro) {
-  const { entidad, nombre } = partirMiembro(miembro);
-  return { entidad, columna: catalog.entity(entidad).dimensions[nombre].column };
-}
-
 function sqlDeMedida(medida, entidad) {
   if (medida.type === 'count') return 'COUNT(*)';
   if (medida.type === 'avg') return `AVG(${entidad}.${medida.column})`;
   throw new Error(`Tipo de medida no soportado: ${medida.type}`);
+}
+
+// El operador de un filtro sale de la tabla del vocabulario según el tipo de la
+// dimensión: la misma tabla que el catálogo publica en `describe()`, para que
+// nunca prometa un operador que el engine rechaza.
+function exigirOperador(filtro, tipo) {
+  const validos = operadoresDe(tipo);
+  if (!validos.includes(filtro.operator)) {
+    throw new SemanticError({
+      code: 'INVALID_OPERATOR',
+      member: filtro.member,
+      suggestion: `El operador ${filtro.operator} no aplica a una dimensión de tipo ${tipo}; usa uno de: ${validos.join(', ')}.`,
+    });
+  }
+  if (!OPERADORES_EN_SQL.has(filtro.operator)) {
+    const emitibles = validos.filter((operador) => OPERADORES_EN_SQL.has(operador));
+    throw new SemanticError({
+      code: 'UNSUPPORTED_OPERATOR',
+      member: filtro.member,
+      suggestion: `El operador ${filtro.operator} es válido para el tipo ${tipo} pero el planificador todavía no lo emite; por ahora usa: ${emitibles.join(', ')}.`,
+    });
+  }
 }
 
 // Camino de joins: BFS sobre relaciones `many_to_one` desde la entidad de
@@ -114,21 +125,35 @@ export function createEngine({
     const params = [ctx.companyId];
     const parametro = (valor) => `$${params.push(valor)}`;
 
-    const medidas = (query.measures ?? []).map((miembro) => {
-      const { entidad, nombre } = partirMiembro(miembro);
-      return { miembro, entidad, definicion: catalog.entity(entidad).measures[nombre] };
-    });
+    // Un filtro se declara como { member, operator, values } y el engine es el
+    // único que lo traduce a SQL (ADR 0005). Dentro de una CTE la columna va
+    // sola; en el FILTER de una medida va calificada por el alias de la CTE.
+    const condicionDeFiltro = (filtro, { calificada } = {}) => {
+      const { entidad, columna, tipo } = catalog.dimension(filtro.member);
+      exigirOperador(filtro, tipo);
+      const izquierda = calificada ? `${entidad}.${columna}` : columna;
+      const valores = filtro.values ?? [];
+      if (filtro.operator === 'in') {
+        return `${izquierda} IN (${valores.map((valor) => parametro(valor)).join(', ')})`;
+      }
+      const comparador = filtro.operator === 'notEquals' ? '<>' : '=';
+      return `${izquierda} ${comparador} ${parametro(valores[0])}`;
+    };
+
+    // Los miembros los resuelve el catálogo: es quien sabe qué existe y quién
+    // corta con UNKNOWN_MEMBER y una sugerencia cuando el nombre está mal.
+    const medidas = (query.measures ?? []).map((miembro) => catalog.measure(miembro));
 
     const dimensiones = (query.dimensions ?? []).map((miembro) => {
-      const { entidad, columna } = dimensionDe(catalog, miembro);
+      const { entidad, columna } = catalog.dimension(miembro);
       return { miembro, entidad, columna, expresion: `${entidad}.${columna}` };
     });
 
     // Una dimensión temporal es una dimensión más, agrupada por granularidad;
     // su rango acota la CTE de su entidad y no el resultado ya agregado.
-    const rangos = new Map();
+    const condiciones = new Map();
     for (const temporal of query.timeDimensions ?? []) {
-      const { entidad, columna } = dimensionDe(catalog, temporal.dimension);
+      const { entidad, columna } = catalog.dimension(temporal.dimension);
       dimensiones.push({
         miembro: temporal.dimension,
         entidad,
@@ -138,11 +163,27 @@ export function createEngine({
       if (!temporal.dateRange) continue;
       const [desde, hasta] = temporal.dateRange;
       // Rango cerrado en ambos extremos, como el dateRange de Cube.
-      rangos.set(entidad, [
-        ...(rangos.get(entidad) ?? []),
+      condiciones.set(entidad, [
+        ...(condiciones.get(entidad) ?? []),
         `${columna} >= ${parametro(desde)}`,
         `${columna} <= ${parametro(hasta)}`,
       ]);
+    }
+
+    // Los filtros de la consulta viven en la CTE de la entidad de su dimensión,
+    // junto al filtro de empresa: se aplican antes de agregar y la entidad
+    // filtrada entra al camino de joins aunque no sea una dimensión pedida.
+    const filtrados = new Set();
+    // Un segmento de la consulta aporta los filtros que su dueño declaró: para
+    // el planificador no hay diferencia entre esos y los filtros del JSON.
+    const declarados = [
+      ...(query.filters ?? []),
+      ...(query.segments ?? []).flatMap((miembro) => catalog.segment(miembro).definicion.filters),
+    ];
+    for (const filtro of declarados) {
+      const { entidad } = catalog.dimension(filtro.member);
+      filtrados.add(entidad);
+      condiciones.set(entidad, [...(condiciones.get(entidad) ?? []), condicionDeFiltro(filtro)]);
     }
 
     // El presupuesto del agente exige acotar el tiempo: una consulta sin rango
@@ -175,18 +216,8 @@ export function createEngine({
     const aristas = caminoDeJoins(
       catalog,
       raiz,
-      dimensiones.map((d) => d.entidad),
+      [...dimensiones.map((d) => d.entidad), ...filtrados],
     );
-
-    // Un filtro se declara como { member, operator, values } y el engine es el
-    // único que lo traduce a SQL (ADR 0005).
-    const condicionDeFiltro = (filtro) => {
-      const { entidad, columna } = dimensionDe(catalog, filtro.member);
-      if (filtro.operator !== 'equals') {
-        throw new Error(`Operador no soportado: ${filtro.operator}`);
-      }
-      return `${entidad}.${columna} = ${parametro(filtro.values[0])}`;
-    };
 
     // El filtro de una medida se declara una sola vez, como segmento.
     const filtrosDeMedida = (medida) =>
@@ -204,7 +235,7 @@ export function createEngine({
     for (const medida of medidas) {
       if (medida.definicion.column) pedir(medida.entidad, medida.definicion.column);
       for (const filtro of filtrosDeMedida(medida)) {
-        const { entidad, columna } = dimensionDe(catalog, filtro.member);
+        const { entidad, columna } = catalog.dimension(filtro.member);
         pedir(entidad, columna);
       }
     }
@@ -217,15 +248,15 @@ export function createEngine({
     // nombra la tabla física (ADR 0003).
     const cte = [raiz, ...aristas.map((a) => a.hacia)].map((nombre) => {
       const entidad = catalog.entity(nombre);
-      const condiciones = [
+      const filtrosDeLaCte = [
         `${entidad.companyColumn} = ${PARAMETRO_EMPRESA}`,
-        ...(rangos.get(nombre) ?? []),
+        ...(condiciones.get(nombre) ?? []),
       ];
       return (
         `${nombre} AS (\n` +
         `  SELECT ${[...columnas.get(nombre)].join(', ')}\n` +
         `  FROM ${entidad.table}\n` +
-        `  WHERE ${condiciones.join('\n    AND ')}\n` +
+        `  WHERE ${filtrosDeLaCte.join('\n    AND ')}\n` +
         `)`
       );
     });
@@ -236,7 +267,10 @@ export function createEngine({
         const agregado = sqlDeMedida(m.definicion, m.entidad);
         const filtros = filtrosDeMedida(m);
         const expresion = filtros.length
-          ? dialect.agregadoFiltrado(agregado, filtros.map(condicionDeFiltro).join(' AND '))
+          ? dialect.agregadoFiltrado(
+              agregado,
+              filtros.map((filtro) => condicionDeFiltro(filtro, { calificada: true })).join(' AND '),
+            )
           : agregado;
         return `${expresion} AS "${m.miembro}"`;
       }),

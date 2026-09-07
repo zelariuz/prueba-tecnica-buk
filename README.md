@@ -9,9 +9,11 @@ semánticos. El aislamiento por empresa es del motor, no del consumidor.
 - Plan de construcción por fases: `plans/plan-capa-semantica.md`.
 - Vocabulario: `CONTEXT.md`.
 
-Estado actual: **fase 3** — el caso obligatorio de punta a punta más los
-guardarraíles del consumidor: presupuesto por clase (timeout, máximo de filas,
-rango temporal obligatorio) y rechazos con error estructurado.
+Estado actual: **fase 4** — el caso obligatorio de punta a punta, los
+guardarraíles del consumidor (presupuesto por clase: timeout, máximo de filas,
+rango temporal obligatorio) y el catálogo como contrato: valida las definiciones
+contra el esquema real, se describe en dos vistas, se versiona por hash y
+registra consultas tipo.
 
 ## Requisitos
 
@@ -59,7 +61,7 @@ docker compose up -d --force-recreate db   # vuelve a cero: esquema + seed
 
 ```js
 const catalog = createCatalog();
-catalog.register(reviews);
+catalog.register(reviews, await introspect(pool));
 const engine = createEngine({ catalog, pool });
 
 await engine.run(
@@ -108,3 +110,51 @@ igualdad en cada corrida de tests. El rango temporal es cerrado en ambos
 extremos (`>= $2 AND <= $3`, como el `dateRange` de Cube) y viaja dentro de la
 CTE de las evaluaciones; el trimestre vuelve como texto ISO (`2025-01-01`) para
 que no dependa de la zona horaria del proceso.
+
+## El catálogo como contrato
+
+Registrar una definición la valida contra el esquema real de la base. La foto
+del esquema la produce el introspector y se puede inyectar, que es como corren
+los tests del catálogo sin Postgres:
+
+```js
+const snapshot = await introspect(pool);          // information_schema + pg_indexes
+const { ok, version, warnings } = catalog.register(reviews, snapshot);
+// warnings: [{ member: 'reviews.period', warning: '…no tiene índice que la cubra…' }]
+```
+
+Una columna que no existe **falla al registrar**, no al consultar, y el error
+trae el nombre correcto:
+
+```
+INVALID_DEFINITION (reviews.status.column):
+  La columna statu no existe en performance_reviews. ¿Quisiste decir status?
+```
+
+Lo mismo vale al consultar: un miembro mal escrito vuelve como `UNKNOWN_MEMBER`
+con la sugerencia calculada por distancia de edición
+(`reviews.avg_scor` → `reviews.avg_score`).
+
+`describe(ctx)` es lo que ve un dashboard o un agente: nombres de negocio,
+tipos, descripciones, operadores válidos, granularidades y consultas tipo. Nunca
+una tabla ni una columna (ADR 0008); el mapeo físico solo sale con
+`describe({ ...ctx, internal: true })`, del lado del servidor.
+
+## Consultas tipo
+
+Plantillas con nombre y parámetros que el dueño del módulo registra; un
+dashboard fijo no necesita armar JSON ni leer el catálogo:
+
+```js
+for (const consulta of consultasTipo) catalog.registerQuery(consulta);
+
+await engine.run(
+  catalog.query('evaluaciones-por-departamento-y-trimestre', {
+    dateRange: ['2025-01-01', '2025-12-31'],
+  }),
+  { companyId: 1, consumer: 'api' },
+);
+```
+
+Sirven también de test de regresión: un test las recorre todas, comprueba que
+cada CTE de su SQL lleva `company_id = $1` y que todas devuelven filas.

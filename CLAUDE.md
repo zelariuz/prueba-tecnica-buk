@@ -27,16 +27,25 @@ src/
   definitions/reviews.js     evaluaciones: dimensiones, medidas, segmento y relación
   definitions/employees.js   empleados: puente hacia departamentos
   definitions/departments.js departamentos: dimensión name
+  definitions/consultas-tipo.js  tres plantillas del caso con parámetros `:nombre`
   dialect/postgres.js        capacidades del motor (dateTrunc, agregadoFiltrado)
   budgets.js                 presupuesto por clase de consumidor (timeout, filas, rango)
-  catalog.js                 registro de definiciones en memoria
+  catalog.js                 registro y validación de definiciones, resolución de
+                             miembros, vistas pública e interna, versión y
+                             consultas tipo
+  introspect.js              snapshot del esquema desde information_schema/pg_indexes
+  suggest.js                 distancia de edición y sugerencia del nombre más parecido
+  vocabulary.js              operadores por tipo de dimensión y granularidades
   engine.js                  planificación (BFS de joins + CTE + agregación) y ejecución
                              transaccional con SET LOCAL statement_timeout
   errors.js                  SemanticError { code, member, suggestion }
 test/
   plan.test.js               seam engine.plan — sin base
   run.test.js                seam engine.run — contra Postgres, se salta sin DATABASE_URL
+  catalog.test.js            seams catalog.register y catalog.describe — sin base
+                             salvo el único test del introspector
   snapshots/caso-obligatorio.sql  SQL esperado del caso, comparado por igualdad
+  fixtures/snapshot.json     foto del esquema generada desde la base del caso
 docker/init/
   01-schema.sql            DDL del caso, copiado sin cambios
   02-seed.sql              seed determinista + conteos esperados en el encabezado
@@ -58,7 +67,9 @@ docker compose up -d --force-recreate db      # re-aplicar esquema y seed
   al cierre de cada fase con los tests en verde.
 - TDD estricto: un test de comportamiento por vez, red → green → refactor.
   Los tests entran solo por los seams acordados en el PRD: `engine.run`,
-  `engine.plan`, `catalog.register` y `catalog.describe`.
+  `engine.plan`, `catalog.register` y `catalog.describe`. Cuando un test pasa en
+  verde apenas escrito (porque fija un criterio sobre comportamiento que ya
+  existía), se comprueba que muerde mutando el código y viéndolo fallar.
 - Los valores esperados de los tests son literales del seed, nunca recalculados
   desde los datos.
 - Ninguna definición acepta SQL; el aislamiento por empresa se expresa siempre
@@ -105,7 +116,59 @@ docker compose up -d --force-recreate db      # re-aplicar esquema y seed
   del pool que cambia el texto de la consulta principal por `pg_sleep`: sin SQL
   en las definiciones y sin tocar el seed.
 
+## Decisiones de la fase 4
+
+- `register(def, snapshot)` valida en dos pasos: forma (tabla, clave, columna de
+  empresa, `description` obligatoria en entidad, dimensiones, medidas, segmentos
+  y relaciones) y esquema físico (cada tabla y cada columna nombrada existe en
+  el snapshot). Todo fallo es `INVALID_DEFINITION` con `member` y `suggestion`
+  por distancia de edición. El snapshot es **opcional**: sin él se valida la
+  forma pero no el esquema, que es lo que permite registrar sin base.
+- `introspect(pool)` es la única parte del catálogo que toca la base. Lee
+  `information_schema.columns` (solo `BASE TABLE`) y `pg_indexes` del esquema
+  `public`; las columnas de un índice salen de parsear su `indexdef` —un índice
+  sobre expresión queda registrado con el texto de la expresión y simplemente no
+  coincide con ninguna columna, que es la respuesta conservadora.
+- La foto fija `test/fixtures/snapshot.json` se generó con el introspector desde
+  la base del caso; un test contra Docker comprueba que sigue siendo igual, y
+  todos los demás tests del catálogo la inyectan y corren sin Postgres.
+- `describe(ctx)` devuelve la vista pública (ADR 0008): entidades con
+  descripción, dimensiones con tipo y operadores válidos, medidas, segmentos,
+  granularidades, entidades relacionadas **por nombre** y consultas tipo. Con
+  `internal: true` agrega el mapeo físico. El test de fuga toma tablas y
+  columnas del snapshot, descarta las que coinciden con un nombre semántico y
+  exige que ninguna otra aparezca en la vista pública serializada.
+- La versión del catálogo es sha256 de la serialización canónica (claves
+  ordenadas) de definiciones más snapshot, truncado a 16 caracteres. Registrar
+  una consulta tipo no la cambia: no altera el contrato de datos.
+- El engine ya no lee las definiciones: le pide al catálogo `dimension`,
+  `measure` y `segment`, y el catálogo corta con `UNKNOWN_MEMBER` más la
+  sugerencia. Si el miembro existe pero es de otra clase, el mensaje lo dice.
+- Tabla de operadores por tipo en `vocabulary.js`, una sola copia para el
+  catálogo (que la publica) y el engine (que la aplica): `string` equals,
+  notEquals, in, notIn, contains; `number` equals, gt, gte, lt, lte, between;
+  `date` inDateRange, beforeDate, afterDate; `boolean` equals. Emitidos en SQL
+  esta fase: `equals`, `notEquals`, `in`. Operador fuera del tipo →
+  `INVALID_OPERATOR`; operador del tipo aún sin SQL → `UNSUPPORTED_OPERATOR`
+  (rechazar es mejor que aplicar un filtro a medias en silencio).
+- `filters` y `segments` de la consulta se aplican dentro de la CTE de la
+  entidad de su dimensión, junto al filtro de empresa, y esa entidad entra al
+  camino de joins aunque no se pida como dimensión.
+- Consultas tipo: `registerQuery({ name, description, query, params })` guarda
+  una plantilla declarativa donde un parámetro se escribe `:nombre`;
+  `query(name, params)` la devuelve con los valores puestos sin mutar la
+  plantilla. Nombre inexistente → `UNKNOWN_QUERY` con sugerencia; parámetro
+  declarado que falta → `MISSING_PARAM`.
+
 ## Estado
+
+Fase 4 terminada: el catálogo como contrato — validación de forma y de esquema
+al registrar, advertencias, introspector con foto fija en el repo, vistas
+pública e interna, versión por hash, `UNKNOWN_MEMBER` con sugerencia por
+distancia de edición, `INVALID_OPERATOR`/`UNSUPPORTED_OPERATOR` contra la tabla
+de operadores por tipo, filtros y segmentos de consulta y tres consultas tipo
+recorridas por un test que verifica el invariante de empresa en cada CTE.
+Siguiente: fase 5 (medidas derivadas ratio, semántica de filtros y dry-run).
 
 Fase 3 terminada: guardarraíles del consumidor — presupuestos por clase,
 `FORBIDDEN_FIELD` para `companyId`/`consumer` en el JSON, `MISSING_TIME_RANGE`

@@ -45,6 +45,16 @@ equivalente en Cube, se indica para facilitar la lectura al equipo.
   grafo de relaciones y expone `describe()`.
 - **Esquema físico**: foto descubierta de tablas, columnas, tipos, llaves e
   índices (`information_schema`, `pg_indexes`). Se descubre, no se declara.
+- **Snapshot del esquema**: la foto ya materializada que produce
+  `introspect(pool)` y contra la que el catálogo valida al registrar:
+  `{ schema, tables: { <tabla>: { columns: { <columna>: <tipo> }, indexes:
+  [{ name, columns, unique }] } } }`. Inyectarlo permite probar el catálogo sin
+  base.
+- **Advertencia de registro**: `{ member, warning }` que `register` devuelve sin
+  impedir el registro (por ejemplo, dimensión temporal sin índice).
+- **Versión del catálogo**: hash sha256 de la serialización canónica de las
+  definiciones registradas más el snapshot. Cambia si cambia cualquiera de los
+  dos; es lo que invalidará la caché.
 - **Diccionario semántico**: significado declarado por humanos de cada
   entidad, dimensión y medida (`description`, valores permitidos, escala).
   No se infiere del nombre.
@@ -67,8 +77,20 @@ equivalente en Cube, se indica para facilitar la lectura al equipo.
 - **Error estructurado**: `{ code, member?, suggestion? }`. Códigos:
   `UNKNOWN_MEMBER`, `NO_JOIN_PATH`, `MISSING_TENANT`, `FORBIDDEN_FIELD`,
   `MULTI_ENTITY_MEASURES`, `MISSING_TIME_RANGE`, `INVALID_OPERATOR`,
-  `INVALID_CONSUMER` (clase de consumidor desconocida o ausente en el contexto)
-  y `QUERY_TIMEOUT` (la ejecución superó el timeout del presupuesto).
+  `INVALID_CONSUMER` (clase de consumidor desconocida o ausente en el contexto),
+  `QUERY_TIMEOUT` (la ejecución superó el timeout del presupuesto),
+  `INVALID_DEFINITION` (la definición no cumple la forma o nombra algo que el
+  esquema físico no tiene), `UNSUPPORTED_OPERATOR` (operador válido para el tipo
+  de la dimensión que el planificador todavía no emite), `UNKNOWN_QUERY`
+  (consulta tipo inexistente) y `MISSING_PARAM` (falta un parámetro declarado
+  por la consulta tipo).
+- **Sugerencia**: el campo `suggestion` de un error. Cuando el problema es un
+  nombre, sale de la **distancia de edición** (Levenshtein) contra los miembros
+  conocidos, y solo se propone si el candidato está a menos de un tercio del
+  largo de lo escrito: una sugerencia lejana confunde más que ninguna.
+- **Vocabulario de consulta**: la tabla de operadores válidos por tipo de
+  dimensión y la lista de granularidades. Vive en un solo lugar porque el
+  catálogo la publica y el engine la aplica.
 - **Forma de la consulta**: la consulta con sus valores literales reemplazados
   por parámetros. Dos consultas con la misma forma generan el mismo SQL.
 - **Fuente**: conexión física a una base: motor, versión, dialecto, presupuesto.

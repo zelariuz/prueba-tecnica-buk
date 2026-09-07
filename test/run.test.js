@@ -7,6 +7,7 @@ import { createEngine } from '../src/engine.js';
 import { departments } from '../src/definitions/departments.js';
 import { employees } from '../src/definitions/employees.js';
 import { reviews } from '../src/definitions/reviews.js';
+import { consultasTipo } from '../src/definitions/consultas-tipo.js';
 
 const { DATABASE_URL } = process.env;
 
@@ -336,5 +337,48 @@ describe('guardarraíles del consumidor', conBase, () => {
     // conexión, esta consulta moriría a los 50 ms.
     const dormilon = createEngine({ catalog, pool: poolQueDuerme(pool, 1) });
     await dormilon.run(conteoPorEstado, ctx);
+  });
+});
+
+describe('consultas tipo como regresión', conBase, () => {
+  let pool;
+  let catalog;
+  let engine;
+
+  before(() => {
+    pool = new pg.Pool({ connectionString: DATABASE_URL });
+    catalog = createCatalog();
+    for (const definicion of [reviews, employees, departments]) catalog.register(definicion);
+    for (const consulta of consultasTipo) catalog.registerQuery(consulta);
+    engine = createEngine({ catalog, pool });
+  });
+
+  after(async () => {
+    await pool.end();
+  });
+
+  it('cada consulta tipo registrada se ejecuta y devuelve filas', async () => {
+    const params = { dateRange: ['2025-01-01', '2025-12-31'] };
+
+    for (const { name } of consultasTipo) {
+      const { rows, meta } = await engine.run(catalog.query(name, params), {
+        companyId: EMPRESA_A,
+        consumer: 'api',
+      });
+
+      assert.ok(rows.length > 0, `${name} devuelve filas`);
+      assert.equal(meta.servedFrom, 'live', name);
+    }
+  });
+
+  it('la consulta tipo de conteo por estado devuelve los números del seed', async () => {
+    // Valores literales del seed: la consulta tipo es también el test de
+    // regresión de la plantilla que usan los dashboards.
+    const { rows } = await engine.run(catalog.query('conteo-de-evaluaciones-por-estado'), {
+      companyId: EMPRESA_A,
+      consumer: 'api',
+    });
+
+    assert.deepEqual(porEstado(rows), { completed: 5, pending: 4, calibrated: 2 });
   });
 });

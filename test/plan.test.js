@@ -7,6 +7,7 @@ import { createEngine } from '../src/engine.js';
 import { departments } from '../src/definitions/departments.js';
 import { employees } from '../src/definitions/employees.js';
 import { reviews } from '../src/definitions/reviews.js';
+import { consultasTipo } from '../src/definitions/consultas-tipo.js';
 
 // Valor improbable a propósito: si aparece en el SQL, es que se interpoló.
 const EMPRESA = 424242;
@@ -289,4 +290,191 @@ test('la misma consulta sin rango la planifica un consumidor sin rango obligator
   const { sql } = engineDePrueba().plan(sinRango, { companyId: EMPRESA, consumer: 'dashboard' });
 
   assert.match(sql, /GROUP BY TO_CHAR\(DATE_TRUNC\('quarter', reviews\.period\)/);
+});
+
+test('un miembro mal escrito corta con UNKNOWN_MEMBER y sugiere el correcto', () => {
+  const engine = engineDePrueba();
+
+  const casos = [
+    [{ measures: ['reviews.avg_scor'] }, 'reviews.avg_scor', 'reviews.avg_score'],
+    [
+      { measures: ['reviews.count'], dimensions: ['departments.nam'] },
+      'departments.nam',
+      'departments.name',
+    ],
+    // Entidad mal escrita: la sugerencia también la corrige.
+    [{ measures: ['review.count'] }, 'review.count', 'reviews.count'],
+    [
+      {
+        measures: ['reviews.count'],
+        timeDimensions: [{ dimension: 'reviews.perio', granularity: 'quarter' }],
+      },
+      'reviews.perio',
+      'reviews.period',
+    ],
+  ];
+
+  for (const [query, escrito, esperada] of casos) {
+    const error = errorDe(() => engine.plan(query, CTX));
+
+    assert.equal(error.code, 'UNKNOWN_MEMBER', escrito);
+    assert.equal(error.member, escrito);
+    assert.match(error.suggestion, new RegExp(esperada.replace('.', '\\.')), escrito);
+  }
+});
+
+test('pedir una dimensión como medida dice de qué clase es el miembro', () => {
+  const error = errorDe(() => engineDePrueba().plan({ measures: ['reviews.status'] }, CTX));
+
+  assert.equal(error.code, 'UNKNOWN_MEMBER');
+  assert.equal(error.member, 'reviews.status');
+  assert.match(error.suggestion, /dimensión/);
+});
+
+test('dos entidades sin relación declarada cortan con NO_JOIN_PATH', () => {
+  // Las relaciones son dirigidas: desde `employees` se llega a `departments`,
+  // pero nunca a `reviews`, que es quien declara la relación hacia empleados.
+  const error = errorDe(() =>
+    engineDePrueba().plan(
+      { measures: ['employees.headcount'], dimensions: ['reviews.status'] },
+      CTX,
+    ),
+  );
+
+  assert.equal(error.code, 'NO_JOIN_PATH');
+  assert.equal(error.member, 'reviews');
+  assert.match(error.suggestion, /employees/);
+});
+
+test('un filtro de consulta se aplica dentro de la CTE de su entidad', () => {
+  const { sql, params } = engineDePrueba().plan(
+    {
+      measures: ['reviews.count'],
+      dimensions: ['reviews.status'],
+      filters: [{ member: 'departments.name', operator: 'equals', values: ['Ingeniería'] }],
+    },
+    CTX,
+  );
+
+  // El filtro entra donde se nombra la tabla física, junto al de empresa: el
+  // engine llega a departments aunque la consulta no lo pida como dimensión.
+  assert.match(sql, /departments AS \([^)]*WHERE company_id = \$1\n {4}AND name = \$2\n\)/);
+  assert.deepEqual(params, [EMPRESA, 'Ingeniería', 10000]);
+});
+
+test('los operadores in y notEquals se emiten con sus parámetros', () => {
+  const engine = engineDePrueba();
+  const base = { measures: ['reviews.count'], dimensions: ['reviews.status'] };
+
+  const { sql: conIn, params: deIn } = engine.plan(
+    { ...base, filters: [{ member: 'reviews.status', operator: 'in', values: ['completed', 'calibrated'] }] },
+    CTX,
+  );
+  assert.match(conIn, /AND status IN \(\$2, \$3\)/);
+  assert.deepEqual(deIn, [EMPRESA, 'completed', 'calibrated', 10000]);
+
+  const { sql: conNot, params: deNot } = engine.plan(
+    { ...base, filters: [{ member: 'reviews.status', operator: 'notEquals', values: ['pending'] }] },
+    CTX,
+  );
+  assert.match(conNot, /AND status <> \$2/);
+  assert.deepEqual(deNot, [EMPRESA, 'pending', 10000]);
+});
+
+test('un operador que no aplica al tipo de la dimensión corta con INVALID_OPERATOR', () => {
+  const error = errorDe(() =>
+    engineDePrueba().plan(
+      {
+        measures: ['reviews.count'],
+        dimensions: ['reviews.status'],
+        filters: [{ member: 'reviews.period', operator: 'contains', values: ['2025'] }],
+      },
+      CTX,
+    ),
+  );
+
+  assert.equal(error.code, 'INVALID_OPERATOR');
+  assert.equal(error.member, 'reviews.period');
+  // El mensaje nombra los operadores que sí acepta el tipo.
+  assert.match(error.suggestion, /inDateRange/);
+});
+
+test('un operador declarado para el tipo pero todavía sin SQL se rechaza, no se ignora', () => {
+  const error = errorDe(() =>
+    engineDePrueba().plan(
+      {
+        measures: ['reviews.count'],
+        dimensions: ['reviews.status'],
+        filters: [{ member: 'reviews.status', operator: 'contains', values: ['comp'] }],
+      },
+      CTX,
+    ),
+  );
+
+  // `contains` es válido para una dimensión de texto y el catálogo lo publica;
+  // mientras el planificador no lo emita, aplicarlo a medias sería devolver un
+  // número equivocado en silencio.
+  assert.equal(error.code, 'UNSUPPORTED_OPERATOR');
+  assert.equal(error.member, 'reviews.status');
+  assert.match(error.suggestion, /equals/);
+});
+
+test('un segmento de la consulta aplica su regla declarada una sola vez', () => {
+  const { sql, params } = engineDePrueba().plan(
+    {
+      measures: ['reviews.count'],
+      dimensions: ['departments.name'],
+      segments: ['reviews.completed'],
+    },
+    CTX,
+  );
+
+  // La regla "evaluación completada" la escribe el dueño del módulo una vez; el
+  // consumidor la nombra y nunca la reescribe (ADR 0005).
+  assert.match(sql, /reviews AS \([^)]*WHERE company_id = \$1\n {4}AND status = \$2\n\)/);
+  assert.deepEqual(params, [EMPRESA, 'completed', 10000]);
+});
+
+test('un segmento inexistente corta con UNKNOWN_MEMBER y sugiere el correcto', () => {
+  const error = errorDe(() =>
+    engineDePrueba().plan(
+      { measures: ['reviews.count'], dimensions: ['reviews.status'], segments: ['reviews.complete'] },
+      CTX,
+    ),
+  );
+
+  assert.equal(error.code, 'UNKNOWN_MEMBER');
+  assert.equal(error.member, 'reviews.complete');
+  assert.match(error.suggestion, /reviews\.completed/);
+});
+
+// Las CTE del plan, cada una con su nombre: es donde vive el filtro de empresa
+// y por tanto donde se comprueba el invariante de aislamiento (ADR 0003).
+function ctesDe(sql) {
+  const bloque = sql.slice(sql.indexOf('WITH ') + 'WITH '.length, sql.indexOf('\nSELECT '));
+  return bloque.split(/\),\n/).map((cte) => cte.trim());
+}
+
+test('toda consulta tipo planifica y filtra por empresa en cada una de sus CTE', () => {
+  const catalog = createCatalog();
+  for (const definicion of [reviews, employees, departments]) catalog.register(definicion);
+  for (const consulta of consultasTipo) catalog.registerQuery(consulta);
+  const engine = createEngine({ catalog });
+
+  // Un parámetro de más lo ignora la consulta que no lo declara.
+  const params = { dateRange: ['2025-01-01', '2025-12-31'] };
+
+  assert.ok(consultasTipo.length >= 3, 'el módulo registra al menos tres consultas tipo');
+  for (const { name } of consultasTipo) {
+    const { sql, params: valores } = engine.plan(catalog.query(name, params), CTX);
+
+    const ctes = ctesDe(sql);
+    assert.ok(ctes.length > 0, `${name} genera al menos una CTE`);
+    for (const cte of ctes) {
+      assert.match(cte, /WHERE company_id = \$1/, `${name}: la CTE ${cte.split(' ')[0]} filtra por empresa`);
+    }
+    // Ninguna tabla queda fuera: tantos filtros de empresa como CTE.
+    assert.equal(sql.match(/company_id = \$1/g).length, ctes.length, name);
+    assert.equal(valores[0], EMPRESA, `${name}: la empresa es el primer parámetro`);
+  }
 });

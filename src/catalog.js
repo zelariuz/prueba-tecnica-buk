@@ -203,6 +203,34 @@ function canonica(valor) {
   return JSON.stringify(valor ?? null);
 }
 
+// Un parámetro de consulta tipo se escribe `:nombre` en el lugar donde va su
+// valor. Reemplazarlo es recorrer la plantilla y cambiar esas hojas: la
+// plantilla no se muta nunca, así que dos llamadas con valores distintos no se
+// pisan.
+function reemplazarParametros(valor, params, nombre) {
+  if (typeof valor === 'string' && valor.startsWith(':')) {
+    const parametro = valor.slice(1);
+    if (!Object.hasOwn(params, parametro)) {
+      throw new SemanticError({
+        code: 'MISSING_PARAM',
+        member: parametro,
+        suggestion: `La consulta tipo ${nombre} necesita el parámetro ${parametro}.`,
+      });
+    }
+    return params[parametro];
+  }
+  if (Array.isArray(valor)) return valor.map((elemento) => reemplazarParametros(elemento, params, nombre));
+  if (valor && typeof valor === 'object') {
+    return Object.fromEntries(
+      Object.entries(valor).map(([clave, hijo]) => [clave, reemplazarParametros(hijo, params, nombre)]),
+    );
+  }
+  return valor;
+}
+
+// Clases de miembro, con el nombre que se usa al hablarle al consumidor.
+const CLASES = { dimensions: 'dimensión', measures: 'medida', segments: 'segmento' };
+
 export function createCatalog() {
   const entidades = new Map();
   const consultasTipo = new Map();
@@ -247,6 +275,55 @@ export function createCatalog() {
     return tablas;
   }
 
+  // Todos los miembros conocidos con su clase. Es la lista contra la que se
+  // busca la sugerencia cuando alguien escribe mal un nombre: un agente que se
+  // equivoca puede corregirse solo si el error le dice cuál era el nombre.
+  function miembrosConocidos() {
+    const conocidos = new Map();
+    for (const def of entidades.values()) {
+      for (const clase of Object.keys(CLASES)) {
+        for (const nombre of Object.keys(def[clase] ?? {})) {
+          conocidos.set(`${def.name}.${nombre}`, CLASES[clase]);
+        }
+      }
+    }
+    return conocidos;
+  }
+
+  function desconocido(miembro, clase) {
+    const conocidos = miembrosConocidos();
+    const esperada = CLASES[clase];
+
+    // El miembro existe, pero es de otra clase: decirlo ahorra la vuelta de
+    // buscar un nombre correcto que ya estaba escrito bien.
+    if (conocidos.has(miembro)) {
+      return new SemanticError({
+        code: 'UNKNOWN_MEMBER',
+        member: miembro,
+        suggestion: `${miembro} es una ${conocidos.get(miembro)} y aquí se espera una ${esperada}.`,
+      });
+    }
+
+    const parecido = masParecido(String(miembro), [...conocidos.keys()]);
+    return new SemanticError({
+      code: 'UNKNOWN_MEMBER',
+      member: miembro,
+      suggestion: parecido
+        ? `No existe la ${esperada} ${miembro}. ¿Quisiste decir ${parecido}?`
+        : `No existe la ${esperada} ${miembro}. Consulta el catálogo público para ver los miembros disponibles.`,
+    });
+  }
+
+  // Resolver un miembro es traducir su nombre de negocio `entidad.miembro` a lo
+  // que la entidad declaró. El engine no lee las definiciones: se lo pregunta
+  // al catálogo, que es quien sabe qué existe y qué sugerir cuando no existe.
+  function resolver(miembro, clase) {
+    const [entidad, nombre, ...sobra] = String(miembro).split('.');
+    const declaracion = sobra.length === 0 ? entidades.get(entidad)?.[clase]?.[nombre] : undefined;
+    if (!declaracion) throw desconocido(miembro, clase);
+    return { miembro, entidad, nombre, definicion: declaracion };
+  }
+
   return {
     // El snapshot es opcional: sin él se valida la forma pero no el esquema
     // físico. Quien registra contra una base viva pasa el de `introspect`.
@@ -260,6 +337,55 @@ export function createCatalog() {
         version: version(),
         warnings: snapshot ? advertenciasDe(def, snapshot) : [],
       };
+    },
+
+    // Consulta tipo: plantilla con nombre y parámetros que el dueño del módulo
+    // registra para que un dashboard fijo no tenga que armar JSON.
+    registerQuery({ name, description, query, params = [] }) {
+      exigirTexto(name, 'query.name', 'La consulta tipo debe declarar un nombre.');
+      exigirTexto(
+        description,
+        `${name}.description`,
+        'La descripción de la consulta tipo es obligatoria: es lo que se lee en el catálogo.',
+      );
+      if (!query || typeof query !== 'object') {
+        throw invalida(`${name}.query`, 'La consulta tipo debe traer una consulta declarativa.');
+      }
+      consultasTipo.set(name, { name, description, params, query });
+      return { ok: true, name };
+    },
+
+    // Devuelve la consulta declarativa con sus parámetros puestos, lista para
+    // `engine.plan` o `engine.run`.
+    query(name, params = {}) {
+      const consulta = consultasTipo.get(name);
+      if (!consulta) {
+        const parecida = masParecido(String(name), [...consultasTipo.keys()]);
+        throw new SemanticError({
+          code: 'UNKNOWN_QUERY',
+          member: name,
+          suggestion: parecida
+            ? `No existe la consulta tipo ${name}. ¿Quisiste decir ${parecida}?`
+            : `No existe la consulta tipo ${name}. Consulta el catálogo público para ver las disponibles.`,
+        });
+      }
+      for (const parametro of consulta.params) {
+        if (Object.hasOwn(params, parametro)) continue;
+        throw new SemanticError({
+          code: 'MISSING_PARAM',
+          member: parametro,
+          suggestion: `La consulta tipo ${name} necesita el parámetro ${parametro}.`,
+        });
+      }
+      return reemplazarParametros(consulta.query, params, name);
+    },
+
+    queries() {
+      return [...consultasTipo.values()].map(({ name, description, params }) => ({
+        name,
+        description,
+        params: [...params],
+      }));
     },
 
     version,
@@ -304,6 +430,20 @@ export function createCatalog() {
 
       if (!ctx?.internal) return publica;
       return { ...publica, tables: vistaInterna() };
+    },
+
+    // Un miembro de cada clase, resuelto o con el error que explica por qué no.
+    dimension(miembro) {
+      const resuelta = resolver(miembro, 'dimensions');
+      return { ...resuelta, columna: resuelta.definicion.column, tipo: resuelta.definicion.type };
+    },
+
+    measure(miembro) {
+      return resolver(miembro, 'measures');
+    },
+
+    segment(miembro) {
+      return resolver(miembro, 'segments');
     },
 
     entity(name) {
