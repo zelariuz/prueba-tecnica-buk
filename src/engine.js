@@ -53,17 +53,6 @@ function indentar(texto) {
     .join('\n');
 }
 
-// Razón entre dos medidas ya agregadas. `::numeric` evita la división entera
-// —dos COUNT en Postgres son enteros y 3/4 da 0— y `NULLIF` convierte el
-// denominador cero en NULL, que es la respuesta honesta: sin evaluaciones no
-// hay porcentaje que informar (ADR 0004). La escala la valida el catálogo como
-// número, y por eso puede interpolarse.
-function formulaDeRazon(medida) {
-  const { numerator, denominator, scale } = medida.definicion;
-  const razon = `"${medida.entidad}.${numerator}"::numeric / NULLIF("${medida.entidad}.${denominator}", 0)`;
-  return scale === undefined ? razon : `${razon} * ${scale}`;
-}
-
 // Operadores cuyo valor es una lista: sin elementos no hay SQL que emitir.
 const OPERADORES_DE_LISTA = new Set(['in', 'notIn']);
 
@@ -179,22 +168,8 @@ export function createEngine({
     // corta con UNKNOWN_MEMBER y una sugerencia cuando el nombre está mal.
     const medidas = (query.measures ?? []).map((miembro) => catalog.measure(miembro));
 
-    // Una derivada no se agrega: combina medidas que sí se agregan. Sus bases
-    // entran a la consulta agregada aunque el consumidor no las haya pedido, y
-    // salen de ella solo si las pidió.
+    // Una derivada no se agrega: combina medidas que sí se agregan.
     const derivadas = medidas.filter((medida) => medida.definicion.type === 'ratio');
-    const bases = new Map();
-    for (const medida of medidas) {
-      if (medida.definicion.type !== 'ratio') {
-        bases.set(medida.miembro, medida);
-        continue;
-      }
-      for (const nombre of [medida.definicion.numerator, medida.definicion.denominator]) {
-        const base = catalog.measure(`${medida.entidad}.${nombre}`);
-        bases.set(base.miembro, base);
-      }
-    }
-    const medidasBase = [...bases.values()];
 
     const dimensiones = (query.dimensions ?? []).map((miembro) => {
       const { entidad, columna } = catalog.dimension(miembro);
@@ -270,6 +245,47 @@ export function createEngine({
       raiz,
       [...dimensiones.map((d) => d.entidad), ...filtrados],
     );
+
+    // Las medidas base de la consulta: las que el consumidor pidió, más las que
+    // necesitan sus derivadas aunque no las haya pedido.
+    const bases = new Map();
+    for (const medida of medidas) {
+      if (medida.definicion.type !== 'ratio') bases.set(medida.miembro, medida);
+    }
+
+    // El catálogo entrega las derivadas de la entidad en orden de dependencia
+    // (ADR 0004): recorrerlo una vez basta para escribir cada fórmula con las
+    // que necesita ya resueltas. Primero, hacia atrás, se marca cuáles hacen
+    // falta; una razón que nadie pidió no se calcula.
+    const declaracionesDeMedida = catalog.entity(raiz).measures;
+    const ordenDeCalculo = catalog.derivedOrder(raiz);
+    const necesarias = new Set(derivadas.map((medida) => medida.nombre));
+    for (const nombre of [...ordenDeCalculo].reverse()) {
+      if (!necesarias.has(nombre)) continue;
+      const { numerator, denominator } = declaracionesDeMedida[nombre];
+      for (const parte of [numerator, denominator]) {
+        if (declaracionesDeMedida[parte]?.type === 'ratio') necesarias.add(parte);
+      }
+    }
+
+    // `::numeric` evita la división entera —dos COUNT son enteros y 3/4 da 0— y
+    // `NULLIF` convierte el denominador cero en NULL, que es la respuesta
+    // honesta: sin evaluaciones no hay porcentaje que informar. La escala la
+    // valida el catálogo como número, y por eso puede interpolarse.
+    const formulas = new Map();
+    for (const nombre of ordenDeCalculo) {
+      if (!necesarias.has(nombre)) continue;
+      const { numerator, denominator, scale } = declaracionesDeMedida[nombre];
+      const parte = (dependencia) => {
+        if (formulas.has(dependencia)) return `(${formulas.get(dependencia)})`;
+        const base = catalog.measure(`${raiz}.${dependencia}`);
+        bases.set(base.miembro, base);
+        return `"${base.miembro}"`;
+      };
+      const razon = `${parte(numerator)}::numeric / NULLIF(${parte(denominator)}, 0)`;
+      formulas.set(nombre, scale === undefined ? razon : `${razon} * ${scale}`);
+    }
+    const medidasBase = [...bases.values()];
 
     // El filtro de una medida se declara una sola vez, como segmento.
     const filtrosDeMedida = (medida) =>
@@ -371,7 +387,7 @@ export function createEngine({
             ...dimensiones.map((d) => `"${d.miembro}"`),
             ...medidas.map((m) =>
               m.definicion.type === 'ratio'
-                ? `${formulaDeRazon(m)} AS "${m.miembro}"`
+                ? `${formulas.get(m.nombre)} AS "${m.miembro}"`
                 : `"${m.miembro}"`,
             ),
           ].join(', ')}`,

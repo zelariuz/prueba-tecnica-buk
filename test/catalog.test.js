@@ -134,6 +134,75 @@ test('la dimensión temporal cubierta por un índice no genera advertencia', () 
   assert.deepEqual(createCatalog().register(reviews, conIndice).warnings, []);
 });
 
+// Una razón puede apoyarse en otra razón, y entonces el orden en que se
+// calculan importa: el catálogo lo resuelve al registrar (ADR 0004).
+function conDerivadas(derivadas) {
+  return { ...reviews, measures: { ...reviews.measures, ...derivadas } };
+}
+
+test('dos derivadas que se referencian en círculo se rechazan al registrar', () => {
+  const error = errorDe(() =>
+    createCatalog().register(
+      conDerivadas({
+        tasa_a: {
+          type: 'ratio',
+          numerator: 'tasa_b',
+          denominator: 'count',
+          description: 'Razón que depende de tasa_b.',
+        },
+        tasa_b: {
+          type: 'ratio',
+          numerator: 'tasa_a',
+          denominator: 'count',
+          description: 'Razón que depende de tasa_a.',
+        },
+      }),
+      esquema,
+    ),
+  );
+
+  // Sin este corte el ciclo se descubriría al planificar, como una recursión
+  // que no termina; se rechaza donde se declara.
+  assert.equal(error.code, 'INVALID_DEFINITION');
+  assert.match(error.member, /^reviews\.tasa_[ab]$/);
+  assert.match(error.suggestion, /círculo/);
+});
+
+test('una derivada que se referencia a sí misma se rechaza al registrar', () => {
+  const error = errorDe(() =>
+    createCatalog().register(
+      conDerivadas({
+        tasa_propia: {
+          type: 'ratio',
+          numerator: 'tasa_propia',
+          denominator: 'count',
+          description: 'Razón que se toma a sí misma como numerador.',
+        },
+      }),
+      esquema,
+    ),
+  );
+
+  assert.equal(error.code, 'INVALID_DEFINITION');
+  assert.equal(error.member, 'reviews.tasa_propia.numerator');
+});
+
+test('una derivada que se apoya en otra derivada registra sin problema', () => {
+  const { ok } = createCatalog().register(
+    conDerivadas({
+      completion_rate_doble: {
+        type: 'ratio',
+        numerator: 'completion_rate',
+        denominator: 'count',
+        description: 'Razón declarada sobre otra razón: el orden de cálculo lo resuelve el catálogo.',
+      },
+    }),
+    esquema,
+  );
+
+  assert.equal(ok, true);
+});
+
 function catalogoDelCaso(snapshot) {
   const catalog = createCatalog();
   for (const definicion of [reviews, employees, departments]) catalog.register(definicion, snapshot);

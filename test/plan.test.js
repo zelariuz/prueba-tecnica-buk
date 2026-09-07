@@ -176,6 +176,40 @@ test('la derivada ratio divide las medidas ya agregadas, no fila por fila', () =
   assert.deepEqual(params, [EMPRESA, 'completed', 10000]);
 });
 
+test('una razón apoyada en otra razón se emite con la fórmula de aquella dentro', () => {
+  const catalog = createCatalog();
+  catalog.register({
+    ...reviews,
+    measures: {
+      ...reviews.measures,
+      completion_rate_por_evaluacion: {
+        type: 'ratio',
+        numerator: 'completion_rate',
+        denominator: 'count',
+        description: 'Razón declarada sobre otra razón; existe para probar el orden de cálculo.',
+      },
+    },
+  });
+  for (const definicion of [employees, departments]) catalog.register(definicion);
+
+  const { sql } = createEngine({ catalog }).plan(
+    {
+      measures: ['reviews.completion_rate_por_evaluacion'],
+      dimensions: ['departments.name'],
+    },
+    CTX,
+  );
+
+  // El catálogo entrega las derivadas en orden de dependencia, así que al
+  // escribir esta razón la de adentro ya está resuelta y entra entre paréntesis.
+  assert.match(
+    sql,
+    /\("reviews\.completed_count"::numeric \/ NULLIF\("reviews\.count", 0\) \* 100\)::numeric \/ NULLIF\("reviews\.count", 0\) AS "reviews\.completion_rate_por_evaluacion"/,
+  );
+  // La medida base que comparten las dos razones se agrega una sola vez.
+  assert.equal(sql.match(/AS "reviews\.count"/g).length, 1);
+});
+
 test('order ordena por el nombre semántico y limit viaja como parámetro', () => {
   const { sql, params } = engineDePrueba().plan(
     { ...porTrimestreDe2025, order: { 'reviews.period': 'asc' }, limit: 500 },

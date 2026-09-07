@@ -54,6 +54,41 @@ function validarRatio(def, nombre, medida) {
   }
 }
 
+// Orden en que hay que calcular las derivadas de una entidad: primero aquellas
+// de las que dependen las demás. El recorrido en profundidad produce el orden y
+// delata el ciclo de paso: volver a una razón que todavía se está resolviendo
+// significa que se necesita a sí misma dando un rodeo, y entonces ninguna de las
+// dos puede calcularse primero (ADR 0004). Se resuelve al registrar y no al
+// planificar, donde el ciclo sería una recursión que no termina.
+function ordenDeDerivadas(def) {
+  const orden = [];
+  const resueltas = new Set();
+  const enCurso = new Set();
+
+  const visitar = (nombre) => {
+    if (resueltas.has(nombre)) return;
+    if (enCurso.has(nombre)) {
+      throw invalida(
+        `${def.name}.${nombre}`,
+        `La razón ${def.name}.${nombre} depende de sí misma en círculo: ninguna de las razones del círculo puede calcularse antes que la otra.`,
+      );
+    }
+    enCurso.add(nombre);
+    const medida = def.measures[nombre];
+    for (const parte of [medida.numerator, medida.denominator]) {
+      if (def.measures[parte]?.type === 'ratio') visitar(parte);
+    }
+    enCurso.delete(nombre);
+    resueltas.add(nombre);
+    orden.push(nombre);
+  };
+
+  for (const [nombre, medida] of Object.entries(def.measures ?? {})) {
+    if (medida.type === 'ratio') visitar(nombre);
+  }
+  return orden;
+}
+
 // Forma de la definición: lo que un módulo debe declarar para que sus datos
 // puedan exponerse bajo nombres de negocio. La descripción es obligatoria en la
 // entidad, en cada dimensión y en cada medida: es lo que consumidores y agentes
@@ -270,6 +305,9 @@ const CLASES = { dimensions: 'dimensión', measures: 'medida', segments: 'segmen
 export function createCatalog() {
   const entidades = new Map();
   const consultasTipo = new Map();
+  // Por entidad, sus medidas derivadas en orden topológico: cada una después de
+  // aquellas de las que depende.
+  const ordenDeCalculo = new Map();
   // Última foto del esquema con la que se registró: entra al hash de versión
   // porque el mismo diccionario sobre otro esquema físico no es el mismo
   // contrato.
@@ -405,6 +443,9 @@ export function createCatalog() {
     register(def, snapshot) {
       validarForma(def);
       if (snapshot) validarContraEsquema(def, snapshot);
+      // El orden de cálculo de las derivadas se resuelve una vez, al registrar:
+      // el engine lo recibe hecho y nunca tiene que descubrirlo por consulta.
+      ordenDeCalculo.set(def.name, ordenDeDerivadas(def));
       entidades.set(def.name, def);
       if (snapshot) esquema = snapshot;
       return {
@@ -501,6 +542,14 @@ export function createCatalog() {
 
     entity(name) {
       return entidades.get(name);
+    },
+
+    // Las derivadas de una entidad en el orden en que pueden calcularse: cada
+    // una después de aquellas de las que depende. Es lo que le permite al
+    // planificador emitir una razón apoyada en otra sin resolver el grafo por
+    // su cuenta.
+    derivedOrder(name) {
+      return [...(ordenDeCalculo.get(name) ?? [])];
     },
   };
 }
