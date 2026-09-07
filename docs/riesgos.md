@@ -1,0 +1,54 @@
+# Registro de riesgos
+
+Cada riesgo con su mitigación y dónde vive: **código** (implementado y
+probado en este repo), **documento** (explicado con su costo/beneficio) o
+**evolución** (extensión futura con su costura ya prevista).
+
+## Aislamiento entre empresas
+
+| Riesgo | Mitigación | Dónde |
+|---|---|---|
+| El consumidor envía un `company_id` propio o ajeno | El JSON no tiene el campo; el contexto lo construye el servidor desde el token; si aparece, `FORBIDDEN_FIELD` | código |
+| Un JOIN trae filas de otra empresa | Filtro dentro de la CTE de cada entidad; invariante probada sobre todas las consultas tipo | código |
+| Estado de sesión pegado a la conexión en un pool (PgBouncer en modo transacción) | Siempre `SET LOCAL` dentro de una transacción, nunca `SET`; `ROLLBACK` antes de devolver la conexión si hubo error | código |
+| El catálogo público revela tablas y columnas | Dos vistas; la pública no contiene nombres físicos ni datos de otra empresa | código |
+| RLS como red no aplica al dueño de la tabla ni a vistas materializadas | `FORCE ROW LEVEL SECURITY`, rol no propietario, vistas materializadas tratadas como entidades | documento |
+| Resultados pesados o trabajos accesibles por otra empresa | Trabajo ligado a la empresa y verificado en cada lectura; URLs firmadas de vida corta | evolución |
+
+## Correctitud del SQL
+
+| Riesgo | Mitigación | Dónde |
+|---|---|---|
+| División entera en `completion_rate` | Derivadas tipo `ratio` con `::numeric` y `NULLIF`; test que ejecuta 3 de 4 = 75 | código |
+| Fan-out al mezclar medidas de dos entidades | Medidas de una sola entidad en v1; `MULTI_ENTITY_MEASURES` | código |
+| Un filtro global sobre `status` deja el denominador igual al numerador (tasa 100 %) | Semántica escrita: filtros globales aplican a todas las medidas; el filtro propio de una medida se suma; advertencia al consumidor | código |
+| SQL crudo en segmentos o fórmulas declaradas por módulos | Segmentos y derivadas declarativos; el único emisor de SQL es el planificador | código |
+| Enteros y numéricos grandes llegan como texto desde el driver | Conversión explícita en el post-proceso; test con `COUNT` grande y `AVG` | código |
+| Una definición apunta a una columna que ya no existe | `register(def, snapshot)` valida contra el esquema físico al arrancar | código |
+| Filtrar la empresa en tres tablas excluye filas inconsistentes que el SQL de referencia incluiría | Comportamiento deliberado y documentado; test que lo muestra | código |
+
+## Disponibilidad de la base
+
+| Riesgo | Mitigación | Dónde |
+|---|---|---|
+| Consulta que no termina | `statement_timeout` por clase de consumidor dentro de la transacción; `LIMIT`; rango temporal obligatorio en entidades con dimensión de tiempo | código |
+| Un rol de base de datos no limita recursos (`statement_timeout` es modificable por la sesión) | El rol limita privilegios (solo lectura); el límite de tiempo lo pone el engine; en producción, límite externo en el pooler | documento |
+| Memoria: `work_mem` por operación × operaciones × conexiones | Tope global de conexiones con PgBouncer y `work_mem` bajo por rol | documento |
+| Una empresa grande ocupa el pool | Tope de concurrencia por empresa además de por consumidor; circuit breaker por empresa | evolución |
+| Estimar costo con `EXPLAIN` clasifica mal a empresas pequeñas y consume planificador | Solo para consumidores no interactivos; llave por forma, rango y empresa | evolución |
+| Estampida al invalidar caché; caché caído; reintentos que amplifican | Servir lo viejo mientras se refresca; fallar abierto bajando límites; no reintentar timeouts | evolución |
+| Vistas materializadas: no se pueden refrescar en una réplica física; el refresco concurrente exige índice único | Viven en el primario o en réplica lógica; refresco fuera de ventana | documento |
+
+## Volumen de datos
+
+| Riesgo | Mitigación | Dónde |
+|---|---|---|
+| Asistencia: una fila por empleado y día, miles de millones de filas | Particiones por fecha y empresa; el filtro dentro de la CTE permite poda; pre-agregaciones como camino normal | documento |
+| Postgres deja de ser el motor analítico adecuado | La fuente es un objeto de primera clase: cambiar el motor no toca definiciones ni consumidores | evolución |
+
+## Entrega
+
+| Riesgo | Mitigación | Dónde |
+|---|---|---|
+| Construir la evolución antes que el núcleo | El repo implementa definiciones, catálogo, engine y tests; el resto se documenta con su costura | código |
+| Reimplementar lo que Cube ya hace | La consulta y las definiciones usan el vocabulario de Cube; lo propio es la validación contra el esquema físico y el catálogo como contexto del agente | documento |
