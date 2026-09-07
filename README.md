@@ -76,7 +76,34 @@ WITH reviews AS (
   FROM performance_reviews
   WHERE company_id = $1
 )
-SELECT status AS "reviews.status", COUNT(*) AS "reviews.count"
+SELECT reviews.status AS "reviews.status", COUNT(*) AS "reviews.count"
 FROM reviews
-GROUP BY status
+GROUP BY reviews.status
 ```
+
+La consulta del caso —score promedio y evaluaciones completadas por
+departamento y trimestre de 2025— se pide con los mismos nombres de negocio; el
+engine encuentra el camino `reviews → employees → departments` recorriendo las
+relaciones declaradas y emite una CTE por entidad, cada una con su filtro de
+empresa:
+
+```js
+await engine.run(
+  {
+    measures: ['reviews.avg_score', 'reviews.completed_count'],
+    dimensions: ['departments.name'],
+    timeDimensions: [
+      { dimension: 'reviews.period', granularity: 'quarter', dateRange: ['2025-01-01', '2025-12-31'] },
+    ],
+    order: { 'reviews.period': 'asc' },
+    limit: 500,
+  },
+  { companyId: 1, consumer: 'api' },
+);
+```
+
+El SQL que genera está en `test/snapshots/caso-obligatorio.sql`, comparado por
+igualdad en cada corrida de tests. El rango temporal es cerrado en ambos
+extremos (`>= $2 AND <= $3`, como el `dateRange` de Cube) y viaja dentro de la
+CTE de las evaluaciones; el trimestre vuelve como texto ISO (`2025-01-01`) para
+que no dependa de la zona horaria del proceso.

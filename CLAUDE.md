@@ -24,13 +24,17 @@ TypeScript, Node 24, `node:test`, node-postgres.
 
 ```
 src/
-  definitions/reviews.js   definición semántica del módulo de evaluaciones
-  catalog.js               registro de definiciones en memoria
-  engine.js                planificación (CTE + agregación) y ejecución
-  errors.js                SemanticError { code, member, suggestion }
+  definitions/reviews.js     evaluaciones: dimensiones, medidas, segmento y relación
+  definitions/employees.js   empleados: puente hacia departamentos
+  definitions/departments.js departamentos: dimensión name
+  dialect/postgres.js        capacidades del motor (dateTrunc, agregadoFiltrado)
+  catalog.js                 registro de definiciones en memoria
+  engine.js                  planificación (BFS de joins + CTE + agregación) y ejecución
+  errors.js                  SemanticError { code, member, suggestion }
 test/
-  plan.test.js             seam engine.plan — sin base
-  run.test.js              seam engine.run — contra Postgres, se salta sin DATABASE_URL
+  plan.test.js               seam engine.plan — sin base
+  run.test.js                seam engine.run — contra Postgres, se salta sin DATABASE_URL
+  snapshots/caso-obligatorio.sql  SQL esperado del caso, comparado por igualdad
 docker/init/
   01-schema.sql            DDL del caso, copiado sin cambios
   02-seed.sql              seed determinista + conteos esperados en el encabezado
@@ -59,8 +63,24 @@ docker compose up -d --force-recreate db      # re-aplicar esquema y seed
   como `company_id = $1` dentro de la CTE de la entidad.
 - Repo público: sin datos personales ni nombres reales en seeds ni ejemplos.
 
+## Decisiones de la fase 2
+
+- El camino de joins sale de un BFS sobre relaciones `many_to_one` desde la
+  entidad de hechos; el consumidor nunca nombra una relación.
+- El rango de `timeDimensions` es cerrado en ambos extremos (`>= $2 AND <= $3`,
+  como el `dateRange` de Cube) y vive dentro de la CTE de la entidad temporal.
+- Los valores literales de la consulta (rango, valores de segmento, `limit`)
+  viajan como parámetros: dos consultas con la misma forma generan el mismo SQL.
+- La dimensión temporal vuelve como texto ISO `YYYY-MM-DD`, no como `Date`:
+  node-postgres convierte `DATE` a un `Date` corrido a la zona del proceso.
+- El snapshot del SQL es un archivo `.sql` legible del repo comparado por
+  igualdad; si el SQL cambia a propósito, se edita ese archivo.
+
 ## Estado
 
-Fase 1 terminada: entorno, catálogo mínimo, engine con `plan`/`run` para
-`{ measures: ['reviews.count'], dimensions: ['reviews.status'] }`, error
-`MISSING_TENANT`. Siguiente: fase 2 (joins, tiempo y medidas filtradas).
+Fase 2 terminada: el caso obligatorio de punta a punta —joins por relaciones,
+CTE por entidad con su filtro de empresa, `timeDimensions` con granularidad y
+rango, medida `avg`, medida filtrada por segmento con `COUNT(*) FILTER`,
+`order`, `limit`, conversión de `int8`/`numeric` a número y error
+`MULTI_ENTITY_MEASURES`. Siguiente: fase 3 (guardarraíles: presupuestos por
+consumidor, `UNKNOWN_MEMBER` con sugerencia, `MISSING_TIME_RANGE`).
