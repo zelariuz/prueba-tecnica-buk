@@ -95,7 +95,10 @@ export function createEngine({
       return {
         rows: guardado.rows,
         meta: {
-          servedFrom: 'cache-l1',
+          // De qué nivel salió lo dice la caché: un store compuesto marca la
+          // entrada con su nivel. Una caché de un solo nivel no marca nada y es,
+          // por definición, el primero que el engine consulta.
+          servedFrom: guardado.nivel ?? 'cache-l1',
           // El instante de la ejecución que produjo estas filas, no el de
           // ahora: es lo que le dice al consumidor qué tan viejo es el dato.
           asOf: guardado.asOf,
@@ -147,7 +150,19 @@ export function createEngine({
   // quien tolera más, y borrarla sería quitarle a otro un dato que le sirve.
   async function buscarEnCache(queryId, ctx, presupuesto) {
     if (!cache) return undefined;
-    const guardado = await cache.get(queryId);
+    // Red de seguridad: ninguna consulta falla por la caché. El store compuesto
+    // ya se defiende de su segundo nivel, pero el engine no sabe qué
+    // implementación le pasaron, y la garantía no puede depender de eso. Una
+    // lectura que revienta es un miss como cualquier otro —se va a la base
+    // igual—, y el fallo queda contado aparte para que un Redis muerto se vea
+    // antes de que se note como latencia.
+    let guardado;
+    try {
+      guardado = await cache.get(queryId);
+    } catch {
+      telemetria.registrarErrorDeCache({ nivel: 'cache' });
+      guardado = undefined;
+    }
     const utilizable = guardado && !demasiadoVieja(guardado, presupuesto);
     telemetria.registrarCache({ consumer: ctx?.consumer, resultado: utilizable ? 'hit' : 'miss' });
     return utilizable ? guardado : undefined;
@@ -162,7 +177,13 @@ export function createEngine({
   // su clase puede gastar, y no algo que la consulta pueda elegirse sola.
   async function guardarEnCache(queryId, entrada, ttlMs) {
     if (!cache) return;
-    await cache.set(queryId, entrada, ttlMs);
+    // La misma red del otro lado: el resultado ya está, no guardarlo sólo
+    // significa que la próxima vuelve a la base.
+    try {
+      await cache.set(queryId, entrada, ttlMs);
+    } catch {
+      telemetria.registrarErrorDeCache({ nivel: 'cache' });
+    }
   }
 
   return { plan, run, telemetry: telemetria.snapshot };

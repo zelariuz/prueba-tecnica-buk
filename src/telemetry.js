@@ -57,6 +57,15 @@ export function crearTelemetria() {
       porConsumidor(consumer)[esHit ? 'cacheHits' : 'cacheMisses'] += 1;
     },
 
+    // Un fallo de la caché, por nivel. No es un error de la consulta —la
+    // respuesta salió igual— así que no toca `byResult`: es la señal de que un
+    // nivel de caché está caído y que la base está recibiendo tráfico que no
+    // debería. Contarlo aparte es lo que permite ver un Redis muerto antes de
+    // que se note como latencia.
+    registrarErrorDeCache({ nivel }) {
+      sumar(contadores.cacheErrors, nivel ?? 'cache');
+    },
+
     snapshot() {
       const copia = structuredClone(contadores);
       const consultadas = copia.cache.hits + copia.cache.misses;
@@ -82,6 +91,9 @@ function vacios() {
     // Hits y misses de la caché; el `hitRatio` lo calcula `snapshot()` a partir
     // de estos dos, para que no haya dos números que puedan contradecirse.
     cache: { hits: 0, misses: 0 },
+    // Fallos de la caché por nivel (`cache-l2`, …). Una caché caída no rechaza
+    // ninguna consulta, así que sin este contador sería invisible.
+    cacheErrors: {},
     // Suma y cuenta en vez de histograma: con las dos se saca el promedio, y
     // los percentiles son trabajo del exportador, que está fuera de alcance.
     database: { count: 0, totalMs: 0 },

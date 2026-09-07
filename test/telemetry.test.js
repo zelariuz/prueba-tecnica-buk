@@ -50,6 +50,8 @@ describe('telemetría de consultas rechazadas', () => {
       },
       // Un engine sin caché no reporta hits ni misses: sin caché no hay miss.
       cache: { hits: 0, misses: 0, hitRatio: 0 },
+      // Ni fallos de caché: no hay caché que pueda fallar.
+      cacheErrors: {},
       database: { count: 0, totalMs: 0 },
     });
   });
@@ -68,6 +70,7 @@ describe('telemetría de consultas rechazadas', () => {
       byGate: {},
       byConsumer: {},
       cache: { hits: 0, misses: 0, hitRatio: 0 },
+      cacheErrors: {},
       database: { count: 0, totalMs: 0 },
     });
   });
