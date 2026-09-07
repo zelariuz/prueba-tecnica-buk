@@ -1,0 +1,31 @@
+// Del código del error estructurado al código HTTP. Es una tabla, no lógica:
+// el que no está en ella no es un error del consumidor sino del servidor, y
+// sale como 500 sin detalles.
+//
+// Decisiones:
+//   * `MISSING_TENANT` es 401 y no 403: sin token conocido no hay sesión que
+//     autorizar, todavía no se sabe quién pide.
+//   * `QUERY_TIMEOUT` es 504 y no 503: el servicio está sano; lo que se agotó
+//     es el presupuesto de tiempo de esta consulta contra la base, que para el
+//     servicio HTTP es su dependencia aguas arriba. 503 diría "vuelve más
+//     tarde", y volver más tarde con la misma consulta no la haría terminar.
+//   * `INVALID_JSON` es el único código que nace en la capa HTTP: el cuerpo no
+//     llegó a ser una consulta declarativa, así que ninguna puerta del engine
+//     pudo opinar.
+//   * `INVALID_DEFINITION` no está en la tabla a propósito: una definición mal
+//     declarada es un error del servidor, no de quien consulta.
+export const CODIGOS_HTTP = {
+  MISSING_TENANT: 401,
+  FORBIDDEN_FIELD: 400,
+  UNKNOWN_MEMBER: 400,
+  NO_JOIN_PATH: 400,
+  INVALID_OPERATOR: 400,
+  UNSUPPORTED_OPERATOR: 400,
+  MULTI_ENTITY_MEASURES: 400,
+  MISSING_TIME_RANGE: 400,
+  INVALID_CONSUMER: 400,
+  UNKNOWN_QUERY: 400,
+  MISSING_PARAM: 400,
+  INVALID_JSON: 400,
+  QUERY_TIMEOUT: 504,
+};
