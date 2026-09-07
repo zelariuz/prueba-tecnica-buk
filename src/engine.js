@@ -113,7 +113,7 @@ export function createEngine({
     // Puerta · Guardar en caché. Sólo lo que se ejecutó en vivo: un resultado
     // servido desde la caché no se vuelve a guardar, así que su TTL cuenta
     // desde la ejecución real y una entrada no se renueva sola para siempre.
-    await guardarEnCache(queryId, { rows, asOf, warnings: advertencias }, presupuesto);
+    await guardarEnCache(queryId, { rows, asOf, warnings: advertencias }, presupuesto.cacheTtlMs);
 
     return {
       rows,
@@ -135,9 +135,12 @@ export function createEngine({
     return guardado;
   }
 
-  async function guardarEnCache(queryId, entrada) {
+  // El TTL sale del presupuesto de la clase de consumidor, como el timeout y el
+  // límite de filas: cuánta antigüedad tolera quien pregunta es parte de lo que
+  // su clase puede gastar, y no algo que la consulta pueda elegirse sola.
+  async function guardarEnCache(queryId, entrada, ttlMs) {
     if (!cache) return;
-    await cache.set(queryId, entrada);
+    await cache.set(queryId, entrada, ttlMs);
   }
 
   return { plan, run, telemetry: telemetria.snapshot };

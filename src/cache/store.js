@@ -13,16 +13,39 @@
 // lleva más tiempo sin usarse es la que menos probable es que vuelva.
 export const MAXIMO_DE_ENTRADAS = 200;
 
-export function crearMemoryStore({ maximo = MAXIMO_DE_ENTRADAS } = {}) {
+// `now` es el reloj, inyectable: la expiración es comportamiento, y un
+// comportamiento que sólo se puede observar esperando un minuto real no se
+// puede probar. Por defecto es el del sistema.
+export function crearMemoryStore({ maximo = MAXIMO_DE_ENTRADAS, now = Date.now } = {}) {
   const entradas = new Map();
 
   return {
     async get(key) {
-      return entradas.get(key);
+      const entrada = entradas.get(key);
+      if (entrada === undefined) return undefined;
+      // Expirada: se borra al leerla en vez de con un temporizador de fondo. Un
+      // temporizador por entrada mantendría vivo el proceso y despertaría para
+      // borrar algo que a nadie le importa; la entrada muerta que nadie vuelve
+      // a pedir la desaloja la cota.
+      if (now() >= entrada.expiraEn) {
+        entradas.delete(key);
+        return undefined;
+      }
+      // Usarla la manda al final de la fila: eso es lo que hace que el desalojo
+      // sea LRU y no por antigüedad de guardado. No corre el vencimiento —el
+      // `expiraEn` sigue siendo el de la ejecución que produjo el dato—, así
+      // que una entrada muy pedida no se vuelve eterna.
+      entradas.delete(key);
+      entradas.set(key, entrada);
+      return entrada.valor;
     },
 
-    async set(key, value) {
-      entradas.set(key, value);
+    async set(key, value, ttlMs) {
+      // Reinsertar al final: `Map` conserva el orden de inserción, así que el
+      // primero es siempre el menos usado recientemente.
+      entradas.delete(key);
+      entradas.set(key, { valor: value, expiraEn: now() + ttlMs });
+      if (entradas.size > maximo) entradas.delete(entradas.keys().next().value);
       return undefined;
     },
 

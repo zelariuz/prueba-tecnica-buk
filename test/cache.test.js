@@ -113,4 +113,109 @@ describe('caché L1 en memoria', { ...conBase, timeout: 15_000 }, () => {
     assert.notEqual(segunda.meta.queryId, primera.meta.queryId);
     assert.deepEqual(porEstado(segunda.rows), ESTADOS_EMPRESA_A);
   });
+
+  // El TTL lo fija la clase de consumidor, como el resto del presupuesto: el
+  // tablero (60 s) es el que repite la misma consulta muchas veces. El reloj
+  // del store se inyecta para no tener que esperar un minuto real.
+  const TTL_DASHBOARD_MS = 60_000;
+
+  it('la entrada expira cuando pasa el TTL de la clase de consumidor', async () => {
+    let ahora = 1_700_000_000_000;
+    const { engine } = armar({ cache: crearMemoryStore({ now: () => ahora }) });
+
+    await engine.run(CONTEO_POR_ESTADO, DASHBOARD_A);
+    ahora += TTL_DASHBOARD_MS - 1;
+    const dentro = await engine.run(CONTEO_POR_ESTADO, DASHBOARD_A);
+    ahora += 2;
+    const fuera = await engine.run(CONTEO_POR_ESTADO, DASHBOARD_A);
+
+    assert.equal(dentro.meta.servedFrom, 'cache-l1', 'antes del TTL la entrada sirve');
+    assert.equal(fuera.meta.servedFrom, 'live', 'pasado el TTL la entrada ya no está');
+    assert.deepEqual(porEstado(fuera.rows), ESTADOS_EMPRESA_A);
+  });
+
+  // La cota es lo que impide que la caché sea una fuga de memoria. Con tres
+  // consultas y sitio para dos, el desalojo tiene que caer sobre la que lleva
+  // más tiempo sin usarse —no sobre la que se guardó primero—: por eso entre
+  // medio se vuelve a pedir la primera, que con un desalojo por antigüedad de
+  // inserción sería justamente la sacrificada.
+  // Servir desde la caché no puede maquillar la antigüedad del dato: `asOf` es
+  // el instante de la ejecución que produjo estas filas, no el de ahora, y las
+  // advertencias son las que esa ejecución levantó. Un consumidor que muestra
+  // "actualizado hace X" depende de eso.
+  it('el hit conserva el asOf y las advertencias de la ejecución original', async () => {
+    const { engine } = armar({ cache: crearMemoryStore() });
+    // El filtro global repite lo que distingue al numerador: la razón queda en
+    // 100 y la respuesta lo advierte (docs/semantica-de-filtros.md).
+    const razonAnulada = {
+      measures: ['reviews.completion_rate'],
+      dimensions: ['departments.name'],
+      filters: [{ member: 'reviews.status', operator: 'equals', values: ['completed'] }],
+    };
+
+    const primera = await engine.run(razonAnulada, DASHBOARD_A);
+    const segunda = await engine.run(razonAnulada, DASHBOARD_A);
+
+    assert.equal(primera.meta.warnings.length, 1, 'la ejecución original advirtió');
+    assert.equal(segunda.meta.servedFrom, 'cache-l1');
+    assert.equal(segunda.meta.asOf, primera.meta.asOf);
+    assert.deepEqual(segunda.meta.warnings, primera.meta.warnings);
+    assert.equal(segunda.meta.queryId, primera.meta.queryId);
+  });
+
+  it('acotada a dos entradas, desaloja la menos usada recientemente', async () => {
+    const { engine } = armar({ cache: crearMemoryStore({ maximo: 2 }) });
+    const soloConteo = { measures: ['reviews.count'] };
+    const promedio = { measures: ['reviews.avg_score'] };
+
+    await engine.run(CONTEO_POR_ESTADO, DASHBOARD_A);
+    await engine.run(soloConteo, DASHBOARD_A);
+    await engine.run(CONTEO_POR_ESTADO, DASHBOARD_A);
+    await engine.run(promedio, DASHBOARD_A);
+
+    const laUsada = await engine.run(CONTEO_POR_ESTADO, DASHBOARD_A);
+    const laDesalojada = await engine.run(soloConteo, DASHBOARD_A);
+
+    assert.equal(laUsada.meta.servedFrom, 'cache-l1', 'la que se volvió a usar sigue en la caché');
+    assert.equal(laDesalojada.meta.servedFrom, 'live', 'la que no se usó fue desalojada');
+  });
+});
+
+// El dry-run no toca la caché ni para leer ni para escribir: no ejecutó nada,
+// así que no tiene resultado que guardar, y devolver el de otra ejecución sería
+// mentir sobre lo que se pidió —el plan que muestra es el de esta consulta—.
+// Este bloque no necesita base: `plan()` tampoco la toca.
+const cacheQueNadieDebeTocar = {
+  async get() {
+    throw new Error('el dry-run no puede leer la caché');
+  },
+  async set() {
+    throw new Error('el dry-run no puede escribir en la caché');
+  },
+  async delete() {
+    throw new Error('el dry-run no puede borrar de la caché');
+  },
+};
+
+const poolQueNadieDebeTocar = {
+  connect() {
+    throw new Error('el dry-run no puede abrir conexión');
+  },
+};
+
+describe('el dry-run nunca toca la caché', () => {
+  it('planifica con un store que falla si alguien lo llama', () => {
+    const catalog = createCatalog();
+    for (const definicion of [reviews, employees, departments]) catalog.register(definicion);
+    const engine = createEngine({
+      catalog,
+      pool: poolQueNadieDebeTocar,
+      cache: cacheQueNadieDebeTocar,
+    });
+
+    const { sql, plan } = engine.plan(CONTEO_POR_ESTADO, DASHBOARD_A);
+
+    assert.match(sql, /^WITH/);
+    assert.equal(plan.entity, 'reviews');
+  });
 });
