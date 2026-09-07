@@ -118,19 +118,27 @@ equivalente en Cube, se indica para facilitar la lectura al equipo.
   ttlMs)`, `delete(key)`, los tres async—. `MemoryStore` es su implementación L1,
   en memoria del proceso; `RedisStore` (L2, compartida entre instancias) es la
   misma interfaz.
-- **Llave de caché**: **es** el `queryId`. No hay dos hashes: la forma canónica
-  de la consulta con sus parámetros, la empresa y la versión del catálogo son
+- **Llave de caché**: **es** el `queryId`. No hay dos hashes: lo que se va a
+  ejecutar —el SQL, sus parámetros, la empresa y la versión del catálogo— es
   exactamente lo que decide si dos consultas son la misma consulta, tanto para
-  identificarla como para reusar su resultado.
+  identificarla como para reusar su resultado. Nace del SQL y no del JSON pedido
+  porque entre los dos hay decisiones del engine que cambian el resultado sin
+  cambiar la consulta: sobre todo el **límite efectivo**, que lo pone el
+  presupuesto de la clase de consumidor y viaja en los parámetros.
 - **`servedFrom`**: de dónde salió la respuesta: `live` (se ejecutó contra la
   base) o `cache-l1` (estaba guardada en memoria del proceso). Viaja en
   `meta.servedFrom`.
 - **`asOf`**: instante en que se ejecutó la consulta que produjo estas filas. En
   un hit es el de la ejecución original, no el de ahora: es lo que le permite al
   consumidor mostrar la antigüedad del dato.
-- **TTL**: cuánto vive una entrada de caché. Lo fija la clase de consumidor en su
-  presupuesto (`cacheTtlMs`), como el timeout y el límite de filas: cuánta
-  antigüedad se tolera es parte de lo que esa clase puede gastar.
+- **TTL**: cuánta antigüedad tolera una respuesta. Lo fija la clase de consumidor
+  en su presupuesto (`cacheTtlMs`), como el timeout y el límite de filas: cuánta
+  antigüedad se tolera es parte de lo que esa clase puede gastar. **Lo evalúa
+  quien lee**, comparando el `asOf` de la entrada contra su propio TTL: una
+  entrada que el tablero (60 s) dejó hace 50 s le sirve a él y la API (30 s) la
+  trata como miss. Si se decidiera sólo al escribir, el primero en llegar le
+  impondría su frescura a todos los demás. El store además le pone su propio
+  vencimiento a la entrada, que es lo que le permite desalojarla.
 - **Hit ratio**: proporción de respuestas servidas desde la caché sobre las que
   la consultaron. Sale de `cache.hits` y `cache.misses` de la telemetría; un
   engine sin caché no reporta ninguno de los dos.
@@ -144,11 +152,13 @@ equivalente en Cube, se indica para facilitar la lectura al equipo.
   de caché y tiempo de base (suma y cuenta). Una respuesta servida desde la
   caché cuenta como servida pero no suma al tiempo de base. Es reinicializable;
   exportarla está fuera de alcance.
-- **Identidad de la consulta (`queryId`)**: hash de la forma de la consulta con
-  sus parámetros, más la empresa, más la versión del catálogo. La serialización
-  es canónica, así que reordenar las claves del JSON no lo cambia. Viaja en
-  `meta.queryId`, marca el SQL que se ejecuta (`/* queryId consumer */`) y **es**
-  la llave de la caché.
+- **Identidad de la consulta (`queryId`)**: hash del SQL que se va a ejecutar
+  (sin su marca de comentario), sus parámetros, la empresa y la versión del
+  catálogo. La serialización es canónica, así que reordenar las claves del JSON
+  no lo cambia. Dos JSON iguales que producen SQL o parámetros distintos son dos
+  consultas distintas; dos JSON distintos que producen exactamente lo mismo son
+  la misma. Viaja en `meta.queryId`, marca el SQL que se ejecuta
+  (`/* queryId consumer */`) y **es** la llave de la caché.
 
 ## Capa HTTP
 

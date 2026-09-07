@@ -44,12 +44,16 @@ describe('caché L1 en memoria', { ...conBase, timeout: 15_000 }, () => {
     await pool.end();
   });
 
-  function armar({ cache, telemetria = crearTelemetria(), definiciones } = {}) {
+  function armar({ cache, telemetria = crearTelemetria(), definiciones, reloj } = {}) {
     const catalog = createCatalog();
     for (const definicion of definiciones ?? [reviews, employees, departments]) {
       catalog.register(definicion);
     }
-    return { catalog, engine: createEngine({ catalog, pool, cache, telemetria }), telemetria };
+    return {
+      catalog,
+      engine: createEngine({ catalog, pool, cache, telemetria, reloj }),
+      telemetria,
+    };
   }
 
   it('la segunda ejecución de la misma consulta se sirve desde cache-l1 con las mismas filas', async () => {
@@ -181,6 +185,61 @@ describe('caché L1 en memoria', { ...conBase, timeout: 15_000 }, () => {
     assert.equal(segunda.meta.servedFrom, 'cache-l1');
     assert.equal(tercera.meta.servedFrom, 'cache-l1');
     assert.deepEqual(porEstado(tercera.rows), ESTADOS_EMPRESA_A);
+  });
+
+  // La llave nace del SQL que se va a ejecutar y de sus parámetros, no del JSON
+  // de la consulta: el LIMIT efectivo lo pone el presupuesto de la clase de
+  // consumidor y viaja en los parámetros. Si la llave no lo mirara, el tablero
+  // (5000 filas como techo) le dejaría servida a la API (10000) una entrada
+  // recortada, y la API recibiría menos filas de las que su presupuesto permite
+  // sin que nada lo delate.
+  const API_A = { companyId: 1, consumer: 'api' };
+
+  it('dos consumidores con distinto límite efectivo no comparten la entrada', async () => {
+    const { engine } = armar({ cache: crearMemoryStore() });
+
+    const delTablero = await engine.run(CONTEO_POR_ESTADO, DASHBOARD_A);
+    const deLaApi = await engine.run(CONTEO_POR_ESTADO, API_A);
+
+    assert.notEqual(deLaApi.meta.queryId, delTablero.meta.queryId, 'otro LIMIT es otra consulta');
+    assert.equal(deLaApi.meta.servedFrom, 'live', 'la API no puede recibir la entrada recortada del tablero');
+    assert.deepEqual(porEstado(deLaApi.rows), ESTADOS_EMPRESA_A);
+  });
+
+  // La otra cara: si lo que se ejecuta es idéntico, la entrada se comparte. La
+  // llave no separa por consumidor —eso multiplicaría las entradas sin motivo—,
+  // separa por lo que cambia el resultado.
+  it('con el mismo límite pedido, los dos consumidores comparten la entrada', async () => {
+    const { engine } = armar({ cache: crearMemoryStore() });
+    const conLimitePropio = { ...CONTEO_POR_ESTADO, limit: 10 };
+
+    const delTablero = await engine.run(conLimitePropio, DASHBOARD_A);
+    const deLaApi = await engine.run(conLimitePropio, API_A);
+
+    assert.equal(deLaApi.meta.queryId, delTablero.meta.queryId);
+    assert.equal(deLaApi.meta.servedFrom, 'cache-l1');
+    assert.deepEqual(deLaApi.rows, delTablero.rows);
+  });
+
+  // Compartir la entrada no puede significar heredar la tolerancia del otro. El
+  // TTL lo evalúa quien lee, contra el `asOf` que la entrada trae: el tablero
+  // tolera 60 s y la API 30 s, así que una entrada que el tablero dejó hace 50 s
+  // le sirve a él y no a la API. Si el TTL se decidiera al escribir, el primero
+  // en llegar le impondría su frescura a todos los demás.
+  it('un lector con TTL más corto que la edad de la entrada la trata como miss', async () => {
+    let ahora = 1_700_000_000_000;
+    const { engine } = armar({ cache: crearMemoryStore(), reloj: () => ahora });
+    const conLimitePropio = { ...CONTEO_POR_ESTADO, limit: 10 };
+
+    await engine.run(conLimitePropio, DASHBOARD_A);
+    ahora += 20_000;
+    const fresca = await engine.run(conLimitePropio, API_A);
+    ahora += 30_000;
+    const vieja = await engine.run(conLimitePropio, API_A);
+
+    assert.equal(fresca.meta.servedFrom, 'cache-l1', 'a los 20 s la API todavía la acepta');
+    assert.equal(vieja.meta.servedFrom, 'live', 'a los 50 s pasó el TTL de la API');
+    assert.deepEqual(porEstado(vieja.rows), ESTADOS_EMPRESA_A);
   });
 
   it('acotada a dos entradas, desaloja la menos usada recientemente', async () => {

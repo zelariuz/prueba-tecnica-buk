@@ -318,11 +318,10 @@ curl -s -H 'Authorization: Bearer demo-dashboard-empresa-a' \
   Redis es otra implementación de la misma interfaz, y si la interfaz fuera
   síncrona habría que cambiar el engine para que quepa. La forma la fija el más
   lento.
-- **La llave ES el `queryId`**, no un valor derivado aparte. Ya es el hash de la
-  forma canónica de la consulta con sus parámetros, más la empresa, más la
-  versión del catálogo — exactamente las tres cosas que deciden si dos consultas
-  son la misma. Tener un segundo hash sería tener dos definiciones de "la misma
-  consulta" que pueden separarse sin que nadie lo note.
+- **La llave ES el `queryId`**, no un valor derivado aparte. Tener un segundo
+  hash sería tener dos definiciones de "la misma consulta" que pueden separarse
+  sin que nadie lo note. (La llave se corrigió después de la fase 7: ver
+  "Arreglos de revisión de la fase 7".)
 - **Dos puertas nuevas en el engine**: `buscarEnCache` **después** de planificar
   (una consulta inválida se rechaza igual, esté o no guardada) y `guardarEnCache`
   después de ejecutar en vivo. Un resultado servido desde la caché no se vuelve a
@@ -375,6 +374,25 @@ curl -s -H 'Authorization: Bearer demo-dashboard-empresa-a' \
   relación simplemente no produce arista, y si el destino pedido era alcanzable
   sólo por ahí sale `NO_JOIN_PATH` con la entidad faltante nombrada en la
   sugerencia.
+
+## Arreglos de revisión de la fase 7
+
+- **La llave nace del SQL que se ejecuta, no del JSON pedido**: hasheaba
+  `{ companyId, query, catalogVersion }` y con eso no distinguía consumidores.
+  Contraejemplo: la misma consulta pedida por `dashboard` (techo de 5000 filas)
+  y por `api` (10000) daba el mismo `queryId`, así que la API recibía la entrada
+  recortada del tablero sin que nada lo delatara. Ahora es
+  `hash(sql sin marca + params + companyId + catalogVersion)`: el LIMIT efectivo
+  viaja en los parámetros, así que separa las entradas cuando difiere y las
+  comparte cuando es igual (con `limit: 10` pedido, los dos consumidores usan la
+  misma). El `queryId` sigue siendo reproducible para la misma forma y empresa.
+- **El TTL lo evalúa el lector**, contra el `asOf` que la entrada trae, y no sólo
+  el que escribió. Compartir una entrada no puede significar heredar la
+  tolerancia del otro: una que el tablero (60 s) dejó hace 50 s le sirve a él y
+  la API (30 s) la trata como miss. La entrada **no** se borra al rechazarla:
+  sigue siendo válida para quien tolera más. El reloj del engine es inyectable
+  (`createEngine({ reloj })`) porque el `asOf` y esa edad son el mismo tiempo y
+  tienen que salir de la misma fuente.
 
 ## Estado
 
