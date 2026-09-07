@@ -162,6 +162,14 @@ docker compose up -d --force-recreate db      # re-aplicar esquema y seed
   `query(name, params)` la devuelve con los valores puestos sin mutar la
   plantilla. Nombre inexistente → `UNKNOWN_QUERY` con sugerencia; parámetro
   declarado que falta → `MISSING_PARAM`.
+- Códigos de error que estrenó esta fase (la lista completa está en
+  `CONTEXT.md`, "Error estructurado"):
+  - `INVALID_DEFINITION`: la definición no cumple la forma o nombra una tabla o
+    columna que el esquema físico no tiene.
+  - `UNSUPPORTED_OPERATOR`: operador válido para el tipo de la dimensión que el
+    planificador todavía no emite en SQL.
+  - `UNKNOWN_QUERY`: no existe una consulta tipo con ese nombre.
+  - `MISSING_PARAM`: la consulta tipo declara un parámetro que la llamada no trae.
 
 ## Estado
 
