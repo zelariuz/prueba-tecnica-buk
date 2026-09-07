@@ -8,7 +8,9 @@
     "node": ">=24"
   },
   "scripts": {
-    "test": "node --test"
+    "test": "node --test",
+    "demo": "node src/demo.js",
+    "start": "node src/server.js"
   },
   "dependencies": {
     "pg": "^8.13.1"
