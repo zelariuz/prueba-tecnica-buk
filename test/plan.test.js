@@ -381,6 +381,43 @@ test('los operadores in y notEquals se emiten con sus parámetros', () => {
   assert.deepEqual(deNot, [EMPRESA, 'pending', 10000]);
 });
 
+test('un filtro de lista sin valores se rechaza en vez de emitir IN ()', () => {
+  const engine = engineDePrueba();
+  const base = { measures: ['reviews.count'], dimensions: ['reviews.status'] };
+
+  // `IN ()` no es SQL válido: sin esta puerta el error aparecería recién en la
+  // base, con un mensaje de sintaxis que no dice qué escribió mal el consumidor.
+  for (const operator of ['in', 'notIn']) {
+    const error = errorDe(() =>
+      engine.plan({ ...base, filters: [{ member: 'reviews.status', operator, values: [] }] }, CTX),
+    );
+
+    assert.equal(error.code, 'INVALID_OPERATOR', operator);
+    assert.equal(error.member, 'reviews.status', operator);
+    assert.match(error.suggestion, /al menos un valor/, operator);
+  }
+
+  // Un segmento mal declarado llega por el mismo camino y se rechaza igual.
+  const catalog = createCatalog();
+  catalog.register({
+    ...reviews,
+    segments: {
+      ...reviews.segments,
+      vacio: {
+        description: 'Segmento mal declarado: lista de valores vacía.',
+        filters: [{ member: 'reviews.status', operator: 'in', values: [] }],
+      },
+    },
+  });
+  for (const definicion of [employees, departments]) catalog.register(definicion);
+
+  const desdeSegmento = errorDe(() =>
+    createEngine({ catalog }).plan({ ...base, segments: ['reviews.vacio'] }, CTX),
+  );
+  assert.equal(desdeSegmento.code, 'INVALID_OPERATOR');
+  assert.equal(desdeSegmento.member, 'reviews.status');
+});
+
 test('un operador que no aplica al tipo de la dimensión corta con INVALID_OPERATOR', () => {
   const error = errorDe(() =>
     engineDePrueba().plan(

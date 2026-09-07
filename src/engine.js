@@ -43,6 +43,9 @@ function sqlDeMedida(medida, entidad) {
   throw new Error(`Tipo de medida no soportado: ${medida.type}`);
 }
 
+// Operadores cuyo valor es una lista: sin elementos no hay SQL que emitir.
+const OPERADORES_DE_LISTA = new Set(['in', 'notIn']);
+
 // El operador de un filtro sale de la tabla del vocabulario según el tipo de la
 // dimensión: la misma tabla que el catálogo publica en `describe()`, para que
 // nunca prometa un operador que el engine rechaza.
@@ -53,6 +56,17 @@ function exigirOperador(filtro, tipo) {
       code: 'INVALID_OPERATOR',
       member: filtro.member,
       suggestion: `El operador ${filtro.operator} no aplica a una dimensión de tipo ${tipo}; usa uno de: ${validos.join(', ')}.`,
+    });
+  }
+  // Un operador de lista sin valores produciría `IN ()`, que no es SQL válido:
+  // el error aparecería recién en la base y sin decir qué miembro lo causó. Se
+  // comprueba antes de saber si el operador ya tiene SQL, porque una lista
+  // vacía es un error del consumidor en cualquiera de los dos.
+  if (OPERADORES_DE_LISTA.has(filtro.operator) && (filtro.values ?? []).length === 0) {
+    throw new SemanticError({
+      code: 'INVALID_OPERATOR',
+      member: filtro.member,
+      suggestion: `El operador ${filtro.operator} requiere al menos un valor: declara values con los valores a comparar.`,
     });
   }
   if (!OPERADORES_EN_SQL.has(filtro.operator)) {
