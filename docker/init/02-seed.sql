@@ -29,6 +29,13 @@
 --               Ingeniería 2025-04-01: avg 3.30 (2004), completadas 1
 --               Ventas     2025-01-01: avg 3.20 (2001), completadas 0
 --
+-- COMPLETITUD (completion_rate = completadas / evaluaciones * 100) de la
+-- empresa 1 por departamento, con las evaluaciones de 2025:
+--   Ingeniería → 4 evaluaciones (1000, 1001, 1002, 1003), 3 completadas → 75
+--   Ventas     → 2 evaluaciones (1004, 1005),             0 completadas → 0
+--   Con el filtro global `status = completed` la misma consulta da Ingeniería
+--   100 y Ventas desaparece: sin filas completadas no queda grupo que agrupar.
+--
 -- FILA INCONSISTENTE (evaluación 1010), evaluaciones de 2025 por trimestre de
 -- la empresa 1:
 --   sin join  → 2025-01-01: 3, 2025-04-01: 3, 2025-07-01: 1 (la 1010)

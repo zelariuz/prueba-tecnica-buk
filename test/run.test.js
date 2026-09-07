@@ -208,6 +208,85 @@ describe('score promedio y evaluaciones completadas por departamento y trimestre
   });
 });
 
+// Completitud de 2025 por departamento: la razón que el caso pide y la que
+// muestra que se calcula sobre agregados y no fila por fila.
+const completitudDe2025 = {
+  measures: ['reviews.completion_rate'],
+  dimensions: ['departments.name'],
+  timeDimensions: [
+    {
+      dimension: 'reviews.period',
+      granularity: 'year',
+      dateRange: ['2025-01-01', '2025-12-31'],
+    },
+  ],
+};
+
+function porDepartamento(rows) {
+  return Object.fromEntries(
+    rows.map((fila) => [fila['departments.name'], fila['reviews.completion_rate']]),
+  );
+}
+
+describe('completitud como medida derivada', conBase, () => {
+  let pool;
+  let engine;
+
+  before(() => {
+    pool = new pg.Pool({ connectionString: DATABASE_URL });
+    const catalog = createCatalog();
+    for (const definicion of [reviews, employees, departments]) catalog.register(definicion);
+    engine = createEngine({ catalog, pool });
+  });
+
+  after(async () => {
+    await pool.end();
+  });
+
+  const ctx = { companyId: EMPRESA_A, consumer: 'api' };
+
+  it('el departamento con tres completadas de cuatro llega con 75, no con 0', async () => {
+    const { rows, meta } = await engine.run(completitudDe2025, ctx);
+
+    // Literales del seed (docker/init/02-seed.sql): Ingeniería tiene en 2025
+    // cuatro evaluaciones y tres completadas; Ventas, dos y ninguna. Con dos
+    // COUNT enteros la división daría 0 y 0.
+    assert.deepEqual(porDepartamento(rows), { Ingeniería: 75, Ventas: 0 });
+    assert.deepEqual(meta.warnings, [], 'sin filtro global no hay nada que advertir');
+  });
+
+  it('un filtro global que anula el denominador deja la razón en 100 y lo advierte', async () => {
+    const { rows, meta } = await engine.run(
+      {
+        ...completitudDe2025,
+        filters: [{ member: 'reviews.status', operator: 'equals', values: ['completed'] }],
+      },
+      ctx,
+    );
+
+    // El filtro global es el mismo que distingue al numerador: numerador y
+    // denominador cuentan las mismas filas. El número no está mal calculado,
+    // está mal pedido, y el dashboard tiene que poder decirlo (historia 18).
+    assert.deepEqual(porDepartamento(rows), { Ingeniería: 100 });
+    assert.equal(meta.warnings.length, 1);
+    assert.equal(meta.warnings[0].member, 'reviews.completion_rate');
+    assert.match(meta.warnings[0].warning, /100/);
+    assert.match(meta.warnings[0].warning, /reviews\.status/);
+  });
+
+  it('el mismo filtro puesto como segmento global advierte igual', async () => {
+    const { meta } = await engine.run(
+      { ...completitudDe2025, segments: ['reviews.completed'] },
+      ctx,
+    );
+
+    // Para el planificador un segmento son los filtros que su dueño declaró:
+    // nombrar la regla en vez de escribirla no cambia lo que hace.
+    assert.equal(meta.warnings.length, 1);
+    assert.equal(meta.warnings[0].member, 'reviews.completion_rate');
+  });
+});
+
 // Doble delgado del pool: entrega clientes reales y solo reemplaza el texto de
 // la consulta principal —la única que viaja con parámetros— por una que duerme.
 // Es la forma de provocar un timeout real sin meter SQL en una definición ni

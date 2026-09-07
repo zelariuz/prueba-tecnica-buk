@@ -53,6 +53,20 @@ function indentar(texto) {
     .join('\n');
 }
 
+// Dos filtros son el mismo cuando comparan el mismo miembro con el mismo
+// operador y los mismos valores. Es la comparación que permite reconocer que un
+// filtro global repite el filtro propio de una medida.
+function claveDeFiltro(filtro) {
+  return `${filtro.member}|${filtro.operator}|${JSON.stringify(filtro.values ?? [])}`;
+}
+
+// Un filtro dicho en palabras, para que la advertencia nombre al culpable.
+function describirFiltros(filtros) {
+  return filtros
+    .map((filtro) => `${filtro.member} ${filtro.operator} ${(filtro.values ?? []).join(', ')}`)
+    .join(' y ');
+}
+
 // Operadores cuyo valor es una lista: sin elementos no hay SQL que emitir.
 const OPERADORES_DE_LISTA = new Set(['in', 'notIn']);
 
@@ -293,6 +307,32 @@ export function createEngine({
         ? catalog.entity(medida.entidad).segments[medida.definicion.segment].filters
         : [];
 
+    // Semántica de filtros: los filtros de la consulta y sus segmentos son
+    // globales —afectan a todas las medidas— y el filtro propio de una medida
+    // se suma al global. De ahí sale el caso engañoso de la historia 18: si un
+    // filtro global repite justamente lo que distingue al numerador de una
+    // razón, numerador y denominador terminan contando las mismas filas y la
+    // razón vale su escala en todas las filas. El número está bien calculado y
+    // mal pedido; se devuelve con una advertencia que lo explica.
+    const globales = new Set(declarados.map(claveDeFiltro));
+    const advertencias = [];
+    for (const derivada of derivadas) {
+      const propios = (nombre) =>
+        filtrosDeMedida({ entidad: raiz, definicion: declaracionesDeMedida[nombre] ?? {} });
+      const delDenominador = new Set(propios(derivada.definicion.denominator).map(claveDeFiltro));
+      const distintivos = propios(derivada.definicion.numerator).filter(
+        (filtro) => !delDenominador.has(claveDeFiltro(filtro)),
+      );
+      if (distintivos.length === 0) continue;
+      if (!distintivos.every((filtro) => globales.has(claveDeFiltro(filtro)))) continue;
+
+      const escala = derivada.definicion.scale ?? 1;
+      advertencias.push({
+        member: derivada.miembro,
+        warning: `El filtro global ${describirFiltros(distintivos)} es el mismo que distingue al numerador de ${derivada.miembro}: aplicado a toda la consulta, numerador y denominador cuentan las mismas filas y la razón vale ${escala} en cada fila. Quita ese filtro de la consulta para ver la tasa real.`,
+      });
+    }
+
     // Cada entidad solo lleva a su CTE las columnas que la consulta necesita.
     const columnas = new Map([[raiz, new Set()]]);
     const pedir = (entidad, columna) => {
@@ -404,7 +444,7 @@ export function createEngine({
       `LIMIT ${parametro(Math.min(query.limit ?? presupuesto.maxFilas, presupuesto.maxFilas))}`,
     ].join('\n');
 
-    return { sql, params, medidas, presupuesto };
+    return { sql, params, medidas, presupuesto, advertencias };
   }
 
   // Dry-run: el plan sin tocar la base.
@@ -437,7 +477,7 @@ export function createEngine({
   }
 
   async function run(query, ctx) {
-    const { sql, params, medidas, presupuesto } = planificar(query, ctx);
+    const { sql, params, medidas, presupuesto, advertencias } = planificar(query, ctx);
 
     // Instante en que se ejecutó la consulta que produjo el resultado; cuando
     // haya caché, la entrada guardada conserva su propio asOf.
@@ -446,7 +486,14 @@ export function createEngine({
 
     return {
       rows: aNumeros(filas, medidas),
-      meta: { servedFrom: 'live', asOf, queryId: identificarConsulta(query, ctx) },
+      meta: {
+        servedFrom: 'live',
+        asOf,
+        queryId: identificarConsulta(query, ctx),
+        // Siempre presente, aunque esté vacía: quien la lee no tiene que
+        // preguntarse si el campo existe.
+        warnings: advertencias,
+      },
     };
   }
 
