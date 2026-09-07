@@ -1,6 +1,6 @@
 // Catálogo: registro central de definiciones semánticas (ADR 0001). Valida al
 // registrar, arma el grafo de relaciones y expone la vista pública. No genera
-// SQL: esa es la única responsabilidad del engine.
+// SQL: eso es responsabilidad exclusiva del planificador (src/planner.js).
 import { createHash } from 'node:crypto';
 
 import { SemanticError } from './errors.js';
@@ -513,8 +513,8 @@ export function createCatalog() {
     // `describe`, sin importar qué traiga el contexto: el contexto lo arma
     // quien llama, y una vista que dependiera de un campo suyo sería una vista
     // que el consumidor puede pedirse solo.
-    // eslint-disable-next-line no-unused-vars -- el contexto es parte del
-    // contrato: la vista se filtrará por empresa y rol; hoy es la misma.
+    // Recibe el contexto porque es parte del contrato —la vista se filtrará por
+    // empresa y rol— aunque hoy la vista pública sea la misma para todos.
     describe(ctx) {
       return vistaPublica();
     },
