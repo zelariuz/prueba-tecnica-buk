@@ -208,8 +208,20 @@ export function createEngine({ catalog, pool, dialect = postgres }) {
     );
 
     // Se ordena por el nombre semántico de la columna de salida: el consumidor
-    // ordena por lo que pidió, no por la expresión con la que se calculó.
+    // ordena por lo que pidió, no por la expresión con la que se calculó. La
+    // llave termina como identificador entre comillas, así que solo puede ser
+    // un miembro que la consulta devuelve: cualquier otro texto se rechaza
+    // antes de tocar el SQL.
+    const salida = new Set([...dimensiones, ...medidas].map((m) => m.miembro));
     const orden = Object.entries(query.order ?? {}).map(([miembro, direccion]) => {
+      if (!salida.has(miembro)) {
+        throw new SemanticError({
+          code: 'UNKNOWN_MEMBER',
+          member: miembro,
+          suggestion:
+            'Ordena por un miembro presente en measures, dimensions o timeDimensions de la misma consulta.',
+        });
+      }
       if (direccion !== 'asc' && direccion !== 'desc') {
         throw new Error(`Dirección de orden no soportada: ${direccion}`);
       }

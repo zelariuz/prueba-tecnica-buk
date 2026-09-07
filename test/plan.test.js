@@ -188,3 +188,28 @@ test('el SQL del caso obligatorio es el del snapshot del repo', () => {
   assert.equal(sql, esperado.trimEnd());
   assert.deepEqual(params, [EMPRESA, '2025-01-01', '2025-12-31', 'completed', 500]);
 });
+
+test('order solo acepta miembros que la consulta devuelve', () => {
+  // La llave de order termina como identificador entre comillas en el SQL: si
+  // no se valida contra lo que la consulta devuelve, una comilla dentro de la
+  // llave cierra el identificador y el resto se ejecuta como SQL.
+  const error = errorDe(() =>
+    engineDePrueba().plan(
+      { ...porTrimestreDe2025, order: { 'x" OR (SELECT pg_sleep(5))="': 'asc' } },
+      CTX,
+    ),
+  );
+
+  assert.equal(error.code, 'UNKNOWN_MEMBER');
+  assert.equal(error.member, 'x" OR (SELECT pg_sleep(5))="');
+  assert.ok(error.suggestion.length > 0, 'el error estructurado trae sugerencia');
+});
+
+test('order acepta una medida o una dimensión temporal de la consulta', () => {
+  const { sql } = engineDePrueba().plan(
+    { ...porTrimestreDe2025, order: { 'reviews.count': 'desc', 'reviews.period': 'asc' } },
+    CTX,
+  );
+
+  assert.match(sql, /ORDER BY "reviews\.count" DESC, "reviews\.period" ASC/);
+});
