@@ -70,7 +70,7 @@ export function createEngine({
     }
     const { sql, params, medidas, presupuesto, advertencias } = plan;
 
-    // La llave de la caché **es** el queryId, y nace de lo que realmente se va a
+    // La identidad de la consulta nace de lo que realmente se va a
     // ejecutar: el SQL sin su marca de comentario, sus parámetros, la empresa y
     // la versión del catálogo. Que salga del SQL y no del JSON no es un detalle:
     // el LIMIT efectivo lo pone el presupuesto de la clase de consumidor y viaja
@@ -78,16 +78,20 @@ export function createEngine({
     // consultas distintas y no pueden compartir entrada. La empresa dentro del
     // hash hace imposible que una entrada de A sirva a B, y la versión del
     // catálogo invalida todo al cambiar una definición.
-    const queryId = identificarConsulta({
-      sql,
-      params,
-      companyId: ctx.companyId,
-      catalogVersion: catalog.version(),
-    });
+    const catalogVersion = catalog.version();
+    const queryId = identificarConsulta({ sql, params, companyId: ctx.companyId, catalogVersion });
+
+    // La llave con la que la caché guarda es el `queryId` con su procedencia
+    // escrita al lado: `{versión del catálogo}:{empresa}:{queryId}`. El hash ya
+    // lleva las dos cosas adentro —el aislamiento no depende del texto—, pero en
+    // un Redis compartido entre instancias lo que no se ve no se puede auditar:
+    // con la empresa en el texto, comprobar que ninguna entrada quedó sin dueño
+    // es un `SCAN`, y no un acto de fe en el hash.
+    const llave = `${catalogVersion}:${ctx.companyId}:${queryId}`;
 
     // Puerta · Buscar en caché. Va después de planificar, no antes: una
     // consulta inválida se rechaza igual, esté o no en la caché.
-    const guardado = await buscarEnCache(queryId, ctx, presupuesto);
+    const guardado = await buscarEnCache(llave, ctx, presupuesto);
     if (guardado) {
       // Servida igual que cualquier otra, sólo que sin tiempo de base: `dbMs`
       // ausente es lo que distingue en la telemetría a la que no la consultó.
@@ -126,7 +130,7 @@ export function createEngine({
     // Puerta · Guardar en caché. Sólo lo que se ejecutó en vivo: un resultado
     // servido desde la caché no se vuelve a guardar, así que su TTL cuenta
     // desde la ejecución real y una entrada no se renueva sola para siempre.
-    await guardarEnCache(queryId, { rows, asOf, warnings: advertencias }, presupuesto.cacheTtlMs);
+    await guardarEnCache(llave, { rows, asOf, warnings: advertencias }, presupuesto.cacheTtlMs);
 
     return {
       rows,
@@ -148,7 +152,7 @@ export function createEngine({
   // primero en llegar le impondría su frescura a todos los que vengan después.
   // La entrada vieja para este lector **no** se borra: sigue siendo válida para
   // quien tolera más, y borrarla sería quitarle a otro un dato que le sirve.
-  async function buscarEnCache(queryId, ctx, presupuesto) {
+  async function buscarEnCache(llave, ctx, presupuesto) {
     if (!cache) return undefined;
     // Red de seguridad: ninguna consulta falla por la caché. El store compuesto
     // ya se defiende de su segundo nivel, pero el engine no sabe qué
@@ -158,7 +162,7 @@ export function createEngine({
     // antes de que se note como latencia.
     let guardado;
     try {
-      guardado = await cache.get(queryId);
+      guardado = await cache.get(llave);
     } catch {
       telemetria.registrarErrorDeCache({ nivel: 'cache' });
       guardado = undefined;
@@ -175,12 +179,12 @@ export function createEngine({
   // El TTL sale del presupuesto de la clase de consumidor, como el timeout y el
   // límite de filas: cuánta antigüedad tolera quien pregunta es parte de lo que
   // su clase puede gastar, y no algo que la consulta pueda elegirse sola.
-  async function guardarEnCache(queryId, entrada, ttlMs) {
+  async function guardarEnCache(llave, entrada, ttlMs) {
     if (!cache) return;
     // La misma red del otro lado: el resultado ya está, no guardarlo sólo
     // significa que la próxima vuelve a la base.
     try {
-      await cache.set(queryId, entrada, ttlMs);
+      await cache.set(llave, entrada, ttlMs);
     } catch {
       telemetria.registrarErrorDeCache({ nivel: 'cache' });
     }
