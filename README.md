@@ -9,13 +9,15 @@ semánticos. El aislamiento por empresa es del motor, no del consumidor.
 - Plan de construcción por fases: `plans/plan-capa-semantica.md`.
 - Vocabulario: `CONTEXT.md`.
 
-Estado actual: **fase 5** — el caso obligatorio de punta a punta, los
+Estado actual: **fase 6** — el caso obligatorio de punta a punta, los
 guardarraíles del consumidor (presupuesto por clase: timeout, máximo de filas,
 rango temporal obligatorio), el catálogo como contrato (valida las definiciones
 contra el esquema real, se describe en dos vistas, se versiona por hash y
-registra consultas tipo) y las medidas derivadas: razones calculadas sobre
+registra consultas tipo), las medidas derivadas (razones calculadas sobre
 agregados, con la semántica de filtros escrita y un dry-run que devuelve el plan
-lógico sin tocar la base.
+lógico sin tocar la base) y **el servicio HTTP**: `POST /analytics/query` y
+`GET /analytics/catalog` con contexto derivado del token, telemetría en memoria,
+un segundo módulo (asistencia, con `attendance_rate`) y una demo por consola.
 
 ## Requisitos
 
@@ -26,12 +28,16 @@ lógico sin tocar la base.
 
 ```bash
 npm install
-docker compose up -d db          # Postgres 16 con el esquema del caso y el seed
-cp .env.example .env             # opcional: referencia de variables
+docker compose up -d --build     # db (Postgres 16 con esquema y seed), redis y api
+cp .env.example .env             # referencia de variables
 
 export DATABASE_URL=postgres://capa:capa@localhost:5433/capa_semantica
-npm test
+npm test                         # suite completa
+npm run demo                     # las tres preguntas del caso, por consola
 ```
+
+Si sólo quieres correr los tests, basta con `docker compose up -d db`: el
+servicio `api` no hace falta para la suite.
 
 El host publica Postgres en el puerto **5433** (no 5432) para no chocar con un
 Postgres instalado localmente. La contraseña del compose es de juguete y sirve
@@ -49,15 +55,20 @@ está definida:
 
 ## Base de datos
 
-La base es **efímera a propósito**: el compose no monta volumen persistente, así
-que recrear el contenedor vuelve a aplicar `docker/init/01-schema.sql` (el
+El compose no declara volumen para la base: `docker/init/01-schema.sql` (el
 esquema del caso, sin cambios) y `docker/init/02-seed.sql` (seed determinista de
-dos empresas). Los conteos esperados están calculados a mano en el encabezado
-del seed; los tests los usan como literales.
+dos empresas) se aplican cuando el directorio de datos está vacío. Los conteos
+esperados están calculados a mano en el encabezado del seed; los tests los usan
+como literales.
 
 ```bash
-docker compose up -d --force-recreate db   # vuelve a cero: esquema + seed
+docker compose up -d --force-recreate --renew-anon-volumes db   # vuelve a cero
 ```
+
+`--renew-anon-volumes` no sobra: la imagen `postgres` declara un `VOLUME` para
+su directorio de datos, así que Docker crea un volumen anónimo que **sobrevive**
+a recrear el contenedor. Sin esa opción el contenedor es nuevo pero los datos son
+los viejos, y el seed no se vuelve a aplicar.
 
 ## Cómo se consulta
 
@@ -216,3 +227,104 @@ await engine.run(
 
 Sirven también de test de regresión: un test las recorre todas, comprueba que
 cada CTE de su SQL lleva `company_id = $1` y que todas devuelven filas.
+
+## El servicio HTTP
+
+Dos rutas, sin framework (`node:http`). La capa es delgada a propósito: traduce
+el token a contexto de sesión `{ companyId, consumer }` (ADR 0002), delega en el
+engine y traduce el error estructurado a su código HTTP. No valida miembros, no
+arma SQL y no decide presupuestos.
+
+| Ruta | Qué hace |
+| --- | --- |
+| `POST /analytics/query` | Ejecuta una consulta declarativa. Devuelve `{ rows, meta }`. |
+| `POST /analytics/query?dryRun=true` | Devuelve `{ sql, params, plan }` sin tocar la base. |
+| `GET /analytics/catalog` | Devuelve la vista **pública** del catálogo (nunca la interna). |
+
+El `dryRun` viaja en la URL y no en el cuerpo a propósito: el cuerpo es la
+consulta declarativa y nada más, así que pedirlo no cambia su forma ni, por lo
+tanto, su `queryId`.
+
+**Autenticación**: fuera de alcance (el PRD la deja a la aplicación). Para poder
+ejercitar el contrato hay una tabla en memoria de tokens de demo, cargada de la
+variable `DEMO_TOKENS` en JSON —`{ token → { companyId, consumer } }`, valores
+falsos y públicos, ver `.env.example`—. En producción esa función se reemplaza
+por el verificador de tokens de la plataforma y nada más cambia.
+
+```bash
+# Catálogo público
+curl -s -H 'Authorization: Bearer demo-dashboard-empresa-a' \
+  http://localhost:3000/analytics/catalog
+
+# Una consulta
+curl -s -X POST http://localhost:3000/analytics/query \
+  -H 'Authorization: Bearer demo-api-empresa-a' \
+  -H 'content-type: application/json' \
+  -d '{"measures":["reviews.count"],"dimensions":["reviews.status"]}'
+# → {"rows":[{"reviews.status":"calibrated","reviews.count":2}, …],
+#    "meta":{"servedFrom":"live","asOf":"…","queryId":"4d6d9133c6203dec","warnings":[]}}
+
+# Sin token
+curl -s http://localhost:3000/analytics/catalog
+# → {"code":"MISSING_TENANT","suggestion":"La petición necesita un token conocido…"}
+```
+
+### Códigos de estado
+
+La tabla vive en `src/http/codigos.js`. Lo que no está en ella no es un error
+del consumidor: sale como **500** con `{ code: 'INTERNAL_ERROR' }` y el detalle
+queda en el log del servidor.
+
+| HTTP | Códigos |
+| --- | --- |
+| 401 | `MISSING_TENANT` (sin token o token desconocido) |
+| 400 | `FORBIDDEN_FIELD`, `UNKNOWN_MEMBER`, `NO_JOIN_PATH`, `INVALID_OPERATOR`, `UNSUPPORTED_OPERATOR`, `MULTI_ENTITY_MEASURES`, `MISSING_TIME_RANGE`, `INVALID_CONSUMER`, `UNKNOWN_QUERY`, `MISSING_PARAM`, `INVALID_JSON` |
+| 504 | `QUERY_TIMEOUT` |
+| 500 | cualquier otro error, sin filtrar detalles internos |
+
+`QUERY_TIMEOUT` es 504 y no 503 porque el servicio está sano: lo que se agotó es
+el presupuesto de tiempo de esa consulta contra la base. 503 diría "vuelve más
+tarde", y volver más tarde con la misma consulta no la haría terminar.
+
+## Telemetría
+
+El engine cuenta lo que pasó por él y lo expone con `engine.telemetry()`
+(`src/telemetry.js`, inyectable y reinicializable). Responde tres preguntas de
+plataforma: cuántas consultas se rechazan, con qué código y **en qué puerta**, y
+dónde se va el tiempo de base — todo desglosado por consumidor.
+
+```json
+{
+  "total": 4,
+  "byResult": { "ok": 3, "error": 1 },
+  "byErrorCode": { "UNKNOWN_MEMBER": 1 },
+  "byGate": { "resolverMiembros": 1 },
+  "byConsumer": { "dashboard": { "ok": 3, "error": 1 } },
+  "database": { "count": 3, "totalMs": 8.0 }
+}
+```
+
+El SQL que sale a la base va marcado con `/* <queryId> <consumer> */` al inicio:
+es lo que permite reconocer en los logs de Postgres a quién pertenece una
+consulta lenta. El SQL de `plan()` no lleva la marca, así que el dry-run muestra
+el SQL puro y los snapshots del repo no cambian.
+
+`meta.queryId` es el hash de tres cosas y de ninguna más: la forma de la consulta
+con sus parámetros (serializada de forma canónica, así que reordenar las claves
+del JSON no lo cambia), la empresa y la versión del catálogo.
+
+## La demo
+
+```bash
+DATABASE_URL=postgres://capa:capa@localhost:5433/capa_semantica npm run demo
+```
+
+Registra los módulos contra el esquema real, imprime el catálogo público y
+responde las tres preguntas del caso mostrando, para cada una, el JSON de la
+consulta, el SQL que generó el planificador y las filas que devolvió Postgres.
+Termina con un error a propósito —para ver el error estructurado con su
+sugerencia— y con la telemetría de lo que acaba de correr.
+
+El seed vive en 2025, así que "los últimos tres meses" de la tercera pregunta
+son los últimos tres meses **de los datos** (junio a agosto de 2025), no los del
+calendario de hoy.

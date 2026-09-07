@@ -117,4 +117,29 @@ equivalente en Cube, se indica para facilitar la lectura al equipo.
 - **Dialecto**: tabla de capacidades del motor (`agregadoFiltrado`,
   `dateTrunc`, …) que consulta el planificador para elegir la sintaxis.
 - **Telemetría**: señales de monitoreo del engine. Se dice "telemetría" y no
-  "métrica" para no confundir con las medidas de negocio.
+  "métrica" para no confundir con las medidas de negocio. Vive en memoria del
+  proceso, se lee con `engine.telemetry()` y cuenta, por consumidor: consultas
+  servidas y rechazadas, código de error, **puerta que rechazó** y tiempo de
+  base (suma y cuenta). Es reinicializable; exportarla está fuera de alcance.
+- **Identidad de la consulta (`queryId`)**: hash de la forma de la consulta con
+  sus parámetros, más la empresa, más la versión del catálogo. La serialización
+  es canónica, así que reordenar las claves del JSON no lo cambia. Viaja en
+  `meta.queryId`, marca el SQL que se ejecuta (`/* queryId consumer */`) y será
+  la llave de la caché.
+
+## Capa HTTP
+
+- **Token de demo**: entrada de la tabla en memoria `{ token → { companyId,
+  consumer } }` que la capa HTTP usa para construir el contexto de sesión. Se
+  carga de la variable `DEMO_TOKENS` en JSON. Existe sólo porque la
+  autenticación está fuera de alcance: son valores falsos y públicos, y en
+  producción los reemplaza el verificador de tokens de la plataforma. Sin token
+  conocido no hay empresa que consultar: `MISSING_TENANT`.
+- **Mapa de códigos HTTP**: la tabla que traduce el código del error
+  estructurado al código de estado (`src/http/codigos.js`). Lo que no está en
+  ella es un error del servidor: 500 sin detalles. `INVALID_JSON` es el único
+  código que nace en la capa HTTP —el cuerpo no llegó a ser una consulta
+  declarativa— y `QUERY_TIMEOUT` sale como 504.
+- **Dry-run por la API**: `POST /analytics/query?dryRun=true` devuelve
+  `{ sql, params, plan }` sin tocar la base. Va en la URL y no en el cuerpo
+  porque el cuerpo es la consulta declarativa y nada más.

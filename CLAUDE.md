@@ -29,7 +29,11 @@ src/
   definitions/reviews.js     evaluaciones: dimensiones, medidas, segmento y relación
   definitions/employees.js   empleados: puente hacia departamentos
   definitions/departments.js departamentos: dimensión name
-  definitions/consultas-tipo.js  cuatro plantillas del caso con parámetros `:nombre`
+  definitions/attendance.js  asistencia: dimensión temporal `date`, segmento
+                             `present` y la derivada `attendance_rate`
+  definitions/consultas-tipo.js  cinco plantillas del caso con parámetros `:nombre`
+  definitions/index.js       composición: qué módulos y qué consultas tipo
+                             existen, y `registrarModulos(catalog, snapshot)`
   dialect/postgres.js        capacidades del motor (dateTrunc, agregadoFiltrado)
   budgets.js                 presupuesto por clase de consumidor (timeout, filas, rango)
   catalog.js                 registro y validación de definiciones, resolución de
@@ -45,11 +49,24 @@ src/
   engine.js                  plan() y run(): dry-run y ejecución transaccional con
                              SET LOCAL statement_timeout
   errors.js                  SemanticError { code, member, suggestion }
+  telemetry.js               contadores en memoria por resultado, código, puerta,
+                             consumidor y tiempo de base; inyectable y reiniciable
+  canonical.js               serialización canónica compartida (versión del
+                             catálogo y queryId)
+  http/server.js             las dos rutas con node:http; token → ctx y delega
+  http/codigos.js            mapa código de error → código HTTP
+  http/tokens.js             tabla de tokens de demo desde DEMO_TOKENS
+  server.js                  bin del servicio `api`: introspecta, registra con
+                             snapshot y escucha
+  demo.js                    `npm run demo`: catálogo, tres preguntas, telemetría
 test/
   plan.test.js               seam engine.plan — sin base
   run.test.js                seam engine.run — contra Postgres, se salta sin DATABASE_URL
   catalog.test.js            seams catalog.register y catalog.describe — sin base
                              salvo el único test del introspector
+  http.test.js               prueba de humo HTTP contra un servidor en puerto
+                             efímero, contra Postgres
+  telemetry.test.js          contadores por el seam engine.run
   snapshots/caso-obligatorio.sql  SQL esperado del caso, comparado por igualdad
   snapshots/completion-rate.sql   SQL esperado de la derivada, con su etapa agregada
   fixtures/snapshot.json     foto del esquema generada desde la base del caso
@@ -59,7 +76,9 @@ docker/init/
 docs/
   adr/                     decisiones arquitectónicas numeradas
   semantica-de-filtros.md  qué filtra a qué y cuándo una razón queda en 100
-docker-compose.yml         db (Postgres 16, host 5433) y redis (host 6380)
+docker-compose.yml         db (Postgres 16, host 5433), redis (host 6380) y api
+                           (host 3000, espera a que db esté sana)
+Dockerfile                 imagen del servicio api (node:24-alpine)
 ```
 
 ## Comandos
@@ -67,8 +86,17 @@ docker-compose.yml         db (Postgres 16, host 5433) y redis (host 6380)
 ```bash
 npm install
 docker compose up -d db                       # base con esquema y seed
+docker compose up -d --build                  # todo: db, redis y api (host 3000)
 DATABASE_URL=postgres://capa:capa@localhost:5433/capa_semantica npm test
-docker compose up -d --force-recreate db      # re-aplicar esquema y seed
+DATABASE_URL=postgres://capa:capa@localhost:5433/capa_semantica npm run demo
+
+# Re-aplicar esquema y seed. `--renew-anon-volumes` NO sobra: la imagen
+# postgres declara un VOLUME anónimo que sobrevive a recrear el contenedor,
+# así que sin esa opción el contenedor es nuevo y los datos son los viejos.
+docker compose up -d --force-recreate --renew-anon-volumes db
+
+curl -s -H 'Authorization: Bearer demo-dashboard-empresa-a' \
+  http://localhost:3000/analytics/catalog
 ```
 
 ## Convenciones
@@ -222,7 +250,67 @@ docker compose up -d --force-recreate db      # re-aplicar esquema y seed
   puertas es parte del contrato: los filtros aportan entidades al camino de
   joins, y los parámetros `$n` se numeran en el orden en que se piden.
 
+## Decisiones de la fase 6
+
+- La capa HTTP es `node:http` sin frameworks, con dos rutas y un solo trabajo:
+  traducir el token a `{ companyId, consumer }` y delegar (ADR 0002). No valida
+  miembros, no arma SQL y no decide presupuestos; si aparece una regla de
+  negocio ahí, está en el lugar equivocado.
+- **Tokens de demo**: tabla en memoria `{ token → { companyId, consumer } }`
+  cargada de `DEMO_TOKENS` (JSON). La autenticación está fuera de alcance; esto
+  existe para poder ejercitar el contrato. Sin token conocido → `MISSING_TENANT`
+  y 401. En producción se reemplaza `tokensDeDemo` y nada más cambia.
+- **Mapa de códigos HTTP** en `src/http/codigos.js`: 401 para `MISSING_TENANT`;
+  400 para los errores del consumidor (incluido `INVALID_JSON`, el único código
+  que nace en la capa HTTP); **504 para `QUERY_TIMEOUT`** —el servicio está
+  sano, lo que se agotó es el presupuesto de esa consulta, y 503 diría "vuelve
+  más tarde", que no ayudaría—; 500 sin detalles para lo que no está en la
+  tabla, con el error escrito en el log del servidor.
+- **Dry-run por la URL** (`?dryRun=true`), no por el cuerpo: el cuerpo es la
+  consulta declarativa y nada más, así que pedir un dry-run no cambia su forma
+  ni, por lo tanto, su `queryId`.
+- El servidor **introspecta al arrancar y registra siempre con snapshot**: si
+  una definición nombra una tabla o columna que la base no tiene, `register`
+  lanza y el proceso no llega a escuchar. Un servicio que arranca con un
+  contrato roto es peor que uno que no arranca.
+- **Telemetría** (`src/telemetry.js`) inyectada en el engine y expuesta con
+  `engine.telemetry()`: total, por resultado, por código de error, por puerta
+  que rechazó, por consumidor y tiempo de base (suma y cuenta, no histograma:
+  con las dos sale el promedio y los percentiles son del exportador, que está
+  fuera de alcance). El dry-run no cuenta: no responde a nadie ni toca la base.
+  La puerta que rechazó se anota en el error como propiedad **no enumerable**,
+  así que no cambia ninguna respuesta.
+- El SQL que se ejecuta lleva `/* queryId consumer */` al inicio; el de `plan()`
+  no. Así el dry-run muestra el SQL puro y los snapshots del repo no cambiaron.
+- **`queryId`**: hash de la forma canónica de la consulta, más la empresa, más
+  la versión del catálogo. La serialización canónica salió de `catalog.js` a
+  `src/canonical.js` porque ahora la usan dos piezas que no se conocen.
+- **Asistencia** se agregó como un archivo de definición más una línea en
+  `src/definitions/index.js`: ni el engine ni el planificador cambiaron
+  (historia 9). La columna del esquema es `present BOOLEAN`, así que la
+  dimensión se llama `present` y el segmento filtra `present = true`; el nombre
+  de negocio no inventa un estado de texto que la base no tiene.
+- v1 **exige granularidad** en una `timeDimension`: no hay forma de acotar por
+  fecha sin agrupar por ella. Por eso la consulta tipo de asistencia agrupa por
+  departamento **y mes**, y de paso deja ver la tendencia. Un `dateRange` sin
+  granularidad queda como evolución.
+- El seed creció con un bloque de agosto de 2025 de conteos redondos
+  (Ingeniería 16 presentes de 20 días → 80; Ventas 5 de 10 → 50; empresa 2, 3
+  de 4 → 75). Junio y julio quedaron intactos: los literales anteriores siguen
+  verdes.
+- Los dos tests que recorren *todas* las consultas tipo ahora arman el catálogo
+  con `registrarModulos`, la composición real. Antes registraban tres módulos a
+  mano y agregar uno los dejaba desactualizados.
+
 ## Estado
+
+Fase 6 terminada: servicio HTTP (`POST /analytics/query`, `GET
+/analytics/catalog`, `?dryRun=true`) con contexto derivado del token de demo y
+mapa de códigos; telemetría en memoria por resultado, código, puerta y
+consumidor; `queryId` reproducible con la versión del catálogo; módulo de
+asistencia con `attendance_rate` (80 y 50 contra Postgres) registrado sin tocar
+el engine; `npm run demo` con catálogo, tres preguntas y telemetría; servicio
+`api` en docker-compose verificado con curl. Siguiente: fase 7 (según el plan).
 
 Fase 5 terminada: medidas derivadas de tipo `ratio` calculadas sobre agregados
 (el departamento con 3 completadas de 4 da 75 contra Postgres), orden topológico

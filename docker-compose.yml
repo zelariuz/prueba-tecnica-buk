@@ -1,6 +1,9 @@
-# Entorno local de la capa semántica.
-# La base es efímera a propósito: no hay volumen persistente, así que recrear
-# el contenedor vuelve a aplicar el esquema y el seed de docker/init.
+# Entorno local de la capa semántica: db, redis y api.
+# El compose no declara volumen para la base, pero la imagen `postgres` sí
+# declara uno anónimo para su directorio de datos, y ese sobrevive a recrear el
+# contenedor. Para volver a aplicar el esquema y el seed de docker/init hace
+# falta renovarlo:
+#   docker compose up -d --force-recreate --renew-anon-volumes db
 services:
   db:
     image: postgres:16
