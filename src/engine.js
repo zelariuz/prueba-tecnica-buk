@@ -12,12 +12,16 @@ import { crearTelemetria } from './telemetry.js';
 
 // `presupuestos` se inyecta para poder probar el comportamiento bajo un
 // presupuesto extremo (por ejemplo un timeout de 1 ms) sin tocar la tabla real.
+// `cache` es opcional: un engine sin caché sirve todo en vivo. Es la costura por
+// la que entra `MemoryStore` (L1) y, más adelante, cualquier otra
+// implementación de `CacheStore`.
 export function createEngine({
   catalog,
   pool,
   dialect = postgres,
   presupuestos = presupuestosPorDefecto,
   telemetria = crearTelemetria(),
+  cache,
 }) {
   const planificar = crearPlanificador({ catalog, dialect, presupuestos });
 
@@ -62,9 +66,37 @@ export function createEngine({
     }
     const { sql, params, medidas, presupuesto, advertencias } = plan;
 
+    // La llave de la caché **es** el queryId: ya es el hash de la forma
+    // canónica de la consulta con sus parámetros, más la empresa, más la
+    // versión del catálogo. Que sea el mismo valor no es una economía: es la
+    // garantía de que dos consultas se sirven de la misma entrada exactamente
+    // cuando el consumidor las llamaría la misma consulta. La empresa dentro
+    // del hash es lo que hace imposible que una entrada de A sirva a B, y la
+    // versión del catálogo es lo que invalida todo al cambiar una definición.
     const queryId = identificarConsulta(query, ctx, catalog.version());
-    // Instante en que se ejecutó la consulta que produjo el resultado; cuando
-    // haya caché, la entrada guardada conserva su propio asOf.
+
+    // Puerta · Buscar en caché. Va después de planificar, no antes: una
+    // consulta inválida se rechaza igual, esté o no en la caché.
+    const guardado = await buscarEnCache(queryId, ctx);
+    if (guardado) {
+      // Servida igual que cualquier otra, sólo que sin tiempo de base: `dbMs`
+      // ausente es lo que distingue en la telemetría a la que no la consultó.
+      telemetria.registrarOk({ consumer: ctx?.consumer });
+      return {
+        rows: guardado.rows,
+        meta: {
+          servedFrom: 'cache-l1',
+          // El instante de la ejecución que produjo estas filas, no el de
+          // ahora: es lo que le dice al consumidor qué tan viejo es el dato.
+          asOf: guardado.asOf,
+          queryId,
+          warnings: guardado.warnings,
+        },
+      };
+    }
+
+    // Instante en que se ejecutó la consulta que produjo el resultado; la
+    // entrada guardada conserva su propio asOf.
     const asOf = new Date().toISOString();
     const comienzo = performance.now();
     let filas;
@@ -76,8 +108,15 @@ export function createEngine({
     }
     telemetria.registrarOk({ consumer: ctx?.consumer, dbMs: performance.now() - comienzo });
 
+    const rows = aNumeros(filas, medidas);
+
+    // Puerta · Guardar en caché. Sólo lo que se ejecutó en vivo: un resultado
+    // servido desde la caché no se vuelve a guardar, así que su TTL cuenta
+    // desde la ejecución real y una entrada no se renueva sola para siempre.
+    await guardarEnCache(queryId, { rows, asOf, warnings: advertencias }, presupuesto);
+
     return {
-      rows: aNumeros(filas, medidas),
+      rows,
       meta: {
         servedFrom: 'live',
         asOf,
@@ -87,6 +126,18 @@ export function createEngine({
         warnings: advertencias,
       },
     };
+  }
+
+  async function buscarEnCache(queryId, ctx) {
+    if (!cache) return undefined;
+    const guardado = await cache.get(queryId);
+    telemetria.registrarCache({ consumer: ctx?.consumer, resultado: guardado ? 'hit' : 'miss' });
+    return guardado;
+  }
+
+  async function guardarEnCache(queryId, entrada) {
+    if (!cache) return;
+    await cache.set(queryId, entrada);
   }
 
   return { plan, run, telemetry: telemetria.snapshot };

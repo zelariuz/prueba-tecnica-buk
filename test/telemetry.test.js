@@ -45,9 +45,11 @@ describe('telemetría de consultas rechazadas', () => {
       byErrorCode: { UNKNOWN_MEMBER: 1, FORBIDDEN_FIELD: 1, INVALID_CONSUMER: 1 },
       byGate: { resolverMiembros: 1, validar: 2 },
       byConsumer: {
-        dashboard: { ok: 0, error: 2 },
-        nadie: { ok: 0, error: 1 },
+        dashboard: { ok: 0, error: 2, cacheHits: 0, cacheMisses: 0 },
+        nadie: { ok: 0, error: 1, cacheHits: 0, cacheMisses: 0 },
       },
+      // Un engine sin caché no reporta hits ni misses: sin caché no hay miss.
+      cache: { hits: 0, misses: 0, hitRatio: 0 },
       database: { count: 0, totalMs: 0 },
     });
   });
@@ -65,6 +67,7 @@ describe('telemetría de consultas rechazadas', () => {
       byErrorCode: {},
       byGate: {},
       byConsumer: {},
+      cache: { hits: 0, misses: 0, hitRatio: 0 },
       database: { count: 0, totalMs: 0 },
     });
   });
@@ -99,8 +102,8 @@ describe('telemetría de consultas servidas', conBase, () => {
     assert.equal(contadores.total, 3);
     assert.deepEqual(contadores.byResult, { ok: 2, error: 1 });
     assert.deepEqual(contadores.byConsumer, {
-      api: { ok: 2, error: 0 },
-      agent: { ok: 0, error: 1 },
+      api: { ok: 2, error: 0, cacheHits: 0, cacheMisses: 0 },
+      agent: { ok: 0, error: 1, cacheHits: 0, cacheMisses: 0 },
     });
     assert.equal(contadores.database.count, 2, 'sólo las servidas tocaron la base');
     assert.ok(contadores.database.totalMs > 0, 'el tiempo de base se acumuló');
