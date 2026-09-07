@@ -141,6 +141,41 @@ test('la medida con segmento se agrega con COUNT FILTER y su valor viaja como pa
   assert.deepEqual(params, [EMPRESA, 'completed', 10000]);
 });
 
+const completitudPorDepartamento = {
+  measures: ['reviews.completion_rate'],
+  dimensions: ['departments.name'],
+};
+
+test('la derivada ratio divide las medidas ya agregadas, no fila por fila', () => {
+  const { sql, params } = engineDePrueba().plan(completitudPorDepartamento, CTX);
+
+  // Dos COUNT son enteros y 3/4*100 daría 0: la razón convierte a numérico y
+  // protege el denominador con NULLIF (ADR 0004). La fórmula se escribe sobre
+  // los alias de la consulta agregada, así que solo puede ver valores ya
+  // agregados: la garantía es estructural, no una convención.
+  assert.match(
+    sql,
+    /"reviews\.completed_count"::numeric \/ NULLIF\("reviews\.count", 0\) \* 100 AS "reviews\.completion_rate"/,
+  );
+
+  // Sus medidas base se agregan aunque el consumidor no las haya pedido.
+  assert.match(
+    sql,
+    /COUNT\(\*\) FILTER \(WHERE reviews\.status = \$2\) AS "reviews\.completed_count"/,
+  );
+  assert.match(sql, /COUNT\(\*\) AS "reviews\.count"/);
+
+  // Y no salen en las filas: el consumidor recibe lo que pidió.
+  const seleccionExterna = sql.slice(sql.indexOf('\nSELECT '), sql.indexOf('\nFROM ('));
+  assert.match(seleccionExterna, /"departments\.name"/);
+  assert.ok(
+    !seleccionExterna.includes('"reviews.count"') ||
+      seleccionExterna.includes('NULLIF("reviews.count", 0)'),
+    'la medida base no pedida no aparece como columna de salida',
+  );
+  assert.deepEqual(params, [EMPRESA, 'completed', 10000]);
+});
+
 test('order ordena por el nombre semántico y limit viaja como parámetro', () => {
   const { sql, params } = engineDePrueba().plan(
     { ...porTrimestreDe2025, order: { 'reviews.period': 'asc' }, limit: 500 },

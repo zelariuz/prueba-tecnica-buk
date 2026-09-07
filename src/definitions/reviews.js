@@ -35,6 +35,17 @@ export const reviews = {
       segment: 'completed',
       description: 'Cantidad de evaluaciones completadas, según la regla del segmento `completed`.',
     },
+    // Medida derivada: se calcula a partir de otras medidas ya agregadas y no
+    // toca ninguna columna. El módulo declara la razón, no la división: quien
+    // emite el SQL se encarga de la conversión a numérico y del denominador
+    // cero (ADR 0004).
+    completion_rate: {
+      type: 'ratio',
+      numerator: 'completed_count',
+      denominator: 'count',
+      scale: 100,
+      description: 'Porcentaje de evaluaciones completadas sobre el total de evaluaciones.',
+    },
   },
   // La regla de negocio "evaluación completada" se declara una sola vez y
   // ningún consumidor puede escribirla distinto (ADR 0005).

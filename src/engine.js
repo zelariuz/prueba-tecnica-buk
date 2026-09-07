@@ -43,6 +43,27 @@ function sqlDeMedida(medida, entidad) {
   throw new Error(`Tipo de medida no soportado: ${medida.type}`);
 }
 
+// Nombre de la etapa agregada cuando la consulta lleva derivadas.
+const ALIAS_AGREGADA = 'agregada';
+
+function indentar(texto) {
+  return texto
+    .split('\n')
+    .map((linea) => `  ${linea}`)
+    .join('\n');
+}
+
+// Razón entre dos medidas ya agregadas. `::numeric` evita la división entera
+// —dos COUNT en Postgres son enteros y 3/4 da 0— y `NULLIF` convierte el
+// denominador cero en NULL, que es la respuesta honesta: sin evaluaciones no
+// hay porcentaje que informar (ADR 0004). La escala la valida el catálogo como
+// número, y por eso puede interpolarse.
+function formulaDeRazon(medida) {
+  const { numerator, denominator, scale } = medida.definicion;
+  const razon = `"${medida.entidad}.${numerator}"::numeric / NULLIF("${medida.entidad}.${denominator}", 0)`;
+  return scale === undefined ? razon : `${razon} * ${scale}`;
+}
+
 // Operadores cuyo valor es una lista: sin elementos no hay SQL que emitir.
 const OPERADORES_DE_LISTA = new Set(['in', 'notIn']);
 
@@ -158,6 +179,23 @@ export function createEngine({
     // corta con UNKNOWN_MEMBER y una sugerencia cuando el nombre está mal.
     const medidas = (query.measures ?? []).map((miembro) => catalog.measure(miembro));
 
+    // Una derivada no se agrega: combina medidas que sí se agregan. Sus bases
+    // entran a la consulta agregada aunque el consumidor no las haya pedido, y
+    // salen de ella solo si las pidió.
+    const derivadas = medidas.filter((medida) => medida.definicion.type === 'ratio');
+    const bases = new Map();
+    for (const medida of medidas) {
+      if (medida.definicion.type !== 'ratio') {
+        bases.set(medida.miembro, medida);
+        continue;
+      }
+      for (const nombre of [medida.definicion.numerator, medida.definicion.denominator]) {
+        const base = catalog.measure(`${medida.entidad}.${nombre}`);
+        bases.set(base.miembro, base);
+      }
+    }
+    const medidasBase = [...bases.values()];
+
     const dimensiones = (query.dimensions ?? []).map((miembro) => {
       const { entidad, columna } = catalog.dimension(miembro);
       return { miembro, entidad, columna, expresion: `${entidad}.${columna}` };
@@ -246,7 +284,7 @@ export function createEngine({
       columnas.get(entidad).add(columna);
     };
     for (const dimension of dimensiones) pedir(dimension.entidad, dimension.columna);
-    for (const medida of medidas) {
+    for (const medida of medidasBase) {
       if (medida.definicion.column) pedir(medida.entidad, medida.definicion.column);
       for (const filtro of filtrosDeMedida(medida)) {
         const { entidad, columna } = catalog.dimension(filtro.member);
@@ -275,9 +313,11 @@ export function createEngine({
       );
     });
 
+    // Etapa agregada: dimensiones y medidas base. Una medida base sale de su
+    // agregado, filtrado por el segmento que su dueño le declaró.
     const seleccion = [
       ...dimensiones.map((d) => `${d.expresion} AS "${d.miembro}"`),
-      ...medidas.map((m) => {
+      ...medidasBase.map((m) => {
         const agregado = sqlDeMedida(m.definicion, m.entidad);
         const filtros = filtrosDeMedida(m);
         const expresion = filtros.length
@@ -316,11 +356,32 @@ export function createEngine({
       return `"${miembro}" ${direccion.toUpperCase()}`;
     });
 
-    const sql = [
-      `WITH ${cte.join(',\n')}`,
+    // Una consulta sin derivadas es la consulta agregada y nada más. Con
+    // derivadas, la agregación pasa a ser la etapa de adentro y la fórmula se
+    // escribe afuera, sobre sus alias: así solo puede ver valores ya agregados
+    // y las bases que el consumidor no pidió no llegan a las filas (ADR 0004).
+    const agregada = [
       `SELECT ${seleccion.join(', ')}`,
       `FROM ${raiz}${joins.join('')}`,
       ...(agrupacion.length ? [`GROUP BY ${agrupacion.join(', ')}`] : []),
+    ];
+    const cuerpo = derivadas.length
+      ? [
+          `SELECT ${[
+            ...dimensiones.map((d) => `"${d.miembro}"`),
+            ...medidas.map((m) =>
+              m.definicion.type === 'ratio'
+                ? `${formulaDeRazon(m)} AS "${m.miembro}"`
+                : `"${m.miembro}"`,
+            ),
+          ].join(', ')}`,
+          `FROM (\n${indentar(agregada.join('\n'))}\n) AS ${ALIAS_AGREGADA}`,
+        ]
+      : agregada;
+
+    const sql = [
+      `WITH ${cte.join(',\n')}`,
+      ...cuerpo,
       ...(orden.length ? [`ORDER BY ${orden.join(', ')}`] : []),
       // Ninguna consulta sale sin LIMIT: el pedido nunca supera el máximo de
       // la clase de consumidor, y si no pide, manda ese máximo.

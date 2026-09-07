@@ -9,6 +9,12 @@ import { GRANULARIDADES, operadoresDe } from './vocabulary.js';
 
 const TIPOS_DE_DIMENSION = new Set(['string', 'number', 'date', 'boolean']);
 const TIPOS_DE_MEDIDA = new Set(['count', 'sum', 'avg']);
+// Una medida derivada no agrega una columna: se calcula a partir de otras
+// medidas ya agregadas. En v1 solo existe la razón (ADR 0004).
+const TIPOS_DE_DERIVADA = new Set(['ratio']);
+// Las que no nombran columna: `count` cuenta filas y una derivada solo combina
+// medidas.
+const SIN_COLUMNA = new Set(['count', 'ratio']);
 
 function invalida(member, suggestion) {
   return new SemanticError({ code: 'INVALID_DEFINITION', member, suggestion });
@@ -17,6 +23,35 @@ function invalida(member, suggestion) {
 function exigirTexto(valor, member, suggestion) {
   if (typeof valor === 'string' && valor.trim().length > 0) return;
   throw invalida(member, suggestion);
+}
+
+// Una razón declara de qué dos medidas de su misma entidad sale. No es una
+// expresión: no hay texto que parsear ni SQL que colar (ADR 0004). La escala se
+// interpola en el SQL, así que solo puede ser un número.
+function validarRatio(def, nombre, medida) {
+  const miembro = `${def.name}.${nombre}`;
+  for (const parte of ['numerator', 'denominator']) {
+    exigirTexto(
+      medida[parte],
+      `${miembro}.${parte}`,
+      `Una razón declara el nombre de la medida que va en su ${parte}.`,
+    );
+    if (medida[parte] === nombre) {
+      throw invalida(`${miembro}.${parte}`, `La razón ${miembro} se referencia a sí misma.`);
+    }
+    if (!(medida[parte] in (def.measures ?? {}))) {
+      throw invalida(
+        `${miembro}.${parte}`,
+        sugerenciaDe(medida[parte], Object.keys(def.measures ?? {}), 'medida', def.name),
+      );
+    }
+  }
+  if (medida.scale !== undefined && !Number.isFinite(medida.scale)) {
+    throw invalida(
+      `${miembro}.scale`,
+      'La escala de una razón es un número (100 para un porcentaje) y se omite para una fracción.',
+    );
+  }
 }
 
 // Forma de la definición: lo que un módulo debe declarar para que sus datos
@@ -56,13 +91,14 @@ function validarForma(def) {
   }
 
   for (const [nombre, medida] of Object.entries(def.measures ?? {})) {
-    if (!TIPOS_DE_MEDIDA.has(medida?.type)) {
+    if (!TIPOS_DE_MEDIDA.has(medida?.type) && !TIPOS_DE_DERIVADA.has(medida?.type)) {
       throw invalida(
         `${entidad}.${nombre}.type`,
-        `Una medida se agrega con uno de: ${[...TIPOS_DE_MEDIDA].join(', ')}.`,
+        `Una medida se agrega con uno de: ${[...TIPOS_DE_MEDIDA].join(', ')}; una medida derivada se declara con uno de: ${[...TIPOS_DE_DERIVADA].join(', ')}.`,
       );
     }
-    if (medida.type !== 'count') {
+    if (medida.type === 'ratio') validarRatio(def, nombre, medida);
+    if (!SIN_COLUMNA.has(medida.type)) {
       exigirTexto(
         medida.column,
         `${entidad}.${nombre}.column`,

@@ -235,9 +235,20 @@ test('describe entrega la vista pública: nombres semánticos, tipos y operadore
   const periodo = entidad.dimensions.find((d) => d.name === 'reviews.period');
   assert.deepEqual(periodo.operators, ['inDateRange', 'beforeDate', 'afterDate']);
 
+  // Las derivadas se publican como una medida más, con su tipo: el consumidor
+  // pide `reviews.completion_rate` sin saber de qué dos medidas sale.
   assert.deepEqual(
     entidad.measures.map((m) => m.name).sort(),
-    ['reviews.avg_score', 'reviews.completed_count', 'reviews.count'],
+    [
+      'reviews.avg_score',
+      'reviews.completed_count',
+      'reviews.completion_rate',
+      'reviews.count',
+    ],
+  );
+  assert.equal(
+    entidad.measures.find((m) => m.name === 'reviews.completion_rate').type,
+    'ratio',
   );
   assert.deepEqual(entidad.segments.map((s) => s.name), ['reviews.completed']);
   assert.ok(entidad.segments[0].description.length > 0, 'el segmento llega con su descripción');
