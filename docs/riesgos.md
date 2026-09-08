@@ -26,7 +26,7 @@ probado en este repo), **documento** (explicado con su costo/beneficio) o
 | Enteros y numéricos grandes llegan como texto desde el driver | Conversión explícita en el post-proceso; test con `COUNT` grande y `AVG` | código |
 | Una definición apunta a una columna que ya no existe | `register(def, snapshot)` valida contra el esquema físico al arrancar | código |
 | Filtrar la empresa en tres tablas excluye filas inconsistentes que el SQL de referencia incluiría | Comportamiento deliberado y documentado; test que lo muestra | código |
-| Fechas multi país: una columna `timestamp` truncada en UTC corre un día los reportes nocturnos de otra zona | Supuesto v1: las columnas temporales son `DATE`, ya resueltas al día calendario local de la empresa, y la capa las devuelve como texto sin pasar por la zona del proceso. Evolución: `timestamptz` en base, zona declarada por empresa en el catálogo, `AT TIME ZONE $z` en el dialecto, zona en la llave de caché; `timestamp` sin zona rechazado al registrar | documento |
+| Fechas multi país: una columna `timestamp` truncada en UTC corre un día los reportes nocturnos de otra zona | Supuesto v1: las columnas temporales son `DATE`, ya resueltas al día calendario local de la empresa, y la capa las devuelve como texto sin pasar por la zona del proceso. El dialecto **no traduce** ningún `timestamp` a `date`: una dimensión `date` sobre `timestamp without time zone` se rechaza al registrar (`INVALID_DEFINITION`) y sobre `timestamptz` se acepta con advertencia (el rango cerrado `<= día` pierde casi todo el último día). Evolución: `timestamptz` en base, zona declarada por empresa en el catálogo, `AT TIME ZONE $z` en el dialecto, zona en la llave de caché | código |
 
 ## Disponibilidad de la base
 

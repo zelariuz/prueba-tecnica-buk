@@ -81,11 +81,38 @@ const TIPOS_SEMANTICOS = new Map(
     'character varying': 'string',
     character: 'string',
     date: 'date',
-    'timestamp without time zone': 'date',
-    'timestamp with time zone': 'date',
     boolean: 'boolean',
   }),
 );
+
+// Los dos `timestamp` NO están en el mapa a propósito (hallazgo 6 del abogado
+// del diablo): mapearlos a `date` los aceptaba en silencio, y el supuesto v1 es
+// que una columna temporal es un día calendario ya resuelto a la zona local de
+// la empresa (README, "Fechas y zonas horarias"). Un instante no es un día, y
+// convertirlo a uno es una decisión que necesita saber en qué zona vive la
+// empresa: eso todavía no está en el catálogo.
+//
+// La reserva es del dialecto porque estos nombres de tipo son de este motor. El
+// catálogo sólo pregunta y aplica el nivel que reciba: `error` corta el
+// registro, `advertencia` lo deja pasar diciéndolo.
+const RESERVAS_DE_DIMENSION_TEMPORAL = new Map([
+  [
+    'timestamp without time zone',
+    {
+      nivel: 'error',
+      detalle:
+        'es un instante sin zona y la dimensión se declara date, que en v1 es un día calendario ya resuelto a la zona local de la empresa. Convertirlo a día exige saber esa zona, y el catálogo todavía no la tiene: usa una columna date, o migra a timestamptz y espera a la evolución de zonas (zona por empresa en el catálogo y AT TIME ZONE en el dialecto).',
+    },
+  ],
+  [
+    'timestamp with time zone',
+    {
+      nivel: 'advertencia',
+      detalle:
+        'es un timestamptz y la dimensión se declara date: el rango de una consulta es cerrado en los dos extremos (>= desde AND <= hasta), así que comparar un instante contra el día `hasta` deja fuera todo lo que ocurrió después de su medianoche —el último día del rango se pierde casi entero—. Mientras no exista la evolución de zonas, usa una columna date.',
+    },
+  ],
+]);
 
 // La base que no está: el error no viene del SQL sino de no haber podido
 // hablarle al motor. Se reconoce por el `code` —los de socket que pone Node, y
@@ -204,6 +231,14 @@ export const postgres = {
   // --- 3. Mapa de tipos -----------------------------------------------------
   tipoSemantico(tipoFisico) {
     return TIPOS_SEMANTICOS.get(tipoFisico);
+  },
+
+  // Lo que el motor sí sabe traducir pero no puede sostener bajo el contrato de
+  // la dimensión que lo declara. Devuelve `{ nivel, detalle }` o nada; el
+  // catálogo decide qué hacer con el nivel.
+  reservaDeTipo(tipoFisico, tipoDeclarado) {
+    if (tipoDeclarado !== 'date') return undefined;
+    return RESERVAS_DE_DIMENSION_TEMPORAL.get(tipoFisico);
   },
 
   // --- 4. Errores nativos ---------------------------------------------------

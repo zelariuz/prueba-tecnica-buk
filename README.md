@@ -87,10 +87,18 @@ Las columnas temporales del caso (`hire_date`, `period`, `date`) son `DATE`: un
 día calendario sin zona, que se asume **ya resuelto al día local de la empresa**
 por quien lo escribió. La capa no convierte fechas y las devuelve como texto
 `YYYY-MM-DD` desde SQL, así que la zona del proceso o del servidor (convención:
-UTC-0) no cambia el resultado. Si una entidad futura trae un `timestamptz`, la
-zona pasa a ser un dato de la empresa en el catálogo y el dialecto la aplica con
-`AT TIME ZONE`; un `timestamp` sin zona se rechaza al registrar. Detalle en
-`docs/riesgos.md`.
+UTC-0) no cambia el resultado.
+
+El código hace cumplir ese supuesto al registrar, y no lo deja escrito sólo aquí:
+una dimensión `date` sobre una columna **`timestamp` sin zona** se **rechaza**
+con `INVALID_DEFINITION` (un instante no es un día, y convertirlo a uno exige
+saber la zona de la empresa, que el catálogo todavía no tiene), y sobre un
+**`timestamptz`** se **acepta con advertencia de registro**: el rango de una
+consulta es cerrado (`>= desde AND <= hasta`), así que comparar un instante
+contra el día `hasta` pierde casi todo el último día. Los dos tipos salieron del
+mapa de tipos del dialecto justamente para que no se acepten en silencio.
+Evolución: `timestamptz` en base, zona declarada por empresa en el catálogo y
+`AT TIME ZONE` en el dialecto. Detalle en `docs/riesgos.md`.
 
 ## Cómo se consulta
 

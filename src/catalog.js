@@ -294,13 +294,41 @@ function incompatibilidadesDeTipo(def, snapshot, dialecto) {
   return problemas;
 }
 
+// Reservas del dialecto: tipos físicos que traduce pero sobre los que no puede
+// sostener el contrato de la dimensión que los declara (un `timestamp` bajo una
+// dimensión `date`, por ejemplo). Quién las conoce es el motor —son nombres de
+// tipo suyos—; el catálogo sólo pregunta y separa por nivel. Un dialecto que no
+// ofrece el método no tiene ninguna, que es la respuesta conservadora de
+// siempre.
+function reservasDeTipo(def, snapshot, dialecto) {
+  const columnas = snapshot.tables?.[def.table]?.columns ?? {};
+  const graves = [];
+  const leves = [];
+
+  for (const [nombre, dimension] of Object.entries(def.dimensions ?? {})) {
+    const reserva = dialecto.reservaDeTipo?.(columnas[dimension.column], dimension.type);
+    if (!reserva) continue;
+    const problema = {
+      member: `${def.name}.${nombre}`,
+      detalle: `La columna ${def.table}.${dimension.column} ${reserva.detalle}`,
+    };
+    (reserva.nivel === 'error' ? graves : leves).push(problema);
+  }
+
+  return { graves, leves };
+}
+
 function validarTipos(def, snapshot, dialecto) {
-  const problemas = incompatibilidadesDeTipo(def, snapshot, dialecto);
+  const { graves, leves } = reservasDeTipo(def, snapshot, dialecto);
+  const problemas = [...graves, ...incompatibilidadesDeTipo(def, snapshot, dialecto)];
+  const comoAdvertencia = ({ member, detalle }) => ({ member, warning: detalle });
+  // Un motor que no hace cumplir los tipos de sus columnas convierte todo hecho
+  // en sospecha, y una sospecha se dice, no corta el registro.
   if (dialecto.capabilities?.tiposGarantizados === false) {
-    return problemas.map(({ member, detalle }) => ({ member, warning: detalle }));
+    return [...problemas, ...leves].map(comoAdvertencia);
   }
   for (const { member, detalle } of problemas) throw invalida(member, detalle);
-  return [];
+  return leves.map(comoAdvertencia);
 }
 
 // Advertencias: problemas que no impiden registrar pero que el dueño del módulo

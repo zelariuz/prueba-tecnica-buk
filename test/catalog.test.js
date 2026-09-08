@@ -647,3 +647,57 @@ test('count_distinct exige columna y la publica en la vista pública', () => {
   assert.equal(publicada.type, 'count_distinct');
   assert.ok(publicada.description.length > 0, 'la medida publicada trae su descripción');
 });
+
+// --- Hallazgo 6 del abogado del diablo: el dialecto mapeaba los dos
+// `timestamp` a `date` y los aceptaba, mientras el README y `docs/riesgos.md`
+// decían que un `timestamp` sin zona se rechaza al registrar. El supuesto v1 es
+// que las columnas temporales son `DATE`, ya resueltas al día local de la
+// empresa; el código ahora hace lo que el documento dice.
+function esquemaConTipo(tabla, columna, tipo) {
+  const original = esquema.tables[tabla];
+  return {
+    ...esquema,
+    tables: {
+      ...esquema.tables,
+      [tabla]: { ...original, columns: { ...original.columns, [columna]: tipo } },
+    },
+  };
+}
+
+test('una dimensión date sobre un timestamp sin zona se rechaza al registrar', () => {
+  const error = errorDe(() =>
+    createCatalog().register(
+      reviews,
+      esquemaConTipo('performance_reviews', 'period', 'timestamp without time zone'),
+    ),
+  );
+
+  assert.equal(error.code, 'INVALID_DEFINITION');
+  assert.equal(error.member, 'reviews.period');
+  // La sugerencia dice las dos salidas: la de hoy (`date`) y la evolución
+  // (`timestamptz` con zona por empresa).
+  assert.match(error.suggestion, /\bdate\b/);
+  assert.match(error.suggestion, /timestamptz/);
+});
+
+test('una dimensión date sobre un timestamptz registra con advertencia', () => {
+  const { ok, warnings } = createCatalog().register(
+    reviews,
+    esquemaConTipo('performance_reviews', 'period', 'timestamp with time zone'),
+  );
+
+  assert.equal(ok, true);
+  const aviso = warnings.find((w) => w.member === 'reviews.period' && /último día/.test(w.warning));
+  assert.ok(aviso, `se esperaba la advertencia del rango cerrado: ${JSON.stringify(warnings)}`);
+});
+
+test('una dimensión date sobre una columna date sigue registrando sin ruido', () => {
+  const { ok, warnings } = createCatalog().register(reviews, esquema);
+
+  assert.equal(ok, true);
+  assert.equal(
+    warnings.filter((w) => /timestamp/.test(w.warning)).length,
+    0,
+    'una columna date no produce ninguna advertencia de zona',
+  );
+});
