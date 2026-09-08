@@ -308,12 +308,19 @@ queda en el log del servidor.
 | 401 | `MISSING_TENANT` (sin token o token desconocido) |
 | 400 | `FORBIDDEN_FIELD`, `UNKNOWN_MEMBER`, `NO_JOIN_PATH`, `INVALID_OPERATOR`, `UNSUPPORTED_OPERATOR`, `MULTI_ENTITY_MEASURES`, `MISSING_TIME_RANGE`, `INVALID_CONSUMER`, `UNKNOWN_QUERY`, `MISSING_PARAM`, `INVALID_JSON` |
 | 413 | `PAYLOAD_TOO_LARGE` (el cuerpo pasó los 64 KiB) |
+| 503 | `SCHEMA_DRIFT` (la base ya no calza con el catálogo) |
 | 504 | `QUERY_TIMEOUT` |
 | 500 | cualquier otro error, sin filtrar detalles internos |
 
 `QUERY_TIMEOUT` es 504 y no 503 porque el servicio está sano: lo que se agotó es
 el presupuesto de tiempo de esa consulta contra la base. 503 diría "vuelve más
 tarde", y volver más tarde con la misma consulta no la haría terminar.
+
+`SCHEMA_DRIFT` sí es 503: el dialecto lo devuelve cuando el motor se queja de
+una tabla o una columna que ya no existe, y eso significa que el esquema cambió
+debajo de un catálogo ya registrado. No es una consulta mal escrita —el
+consumidor no puede arreglarla cambiando lo que pidió—, sino una dependencia
+rota hasta que alguien vuelva a introspectar y re-registrar las definiciones.
 
 ## Telemetría
 

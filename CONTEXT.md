@@ -52,8 +52,9 @@ equivalente en Cube, se indica para facilitar la lectura al equipo.
   grafo de relaciones y expone `describe()`.
 - **Esquema físico**: foto descubierta de tablas, columnas, tipos, llaves e
   índices (`information_schema`, `pg_indexes`). Se descubre, no se declara.
-- **Snapshot del esquema**: la foto ya materializada que produce
-  `introspect(pool)` y contra la que el catálogo valida al registrar:
+- **Snapshot del esquema**: la foto ya materializada que produce el
+  `introspect(pool)` del dialecto de la fuente, y contra la que el catálogo
+  valida al registrar:
   `{ schema, tables: { <tabla>: { columns: { <columna>: <tipo> }, indexes:
   [{ name, columns, unique }] } } }`. Inyectarlo permite probar el catálogo sin
   base.
@@ -99,6 +100,8 @@ equivalente en Cube, se indica para facilitar la lectura al equipo.
   `MULTI_ENTITY_MEASURES`, `MISSING_TIME_RANGE`, `INVALID_OPERATOR`,
   `INVALID_CONSUMER` (clase de consumidor desconocida o ausente en el contexto),
   `QUERY_TIMEOUT` (la ejecución superó el timeout del presupuesto),
+  `SCHEMA_DRIFT` (el SQL nombró una tabla o columna que la base ya no tiene: el
+  esquema cambió debajo del catálogo y hay que re-registrar las definiciones),
   `INVALID_DEFINITION` (la definición no cumple la forma o nombra algo que el
   esquema físico no tiene), `UNSUPPORTED_OPERATOR` (operador válido para el tipo
   de la dimensión que el planificador todavía no emite), `UNKNOWN_QUERY`
@@ -161,9 +164,37 @@ equivalente en Cube, se indica para facilitar la lectura al equipo.
 - **Hit ratio**: proporción de respuestas servidas desde la caché sobre las que
   la consultaron. Sale de `cache.hits` y `cache.misses` de la telemetría; un
   engine sin caché no reporta ninguno de los dos.
-- **Fuente**: conexión física a una base: motor, versión, dialecto, presupuesto.
-- **Dialecto**: tabla de capacidades del motor (`agregadoFiltrado`,
-  `dateTrunc`, …) que consulta el planificador para elegir la sintaxis.
+- **Fuente**: la base contra la que se ejecuta, con nombre propio: `{ dialecto,
+  pool }`. **Cada entidad pertenece a una fuente** —la declara con `source`, y
+  sin declararla es `postgres`— y una fuente tiene exactamente un dialecto. El
+  catálogo la guarda por entidad y la muestra sólo en la vista interna: el
+  consumidor pide nombres de negocio y no sabe en qué base viven. Una consulta
+  vive entera dentro de una fuente: la de su entidad de hechos decide el
+  dialecto que escribe el SQL y el pool contra el que se ejecuta, y alcanzar
+  una entidad de otra fuente —por una dimensión, un filtro o el camino de
+  joins— es `NO_JOIN_PATH`, porque dos bases no se cruzan con un JOIN.
+- **Dialecto**: la única pieza que conoce un motor. Tiene cuatro
+  responsabilidades, y ninguna otra pieza puede tener una de ellas:
+  1. **Sintaxis SQL**: lo que varía entre motores y el planificador pregunta
+     (`dateTrunc`, `agregadoFiltrado`), más la tabla de **capacidades**
+     (`tiposGarantizados`, …).
+  2. **Introspección del esquema**: cómo se descubre el snapshot en este motor
+     (`introspect(pool)`). La *forma* del snapshot es del catálogo; de dónde
+     salen los datos, del motor.
+  3. **Mapa de tipos**: `tipoSemantico(tipoFísico)` traduce el tipo de la
+     columna al del vocabulario (`number`, `string`, `date`, `boolean`), o
+     `undefined` si no lo reconoce. Es contra lo que el catálogo valida el tipo
+     declarado de una dimensión y el de la columna que agrega una medida.
+  4. **Traducción de errores nativos**: `traducirError(error, presupuesto)`
+     convierte el código del motor en un error semántico (`QUERY_TIMEOUT`,
+     `SCHEMA_DRIFT`) y deja pasar tal cual lo que no reconoce. Ninguna otra
+     pieza nombra un código de error de un motor.
+- **Capacidad del dialecto**: lo que el motor puede prometer, y de lo que
+  dependen decisiones del catálogo y del planificador. `tiposGarantizados`
+  significa que el motor declara y hace cumplir el tipo de cada columna: con
+  ella, un tipo declarado que no calza con el físico es un error de definición;
+  sin ella (un motor de tipos laxos), la misma incompatibilidad es sólo una
+  advertencia de registro.
 - **Telemetría**: señales de monitoreo del engine. Se dice "telemetría" y no
   "métrica" para no confundir con las medidas de negocio. Vive en memoria del
   proceso, se lee con `engine.telemetry()` y cuenta, por consumidor: consultas
@@ -197,7 +228,8 @@ equivalente en Cube, se indica para facilitar la lectura al equipo.
   ella es un error del servidor: 500 sin detalles. `INVALID_JSON` y
   `PAYLOAD_TOO_LARGE` son los códigos que nacen en la capa HTTP —el cuerpo no
   llegó a ser una consulta declarativa, o no llegó a leerse entero— y salen como
-  400 y 413; `QUERY_TIMEOUT` sale como 504.
+  400 y 413; `QUERY_TIMEOUT` sale como 504 y `SCHEMA_DRIFT` como 503 —una
+  dependencia rota que el consumidor no puede arreglar cambiando lo que pidió—.
 - **Techo del cuerpo**: los 64 KiB (`LIMITE_DE_CUERPO`) que la capa HTTP acepta
   como máximo en el cuerpo de una petición. Se cuentan bytes mientras se lee,
   así que un cuerpo sin fin nunca llega a crecer en memoria: al pasarse, la

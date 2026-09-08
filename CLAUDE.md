@@ -34,7 +34,10 @@ src/
   definitions/consultas-tipo.js  cinco plantillas del caso con parámetros `:nombre`
   definitions/index.js       composición: qué módulos y qué consultas tipo
                              existen, y `registrarModulos(catalog, snapshot)`
-  dialect/postgres.js        capacidades del motor (dateTrunc, agregadoFiltrado)
+  dialect/postgres.js        el motor, entero: sintaxis (dateTrunc,
+                             agregadoFiltrado y capacidades), introspección del
+                             esquema, mapa de tipos físicos → semánticos y
+                             traducción de errores nativos
   budgets.js                 presupuesto por clase de consumidor (timeout, filas,
                              rango y TTL de caché)
   cache/store.js             interfaz CacheStore (get/set/delete async) y
@@ -48,10 +51,10 @@ src/
                              traga los fallos de la L2
   cache/index.js             cómo arma su caché un proceso según REDIS_URL
                              (L1+L2, o sólo L1 con aviso)
-  catalog.js                 registro y validación de definiciones, resolución de
-                             miembros, vistas pública e interna, versión y
-                             consultas tipo
-  introspect.js              snapshot del esquema desde information_schema/pg_indexes
+  catalog.js                 registro y validación de definiciones (forma,
+                             esquema físico y tipos), fuente por entidad,
+                             resolución de miembros, vistas pública e interna,
+                             versión y consultas tipo
   suggest.js                 distancia de edición y sugerencia del nombre más parecido
   vocabulary.js              operadores por tipo de dimensión y granularidades
   planner.js                 el planificador: pipeline de puertas (validar, resolver
@@ -376,6 +379,56 @@ curl -s -H 'Authorization: Bearer demo-dashboard-empresa-a' \
   `crearMemoryStore()`. La L1 vive en el proceso: cada instancia tiene la suya, y
   compartirla es trabajo de la L2 (fase 8), que entra por la misma costura.
 
+## Decisiones de la fase A
+
+- **El dialecto es la única pieza que conoce un motor**, con cuatro
+  responsabilidades y ninguna fuera de él: (1) sintaxis SQL y capacidades,
+  (2) introspección del esquema, (3) mapa de tipos físicos → semánticos,
+  (4) traducción de errores nativos. Agregar un motor es agregar un archivo
+  hermano de `dialect/postgres.js`; el catálogo, el planificador y el engine no
+  nombran ninguno.
+- **`src/introspect.js` desapareció**: la introspección es `postgres.introspect(pool)`.
+  Cómo se descubre el esquema depende del motor (`information_schema` y
+  `pg_indexes` son de Postgres); la *forma* del snapshot sigue siendo del
+  catálogo, y no cambió: `test/fixtures/snapshot.json` es el mismo archivo.
+- **`dialecto.tipoSemantico(tipoFísico)`** traduce el tipo de la columna al tipo
+  del vocabulario (`number`, `string`, `date`, `boolean`). Al registrar **con
+  snapshot**, el catálogo exige que el `type` de cada dimensión calce con el
+  físico y que una medida `avg`/`sum` agregue una columna numérica; si no,
+  `INVALID_DEFINITION` con `member` = `entidad.miembro` y una sugerencia que
+  nombra los dos tipos. Sin snapshot no se valida, como antes. Un tipo físico
+  que el dialecto no reconoce no se juzga: es la misma respuesta conservadora
+  que da el catálogo cuando no hay foto del esquema.
+- **`tiposGarantizados`** es una capacidad del dialecto, no una decisión del
+  catálogo: Postgres declara y hace cumplir el tipo de cada columna, así que un
+  desajuste es un hecho y corta el registro. Un motor de tipos laxos (SQLite)
+  declarará `false` y ahí la misma incompatibilidad sale como **advertencia**
+  de registro, con el formato de siempre (`{ member, warning }`): rechazar una
+  sospecha sería negarse a hablar con el motor.
+- **`SCHEMA_DRIFT`** (código nuevo): el dialecto traduce `42703`
+  (undefined_column) y `42P01` (undefined_table) —el SQL nombra algo que la base
+  ya no tiene— y sugiere volver a introspectar y re-registrar. Sale como **503**:
+  es una dependencia rota, no una consulta mal escrita, y el consumidor no puede
+  arreglarla cambiando lo que pidió. El `57014` del timeout se mudó también: el
+  engine ya no contiene ningún código de error de Postgres.
+- **Fuente por entidad**: una definición puede declarar `source`; ausente, es
+  `postgres` —el nombre de la fuente por defecto es el `name` del dialecto por
+  defecto, para no tener dos copias de esa palabra—. El catálogo la guarda
+  normalizada, la publica sólo en `describeInternal()` (la vista pública no
+  sabe en qué base viven los datos) y **rechaza al registrar una fuente que
+  nadie configuró**: sin dialecto no hay ni tipos que validar ni motor contra
+  el cual ejecutar.
+- **`createCatalog({ fuentes })` y `createEngine({ fuentes })`** reciben el mapa
+  nombre → `{ dialecto, pool }`. El catálogo sólo usa el dialecto (no ejecuta
+  nada). Un `createEngine({ catalog, pool })` sin `fuentes` sigue siendo lo de
+  antes: una sola fuente, la del dialecto por defecto.
+- **El dialecto lo elige la entidad de hechos**: el planificador lo toma de la
+  fuente de la entidad de la que salen las medidas, y el engine ejecuta contra
+  el pool de esa misma fuente. Si la consulta alcanza una entidad de otra fuente
+  —por una dimensión, por un filtro o por el camino de joins—, corta con
+  `NO_JOIN_PATH` nombrando las dos fuentes: dos bases no se cruzan con un JOIN,
+  y la federación es otra pieza con otro presupuesto.
+
 ## Arreglos de revisión de la fase 6
 
 - **Techo del cuerpo HTTP**: `cuerpoDe()` acumulaba sin límite. Ahora cuenta
@@ -489,6 +542,14 @@ curl -s -H 'Authorization: Bearer demo-dashboard-empresa-a' \
   que duerme 1 s y un socket que se destruye a los 200 ms.
 
 ## Estado
+
+Fase A terminada: el dialecto quedó como la única pieza que conoce un motor
+(sintaxis, introspección, mapa de tipos y errores nativos), cada entidad declara
+su fuente y el catálogo valida la compatibilidad entre el tipo declarado y el
+físico. `SCHEMA_DRIFT` (503) reemplaza al error crudo de Postgres cuando el
+esquema cambió debajo del catálogo. Verificado contra Docker: 117 tests en verde
+y `npm run demo` responde las tres preguntas con caché de dos niveles. La fase B
+puede agregar `src/dialect/sqlite.js` sin tocar catálogo, planificador ni engine.
 
 Fase 8 terminada — **última del plan**. Caché L2 en Redis detrás de la misma
 interfaz `CacheStore`, compuesta con la L1 por `TieredStore`. Verificado contra

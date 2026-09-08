@@ -229,7 +229,8 @@ function columnasDeclaradas(def) {
 }
 
 // El esquema físico se descubre, no se declara: la definición se contrasta
-// contra la foto que trae `introspect(pool)`. Un cambio de esquema se detecta
+// contra la foto que trae el `introspect(pool)` del dialecto. Un cambio de
+// esquema se detecta
 // al registrar y no cuando el dashboard ya está roto.
 function validarContraEsquema(def, snapshot) {
   const tabla = snapshot.tables?.[def.table];
@@ -504,7 +505,7 @@ export function createCatalog({ fuentes = FUENTES_POR_DEFECTO } = {}) {
 
   return {
     // El snapshot es opcional: sin él se valida la forma pero no el esquema
-    // físico. Quien registra contra una base viva pasa el de `introspect`.
+    // físico. Quien registra contra una base viva pasa el del dialecto.
     register(def, snapshot) {
       validarForma(def);
       // La fuente de la entidad decide qué dialecto la traduce. Una fuente que
