@@ -15,6 +15,11 @@
 //   * `PAYLOAD_TOO_LARGE` es 413: el cuerpo superó el techo que la capa HTTP le
 //     pone antes de leerlo entero. Nace aquí, como `INVALID_JSON`: ninguna
 //     puerta del engine llegó a ver una consulta.
+//   * `SCHEMA_DRIFT` es 503 y no 500: la base ya no calza con el catálogo, así
+//     que el servicio no puede responder hasta que alguien lo vuelva a
+//     registrar contra el esquema actual. Es una dependencia rota, no una
+//     consulta mal escrita, y el consumidor no puede arreglarla cambiando lo
+//     que pidió.
 //   * `INVALID_DEFINITION` no está en la tabla a propósito: una definición mal
 //     declarada es un error del servidor, no de quien consulta.
 export const CODIGOS_HTTP = {
@@ -32,4 +37,5 @@ export const CODIGOS_HTTP = {
   INVALID_JSON: 400,
   PAYLOAD_TOO_LARGE: 413,
   QUERY_TIMEOUT: 504,
+  SCHEMA_DRIFT: 503,
 };

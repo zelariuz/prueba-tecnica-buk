@@ -570,3 +570,86 @@ describe('módulo de asistencia', conBase, () => {
     );
   });
 });
+
+// Doble delgado del pool, el mismo patrón del timeout: clientes reales y sólo
+// el texto de la consulta principal —la única que viaja con parámetros—
+// reemplazado. Aquí por una que nombra algo que la base no tiene, que es lo que
+// pasa cuando el esquema cambia debajo de un catálogo ya registrado.
+function poolQueNombraLoQueNoExiste(pool, consulta) {
+  return {
+    async connect() {
+      const cliente = await pool.connect();
+      return {
+        query: (texto, params) => (params === undefined ? cliente.query(texto) : cliente.query(consulta)),
+        release: (destruir) => cliente.release(destruir),
+      };
+    },
+  };
+}
+
+describe('el esquema que cambió debajo del catálogo', conBase, () => {
+  let pool;
+  let catalog;
+  let engine;
+
+  before(() => {
+    // Tamaño 1 a propósito: si una petición dejara la conexión sucia o sin
+    // liberar, la siguiente lo nota de inmediato.
+    pool = new pg.Pool({ connectionString: DATABASE_URL, max: 1 });
+    catalog = createCatalog();
+    for (const definicion of [reviews, employees, departments]) catalog.register(definicion);
+    engine = createEngine({ catalog, pool });
+  });
+
+  after(async () => {
+    await pool.end();
+  });
+
+  it('una columna que la base ya no tiene vuelve como SCHEMA_DRIFT', async () => {
+    const desfasado = createEngine({
+      catalog,
+      pool: poolQueNombraLoQueNoExiste(pool, 'SELECT columna_fantasma FROM performance_reviews'),
+    });
+
+    const error = await errorAlEsperar(
+      desfasado.run(conteoPorEstado, { companyId: EMPRESA_A, consumer: 'api' }),
+    );
+
+    // El código nativo del motor lo traduce el dialecto: el engine no conoce
+    // ningún código de Postgres.
+    assert.equal(error.code, 'SCHEMA_DRIFT');
+    assert.match(error.suggestion, /esquema/);
+    assert.match(error.suggestion, /registrar/);
+  });
+
+  it('una tabla que la base ya no tiene vuelve como SCHEMA_DRIFT', async () => {
+    const desfasado = createEngine({
+      catalog,
+      pool: poolQueNombraLoQueNoExiste(pool, 'SELECT 1 FROM tabla_fantasma'),
+    });
+
+    const error = await errorAlEsperar(
+      desfasado.run(conteoPorEstado, { companyId: EMPRESA_A, consumer: 'api' }),
+    );
+
+    assert.equal(error.code, 'SCHEMA_DRIFT');
+  });
+
+  it('tras el SCHEMA_DRIFT la conexión vuelve limpia al pool', async () => {
+    const desfasado = createEngine({
+      catalog,
+      pool: poolQueNombraLoQueNoExiste(pool, 'SELECT columna_fantasma FROM performance_reviews'),
+    });
+    const error = await errorAlEsperar(
+      desfasado.run(conteoPorEstado, { companyId: EMPRESA_A, consumer: 'api' }),
+    );
+    assert.equal(error.code, 'SCHEMA_DRIFT');
+
+    // Con el pool en tamaño 1, esto sólo funciona si la conexión volvió con su
+    // transacción cerrada y disponible: un error del motor aborta la
+    // transacción, y sin el ROLLBACK la siguiente consulta moriría con
+    // "current transaction is aborted".
+    const { rows } = await engine.run(conteoPorEstado, { companyId: EMPRESA_A, consumer: 'api' });
+    assert.deepEqual(porEstado(rows), { completed: 5, pending: 4, calibrated: 2 });
+  });
+});

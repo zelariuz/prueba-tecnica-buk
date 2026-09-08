@@ -6,7 +6,6 @@ import { createHash } from 'node:crypto';
 import { presupuestos as presupuestosPorDefecto } from './budgets.js';
 import { canonica } from './canonical.js';
 import { postgres } from './dialect/postgres.js';
-import { SemanticError } from './errors.js';
 import { crearPlanificador } from './planner.js';
 import { crearTelemetria } from './telemetry.js';
 
@@ -52,7 +51,10 @@ export function createEngine({
       return resultado.rows;
     } catch (error) {
       await cliente.query('ROLLBACK').catch(() => {});
-      throw traducirErrorDeBase(error, presupuesto);
+      // Qué significa un código nativo del motor lo sabe el dialecto: el engine
+      // no conoce ningún código de error de Postgres, y lo que el dialecto no
+      // reconoce vuelve tal cual.
+      throw dialect.traducirError(error, presupuesto);
     } finally {
       cliente.release();
     }
@@ -215,17 +217,6 @@ function milisegundos(presupuesto) {
     throw new Error(`Timeout de presupuesto inválido: ${presupuesto.timeoutMs}`);
   }
   return presupuesto.timeoutMs;
-}
-
-// Postgres cancela la consulta que pasa el statement_timeout con el código
-// 57014 (query_canceled). Para el consumidor no es un fallo de la base: es su
-// presupuesto agotado, y como tal vuelve con sugerencia de qué reducir.
-function traducirErrorDeBase(error, presupuesto) {
-  if (error?.code !== '57014') return error;
-  return new SemanticError({
-    code: 'QUERY_TIMEOUT',
-    suggestion: `La consulta superó los ${presupuesto.timeoutMs} ms de presupuesto de tu clase de consumidor: acota el rango temporal, sube la granularidad o pide menos dimensiones.`,
-  });
 }
 
 // Postgres devuelve int8 y numeric como texto para no perder precisión; las
