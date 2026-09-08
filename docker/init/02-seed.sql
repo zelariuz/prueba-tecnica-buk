@@ -22,14 +22,18 @@
 --   empresa 2 → completed: 3, pending: 1, calibrated: 1   (total 5)
 --
 -- CASO OBLIGATORIO (score promedio y evaluaciones completadas por departamento
--- y trimestre de 2025; el trimestre se nombra por su primer día):
+-- y trimestre de 2025; el trimestre se nombra por su primer día).
+-- La consulta tipo lleva el segmento `completed` como FILTRO GLOBAL, igual que
+-- el SQL de referencia del enunciado (`WHERE status = 'completed'` para toda la
+-- consulta): el promedio se calcula SOLO sobre evaluaciones completadas, y un
+-- departamento sin ninguna completada en el rango no produce fila.
 --   empresa 1 → Ingeniería 2025-01-01: avg 4.35 (1000, 1002), completadas 2
---               Ingeniería 2025-04-01: avg 3.40 (1001, 1003), completadas 1
---               Ventas     2025-01-01: avg 3.50 (1004),       completadas 0
---               Ventas     2025-04-01: avg 2.90 (1005),       completadas 0
+--               Ingeniería 2025-04-01: avg 3.80 (1001),       completadas 1
+--               Ventas: no aparece (1004 está calibrated y 1005 pending: sin
+--               completadas en 2025 no queda grupo que agrupar)
 --   empresa 2 → Ingeniería 2025-01-01: avg 4.10 (2000), completadas 1
 --               Ingeniería 2025-04-01: avg 3.30 (2004), completadas 1
---               Ventas     2025-01-01: avg 3.20 (2001), completadas 0
+--               Ventas: no aparece (2001 está pending)
 --
 -- COMPLETITUD (completion_rate = completadas / evaluaciones * 100) de la
 -- empresa 1 por departamento, con las evaluaciones de 2025:
