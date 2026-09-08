@@ -53,6 +53,7 @@ describe('telemetría de consultas rechazadas', () => {
       // Ni fallos de caché: no hay caché que pueda fallar.
       cacheErrors: {},
       database: { count: 0, totalMs: 0 },
+      clientGone: {},
     });
   });
 
@@ -72,6 +73,7 @@ describe('telemetría de consultas rechazadas', () => {
       cache: { hits: 0, misses: 0, porNivel: {}, hitRatio: 0 },
       cacheErrors: {},
       database: { count: 0, totalMs: 0 },
+      clientGone: {},
     });
   });
 });

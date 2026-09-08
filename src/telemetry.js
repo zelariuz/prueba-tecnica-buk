@@ -71,6 +71,15 @@ export function crearTelemetria() {
       sumar(contadores.cacheErrors, nivel ?? 'cache');
     },
 
+    // El cliente cerró la conexión antes de recibir la respuesta. No se cancela
+    // la consulta (decisión: lo ya formulado se termina y se cachea, así el
+    // retry es un hit); se cuenta, porque es la señal adelantada de un
+    // dashboard que refresca demasiado o de un timeout del lado cliente más
+    // corto que el presupuesto. Por consumidor, como todo lo demás.
+    registrarClienteSeFue({ consumer }) {
+      sumar(contadores.clientGone, consumer ?? 'desconocido');
+    },
+
     snapshot() {
       const copia = structuredClone(contadores);
       const consultadas = copia.cache.hits + copia.cache.misses;
@@ -102,5 +111,8 @@ function vacios() {
     // Suma y cuenta en vez de histograma: con las dos se saca el promedio, y
     // los percentiles son trabajo del exportador, que está fuera de alcance.
     database: { count: 0, totalMs: 0 },
+    // Clientes que se fueron antes de la respuesta, por consumidor. La consulta
+    // igual se sirvió y contó en `byResult`; esto mide lo que nadie leyó.
+    clientGone: {},
   };
 }

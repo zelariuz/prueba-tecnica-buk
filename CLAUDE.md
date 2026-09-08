@@ -478,6 +478,16 @@ curl -s -H 'Authorization: Bearer demo-dashboard-empresa-a' \
   (no tiene completadas en 2025). Sin cambios en el engine ni el planificador:
   lo resolvió la regla 1 de `docs/semantica-de-filtros.md`.
 
+## Corrección posterior al plan (07-09): cliente que se va
+
+- `telemetria.registrarClienteSeFue({ consumer })` → `clientGone` por consumidor
+  en `engine.telemetry()`. La capa HTTP escucha `close` de la respuesta y, si
+  `writableFinished` es falso, lo cuenta; `crearServidor` recibe la misma
+  `telemetria` del engine. Decisión del usuario: la consulta en curso NO se
+  cancela (se termina y se cachea; el retry es un hit); `responder()` no
+  escribe en una respuesta destruida. Test en `test/http.test.js` con un pool
+  que duerme 1 s y un socket que se destruye a los 200 ms.
+
 ## Estado
 
 Fase 8 terminada — **última del plan**. Caché L2 en Redis detrás de la misma

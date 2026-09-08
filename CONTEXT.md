@@ -169,7 +169,9 @@ equivalente en Cube, se indica para facilitar la lectura al equipo.
   proceso, se lee con `engine.telemetry()` y cuenta, por consumidor: consultas
   servidas y rechazadas, código de error, **puerta que rechazó**, hits y misses
   de caché —con los hits desglosados por nivel— y tiempo de base (suma y
-  cuenta), más los **fallos de caché por nivel** (`cacheErrors`), que son la
+  cuenta), los **clientes que se fueron** antes de la respuesta (`clientGone`,
+  por consumidor: la consulta se termina y se cachea igual; se cuenta lo que
+  nadie leyó), más los **fallos de caché por nivel** (`cacheErrors`), que son la
   única señal de que un nivel está caído: como ninguna consulta falla por eso,
   sin ese contador sería invisible. Una respuesta servida desde la
   caché cuenta como servida pero no suma al tiempo de base. Es reinicializable;

@@ -7,11 +7,22 @@ import { createServer } from 'node:http';
 
 import { SemanticError } from '../errors.js';
 import { CODIGOS_HTTP } from './codigos.js';
+import { crearTelemetria } from '../telemetry.js';
 
 // `registrarFallo` es la costura por la que salen los errores no estructurados:
-// se escriben en el servidor y nunca en la respuesta.
-export function crearServidor({ engine, catalog, tokens, registrarFallo = console.error }) {
-  async function atender(peticion) {
+// se escriben en el servidor y nunca en la respuesta. `telemetria` es la misma
+// del engine: la capa HTTP sólo le aporta lo que únicamente ella ve —el cliente
+// que cerró la conexión antes de la respuesta—.
+export function crearServidor({
+  engine,
+  catalog,
+  tokens,
+  registrarFallo = console.error,
+  telemetria = crearTelemetria(),
+}) {
+  // `marco` es lo que la petición ya resolvió cuando algo la interrumpe: el
+  // consumidor sale del token, y hace falta para contar por consumidor.
+  async function atender(peticion, marco) {
     const url = new URL(peticion.url, 'http://servidor.local');
 
     // El contexto de sesión sale del token y de ninguna otra parte: nunca del
@@ -25,6 +36,7 @@ export function crearServidor({ engine, catalog, tokens, registrarFallo = consol
           'La petición necesita un token conocido en la cabecera Authorization: Bearer <token>.',
       });
     }
+    marco.sesion = sesion;
 
     if (url.pathname === '/analytics/query' && peticion.method === 'POST') {
       const consulta = interpretar(await cuerpoDe(peticion));
@@ -52,8 +64,17 @@ export function crearServidor({ engine, catalog, tokens, registrarFallo = consol
   }
 
   return createServer(async (peticion, respuesta) => {
+    const marco = {};
+    // La conexión se cerró sin que la respuesta saliera: el cliente se fue. La
+    // consulta que ya corre no se cancela —se termina y se cachea, así el retry
+    // es un hit—; lo que se hace es contarlo, que es lo que anticipa la queja.
+    respuesta.on('close', () => {
+      if (!respuesta.writableFinished) {
+        telemetria.registrarClienteSeFue({ consumer: marco.sesion?.consumer });
+      }
+    });
     try {
-      const { estado, cuerpo } = await atender(peticion);
+      const { estado, cuerpo } = await atender(peticion, marco);
       responder(respuesta, estado, cuerpo);
     } catch (error) {
       const estado = CODIGOS_HTTP[error?.code];
@@ -133,6 +154,9 @@ function cuerpoDeError({ code, member, suggestion }) {
 }
 
 function responder(respuesta, estado, cuerpo) {
+  // Sin nadie al otro lado no hay a quién responder; escribir en un socket
+  // destruido no sirve de nada y en algunas versiones de Node emite error.
+  if (respuesta.destroyed) return;
   respuesta.writeHead(estado, { 'content-type': 'application/json; charset=utf-8' });
   respuesta.end(JSON.stringify(cuerpo));
 }

@@ -3,6 +3,8 @@
 // escuchando en un puerto efímero— y no por funciones internas: lo que se
 // verifica es el código de estado y el cuerpo que ve un consumidor.
 import { after, before, describe, it } from 'node:test';
+import { connect } from 'node:net';
+import { setTimeout as esperar } from 'node:timers/promises';
 import assert from 'node:assert/strict';
 import pg from 'pg';
 
@@ -10,6 +12,7 @@ import { createCatalog } from '../src/catalog.js';
 import { createEngine } from '../src/engine.js';
 import { crearMemoryStore } from '../src/cache/store.js';
 import { crearServidor } from '../src/http/server.js';
+import { crearTelemetria } from '../src/telemetry.js';
 import { tokensDeDemo } from '../src/http/tokens.js';
 import { departments } from '../src/definitions/departments.js';
 import { employees } from '../src/definitions/employees.js';
@@ -224,5 +227,80 @@ describe('límite del cuerpo de la petición', { timeout: 10_000 }, () => {
     // El doble del engine lanza: lo que importa es que el cuerpo se leyó
     // entero y la petición llegó hasta él, no la respuesta.
     assert.equal(respuesta.status, 500);
+  });
+});
+
+// Doble delgado del pool, como el de run.test.js: clientes reales, y solo la
+// consulta principal (la única con parámetros) se cambia por una que duerme.
+function poolQueDuerme(pool, segundos) {
+  return {
+    async connect() {
+      const cliente = await pool.connect();
+      return {
+        query: (texto, params) =>
+          params === undefined ? cliente.query(texto) : cliente.query(`SELECT pg_sleep(${segundos})`),
+        release: (destruir) => cliente.release(destruir),
+      };
+    },
+  };
+}
+
+// Decisión del usuario (CONTEXTO, 07-09): una consulta cuyo SQL ya corre NO se
+// cancela cuando el cliente se va —se deja terminar y se cachea, así el retry
+// es un hit—. Lo que sí se cuenta es el indicador: "cliente se fue antes de la
+// respuesta", por consumidor. Es la señal adelantada de refresh excesivo o de
+// timeouts del lado cliente más cortos que el presupuesto.
+describe('cliente que se va antes de la respuesta', { ...conBase, timeout: 15_000 }, () => {
+  let pool;
+  let servidor;
+  let telemetria;
+  let engine;
+  let puerto;
+
+  before(async () => {
+    pool = new pg.Pool({ connectionString: DATABASE_URL });
+    const catalog = createCatalog();
+    for (const definicion of [reviews, employees, departments]) catalog.register(definicion);
+    telemetria = crearTelemetria();
+    engine = createEngine({ catalog, pool: poolQueDuerme(pool, 1), telemetria });
+    servidor = crearServidor({ engine, catalog, tokens, telemetria });
+    await new Promise((listo) => servidor.listen(0, '127.0.0.1', listo));
+    puerto = servidor.address().port;
+  });
+
+  after(async () => {
+    await new Promise((listo) => servidor.close(listo));
+    await pool.end();
+  });
+
+  it('se cuenta por consumidor y la consulta termina igual', async () => {
+    const cuerpo = JSON.stringify({ measures: ['reviews.count'], dimensions: ['reviews.status'] });
+    const socket = connect(puerto, '127.0.0.1');
+    await new Promise((listo) => socket.once('connect', listo));
+    socket.write(
+      `POST /analytics/query HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer ${TOKEN_A}\r\n` +
+        `Content-Type: application/json\r\nContent-Length: ${Buffer.byteLength(cuerpo)}\r\n\r\n${cuerpo}`,
+    );
+    // La consulta duerme 1 s; el cliente se rinde a los 200 ms.
+    await esperar(200);
+    socket.destroy();
+    await esperar(1_300);
+
+    const contadores = engine.telemetry();
+    assert.deepEqual(contadores.clientGone, { dashboard: 1 });
+    // No se canceló: la consulta se sirvió (y por lo tanto se pudo cachear).
+    assert.equal(contadores.byResult.ok, 1);
+    assert.equal(contadores.byResult.error, 0);
+    // Y la conexión volvió limpia al pool: la siguiente petición responde.
+    assert.equal(pool.totalCount - pool.idleCount, 0, 'ninguna conexión quedó tomada');
+  });
+
+  it('una respuesta que sí llegó no cuenta como cliente que se fue', async () => {
+    const respuesta = await fetch(`http://127.0.0.1:${puerto}/analytics/catalog`, {
+      headers: { authorization: `Bearer ${TOKEN_A}` },
+    });
+    assert.equal(respuesta.status, 200);
+    await respuesta.json();
+    assert.deepEqual(engine.telemetry().clientGone, { dashboard: 1 });
   });
 });

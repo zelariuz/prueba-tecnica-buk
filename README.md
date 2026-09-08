@@ -330,9 +330,19 @@ dónde se va el tiempo de base — todo desglosado por consumidor.
   "byGate": { "resolverMiembros": 1 },
   "byConsumer": { "dashboard": { "ok": 3, "error": 1, "cacheHits": 1, "cacheMisses": 2 } },
   "cache": { "hits": 1, "misses": 2, "hitRatio": 0.3333333333333333 },
-  "database": { "count": 2, "totalMs": 5.4 }
+  "database": { "count": 2, "totalMs": 5.4 },
+  "clientGone": { "dashboard": 1 }
 }
 ```
+
+`clientGone` cuenta, por consumidor, los clientes que cerraron la conexión antes
+de recibir la respuesta. La consulta **no se cancela**: lo que ya se formuló se
+termina y se cachea, así el reintento siguiente es un hit y el cómputo no se
+pierde (la deuda ya está acotada por el `statement_timeout` de la clase). Lo
+que interesa es el indicador: un dashboard que refresca demasiado, o un timeout
+del lado cliente más corto que el presupuesto, se ven aquí antes de que alguien
+se queje. Cruzado con `database.totalMs / database.count` dice si el problema
+es la consulta o el cliente.
 
 `cache.hits` más `cache.misses` son las respuestas que pasaron por la caché, y
 `hitRatio` es la proporción que se ahorró la base. Un engine sin caché no reporta

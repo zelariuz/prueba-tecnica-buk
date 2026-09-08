@@ -43,7 +43,7 @@ if (!REDIS_URL) {
   console.warn('[caché] sin REDIS_URL: sólo L1 en memoria, cada instancia con la suya.');
 }
 const engine = createEngine({ catalog, pool, telemetria, cache: caches.cache });
-const servidor = crearServidor({ engine, catalog, tokens });
+const servidor = crearServidor({ engine, catalog, tokens, telemetria });
 
 servidor.listen(Number(PORT), HOST, () => {
   console.log(`Capa semántica escuchando en http://${HOST}:${PORT}`);
