@@ -43,9 +43,21 @@ export function crearServidor({
       // El dry-run viaja en la URL y no en el cuerpo a propósito: el cuerpo es
       // la consulta declarativa y nada más, así que pedirlo no cambia su forma
       // ni, por lo tanto, su queryId (historia 25).
-      return url.searchParams.get('dryRun') === 'true'
-        ? { estado: 200, cuerpo: engine.plan(consulta, sesion) }
-        : { estado: 200, cuerpo: await engine.run(consulta, sesion) };
+      if (url.searchParams.get('dryRun') !== 'true') {
+        return { estado: 200, cuerpo: await engine.run(consulta, sesion) };
+      }
+      // El dry-run devuelve el **plan lógico**: entidad, camino de joins,
+      // medidas, filtros y presupuesto, todo en nombres semánticos. El SQL no
+      // entra: nombra las tablas y las columnas físicas, exactamente lo que la
+      // vista pública del catálogo esconde (ADR 0008), y entregarlo por otra
+      // ruta sería tener la regla en un solo lado. Sólo una sesión interna lo
+      // recibe, y `internal` viene del token —lo pone el servidor— y nunca de la
+      // consulta.
+      const { sql, params, plan } = engine.plan(consulta, sesion);
+      return {
+        estado: 200,
+        cuerpo: { params, plan, ...(sesion.internal === true ? { sql } : {}) },
+      };
     }
 
     // Siempre la vista pública, nunca `describeInternal` (ADR 0008): el mapeo

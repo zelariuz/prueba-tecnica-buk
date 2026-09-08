@@ -20,3 +20,9 @@ filtrada por empresa y rol, siempre detrás de autenticación. La vista interna
 Test: la salida pública no contiene ningún nombre de tabla o columna física ni
 información de otra empresa. Los dashboards fijos ni siquiera necesitan el
 catálogo: llaman consultas tipo por nombre.
+
+**El SQL del dry-run es interno por esta misma razón** (08-09): nombra tablas y
+columnas físicas, así que `POST /analytics/query?dryRun=true` devuelve el plan
+lógico —que sólo tiene nombres semánticos— a todo el mundo y agrega el `sql` sólo
+si el token marca la sesión como interna. Esconder el mapeo en `/catalog` y
+regalarlo por la otra ruta era tener media regla.

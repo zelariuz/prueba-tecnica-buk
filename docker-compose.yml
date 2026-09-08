@@ -58,6 +58,6 @@ services:
       PORT: "3000"
       # Tokens de demo (ver .env.example): valores falsos y públicos a
       # propósito. La autenticación real está fuera de alcance.
-      DEMO_TOKENS: '{"demo-dashboard-empresa-a":{"companyId":1,"consumer":"dashboard"},"demo-api-empresa-a":{"companyId":1,"consumer":"api"},"demo-agente-empresa-a":{"companyId":1,"consumer":"agent"},"demo-dashboard-empresa-b":{"companyId":2,"consumer":"dashboard"}}'
+      DEMO_TOKENS: '{"demo-dashboard-empresa-a":{"companyId":1,"consumer":"dashboard"},"demo-api-empresa-a":{"companyId":1,"consumer":"api"},"demo-agente-empresa-a":{"companyId":1,"consumer":"agent"},"demo-dashboard-empresa-b":{"companyId":2,"consumer":"dashboard"},"demo-interno-empresa-a":{"companyId":1,"consumer":"api","internal":true}}'
     ports:
       - "3000:3000"

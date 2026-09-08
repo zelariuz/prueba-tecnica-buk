@@ -206,6 +206,13 @@ numerador y denominador, los filtros globales, los filtros de cada medida, el
 presupuesto aplicado con el límite efectivo y las advertencias. No abre ninguna
 conexión: un agente puede revisar la consulta antes de ejecutarla.
 
+El plan lógico está escrito **en nombres semánticos**: no hay una tabla ni una
+columna física en él. El `sql`, en cambio, las nombra todas, así que **por HTTP
+sale sólo a una sesión interna** (`internal: true` en el token): es la misma
+razón por la que el mapeo físico no está en la vista pública del catálogo (ADR
+0008), y tenerla en un solo lado sería tener media regla. Dentro del proceso,
+`engine.plan()` devuelve las dos cosas: quien llama es el servidor.
+
 ## El catálogo como contrato
 
 Registrar una definición la valida contra el esquema real de la base. La foto
@@ -266,7 +273,7 @@ arma SQL y no decide presupuestos.
 | Ruta | Qué hace |
 | --- | --- |
 | `POST /analytics/query` | Ejecuta una consulta declarativa. Devuelve `{ rows, meta }`. |
-| `POST /analytics/query?dryRun=true` | Devuelve `{ sql, params, plan }` sin tocar la base. |
+| `POST /analytics/query?dryRun=true` | Devuelve `{ params, plan }` sin tocar la base; agrega `sql` sólo si el token es de una sesión interna. |
 | `GET /analytics/catalog` | Devuelve la vista **pública** del catálogo (nunca la interna). |
 
 El `dryRun` viaja en la URL y no en el cuerpo a propósito: el cuerpo es la
@@ -275,9 +282,12 @@ tanto, su `queryId`.
 
 **Autenticación**: fuera de alcance (el PRD la deja a la aplicación). Para poder
 ejercitar el contrato hay una tabla en memoria de tokens de demo, cargada de la
-variable `DEMO_TOKENS` en JSON —`{ token → { companyId, consumer } }`, valores
-falsos y públicos, ver `.env.example`—. En producción esa función se reemplaza
-por el verificador de tokens de la plataforma y nada más cambia.
+variable `DEMO_TOKENS` en JSON —`{ token → { companyId, consumer, internal? } }`,
+valores falsos y públicos, ver `.env.example`—. En producción esa función se
+reemplaza por el verificador de tokens de la plataforma y nada más cambia.
+`internal` es opcional y por defecto falsa; sólo la trae `demo-interno-empresa-a`,
+y lo único que abre es el SQL del dry-run. Va en el token y no en la consulta
+justamente para que un consumidor no pueda pedírsela solo (ADR 0002).
 
 ```bash
 # Catálogo público

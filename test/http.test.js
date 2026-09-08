@@ -29,8 +29,14 @@ const conBase = DATABASE_URL
 // autenticación real está fuera de alcance (PRD, Fuera de Alcance).
 // La tabla se arma como en producción: desde la variable de entorno, no a mano.
 const TOKEN_A = 'token-demo-empresa-a';
+// Sesión interna: la única que recibe el SQL del dry-run, por la misma razón por
+// la que el mapeo físico no sale en la vista pública del catálogo (ADR 0008).
+const TOKEN_INTERNO = 'token-demo-interno-empresa-a';
 const tokens = tokensDeDemo({
-  DEMO_TOKENS: JSON.stringify({ [TOKEN_A]: { companyId: 1, consumer: 'dashboard' } }),
+  DEMO_TOKENS: JSON.stringify({
+    [TOKEN_A]: { companyId: 1, consumer: 'dashboard' },
+    [TOKEN_INTERNO]: { companyId: 1, consumer: 'api', internal: true },
+  }),
 });
 
 // Timeout por test: una petición que el servidor no contesta debe fallar el
@@ -167,7 +173,10 @@ describe('capa HTTP', { ...conBase, timeout: 10_000 }, () => {
     assert.ok(cuerpo.suggestion.length > 0, 'el error estructurado trae sugerencia');
   });
 
-  it('con ?dryRun=true devuelve el SQL, los parámetros y el plan lógico sin ejecutar', async () => {
+  // Hallazgo 5: el dry-run entregaba el SQL —con los nombres de las tablas
+  // físicas— a cualquier token, mientras `/analytics/catalog` los esconde. El
+  // plan lógico está escrito en nombres semánticos y ése sí es para todos.
+  it('con ?dryRun=true devuelve el plan lógico y los parámetros, sin ejecutar y sin SQL', async () => {
     const respuesta = await fetch(`${base}/analytics/query?dryRun=true`, {
       method: 'POST',
       headers: { authorization: `Bearer ${TOKEN_A}`, 'content-type': 'application/json' },
@@ -175,13 +184,31 @@ describe('capa HTTP', { ...conBase, timeout: 10_000 }, () => {
     });
 
     assert.equal(respuesta.status, 200);
-    const { sql, params, plan, rows } = await respuesta.json();
+    const cuerpo = await respuesta.json();
+    const { sql, params, plan, rows } = cuerpo;
     assert.equal(rows, undefined, 'un dry-run no devuelve filas: no tocó la base');
-    assert.match(sql, /^WITH/);
+    assert.equal(sql, undefined, 'el SQL nombra tablas físicas: no sale a un token normal');
     assert.equal(params[0], 1, 'la empresa del token es el primer parámetro');
     assert.equal(plan.entity, 'reviews');
     assert.deepEqual(plan.measures, ['reviews.count']);
     assert.equal(plan.budget.consumer, 'dashboard');
+
+    // Ninguna tabla física en el cuerpo entero, no sólo en el campo `sql`.
+    assert.doesNotMatch(JSON.stringify(cuerpo), /performance_reviews/);
+  });
+
+  it('un token interno sí recibe el SQL del dry-run', async () => {
+    const respuesta = await fetch(`${base}/analytics/query?dryRun=true`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${TOKEN_INTERNO}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ measures: ['reviews.count'], dimensions: ['departments.name'] }),
+    });
+
+    assert.equal(respuesta.status, 200);
+    const { sql, plan } = await respuesta.json();
+    assert.match(sql, /^WITH/);
+    assert.match(sql, /performance_reviews/);
+    assert.equal(plan.entity, 'reviews');
   });
 });
 
