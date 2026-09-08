@@ -150,6 +150,23 @@ describe('capa HTTP', { ...conBase, timeout: 10_000 }, () => {
       assert.ok(!serializado.includes(fisico), `el catálogo público no expone ${fisico}`);
     }
   });
+  // Hallazgo 4: lo primero que prueba quien no conoce la API es una consulta
+  // incompleta. Tiene que salir como error del consumidor (400) con su código,
+  // nunca como 500 diciendo que el servidor está mal armado.
+  it('una consulta sin medidas responde 400 INVALID_QUERY y no 500', async () => {
+    const respuesta = await fetch(`${base}/analytics/query`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${TOKEN_A}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ dimensions: ['departments.name'] }),
+    });
+
+    assert.equal(respuesta.status, 400);
+    const cuerpo = await respuesta.json();
+    assert.equal(cuerpo.code, 'INVALID_QUERY');
+    assert.equal(cuerpo.member, 'measures');
+    assert.ok(cuerpo.suggestion.length > 0, 'el error estructurado trae sugerencia');
+  });
+
   it('con ?dryRun=true devuelve el SQL, los parámetros y el plan lógico sin ejecutar', async () => {
     const respuesta = await fetch(`${base}/analytics/query?dryRun=true`, {
       method: 'POST',

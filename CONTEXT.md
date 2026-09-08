@@ -100,6 +100,10 @@ equivalente en Cube, se indica para facilitar la lectura al equipo.
 - **Error estructurado**: `{ code, member?, suggestion? }`. Códigos:
   `UNKNOWN_MEMBER`, `NO_JOIN_PATH`, `MISSING_TENANT`, `FORBIDDEN_FIELD`,
   `MULTI_ENTITY_MEASURES`, `MISSING_TIME_RANGE`, `INVALID_OPERATOR`,
+  `INVALID_QUERY` (la consulta no tiene forma de consulta: sin `measures`, una
+  lista que no es lista, una `timeDimension` sin granularidad de la lista, una
+  dirección de orden que no es `asc`/`desc` o un `limit` que no es entero
+  positivo. Es la puerta de forma, antes de mirar el catálogo),
   `INVALID_CONSUMER` (clase de consumidor desconocida o ausente en el contexto),
   `QUERY_TIMEOUT` (la ejecución superó el timeout del presupuesto),
   `SCHEMA_DRIFT` (el SQL nombró una tabla o columna que la base ya no tiene: el

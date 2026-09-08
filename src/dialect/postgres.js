@@ -125,6 +125,9 @@ export const postgres = {
   // --- 1. Sintaxis SQL ------------------------------------------------------
 
   // La granularidad se interpola en el SQL, así que sale de una lista cerrada.
+  // Desde una consulta este throw es inalcanzable: la puerta de forma del
+  // planificador ya la rechazó con `INVALID_QUERY`. Queda como cerradura del
+  // dialecto para quien lo use directamente.
   // El resultado se devuelve como texto ISO y no como fecha: node-postgres
   // convierte DATE a un Date de JavaScript corrido a la zona del proceso, y el
   // valor de una dimensión temporal debe ser el mismo en cualquier máquina.

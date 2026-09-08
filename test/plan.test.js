@@ -905,3 +905,83 @@ test('equals con un solo valor sigue emitiendo la misma comparación', () => {
   assert.match(sql, /WHERE company_id = \$1\n {4}AND status = \$2/);
   assert.deepEqual(params, [EMPRESA, 'completed', 10000]);
 });
+
+// --- Hallazgo 4 del abogado del diablo: la forma de la consulta no se
+// validaba. Lo primero que prueba un evaluador —una consulta sin `measures`, un
+// `granularity` mal escrito, `order: 'ASC'`— salía como 500 con un mensaje que
+// culpaba al servidor. `INVALID_QUERY` es la puerta de forma: se rechaza sin
+// mirar el catálogo, con `member` y sugerencia como cualquier otro error.
+test('una consulta sin medidas se rechaza con INVALID_QUERY', () => {
+  for (const consulta of [
+    {},
+    { measures: [] },
+    { measures: 'reviews.count' },
+    { dimensions: ['departments.name'] },
+  ]) {
+    const error = errorDe(() => engineDePrueba().plan(consulta, CTX));
+    assert.equal(error.code, 'INVALID_QUERY', JSON.stringify(consulta));
+    assert.equal(error.member, 'measures');
+    assert.match(error.suggestion, /al menos una medida/);
+  }
+});
+
+test('las listas de la consulta tienen que ser listas', () => {
+  for (const campo of ['dimensions', 'segments', 'filters', 'timeDimensions']) {
+    const error = errorDe(() =>
+      engineDePrueba().plan({ measures: ['reviews.count'], [campo]: 'reviews.status' }, CTX),
+    );
+    assert.equal(error.code, 'INVALID_QUERY', campo);
+    assert.equal(error.member, campo);
+    assert.ok(error.suggestion.length > 0);
+  }
+});
+
+test('una dimensión temporal sin granularidad válida se rechaza con INVALID_QUERY', () => {
+  for (const temporal of [
+    { dimension: 'reviews.period' },
+    { dimension: 'reviews.period', granularity: 'trimestre' },
+    { dimension: 'reviews.period', granularity: 'QUARTER' },
+  ]) {
+    const error = errorDe(() =>
+      engineDePrueba().plan({ measures: ['reviews.count'], timeDimensions: [temporal] }, CTX),
+    );
+    assert.equal(error.code, 'INVALID_QUERY', JSON.stringify(temporal));
+    assert.equal(error.member, 'timeDimensions[0].granularity');
+    // La sugerencia trae la lista cerrada: un agente que se equivocó puede
+    // corregirse sin ir a buscar el catálogo.
+    assert.match(error.suggestion, /day, week, month, quarter, year/);
+  }
+});
+
+test('una dirección de orden que no es asc ni desc se rechaza con INVALID_QUERY', () => {
+  for (const direccion of ['ASC', 'ascending', 1, null]) {
+    const error = errorDe(() =>
+      engineDePrueba().plan(
+        { measures: ['reviews.count'], order: { 'reviews.count': direccion } },
+        CTX,
+      ),
+    );
+    assert.equal(error.code, 'INVALID_QUERY', String(direccion));
+    assert.equal(error.member, 'order.reviews.count');
+    assert.match(error.suggestion, /asc/);
+  }
+});
+
+test('un limit que no es un entero positivo se rechaza con INVALID_QUERY', () => {
+  for (const limit of [-1, 0, 1.5, 'abc', null]) {
+    const error = errorDe(() =>
+      engineDePrueba().plan({ measures: ['reviews.count'], limit }, CTX),
+    );
+    assert.equal(error.code, 'INVALID_QUERY', String(limit));
+    assert.equal(error.member, 'limit');
+  }
+});
+
+test('sin medidas nadie pregunta por la fuente: el error es del consumidor y no del servidor', () => {
+  // Antes, una consulta sin medidas llegaba a resolver la fuente de
+  // `medidas[0]?.entidad` —`undefined`— y salía como error de configuración del
+  // servidor ("está mal armado el servidor"), que es un diagnóstico falso.
+  const error = errorDe(() => engineDePrueba().plan({ dimensions: ['reviews.status'] }, CTX));
+  assert.equal(error.code, 'INVALID_QUERY');
+  assert.doesNotMatch(error.suggestion, /engine|configurada/);
+});

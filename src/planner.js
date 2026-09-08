@@ -10,7 +10,7 @@
 // el SQL.
 import { presupuestoDe } from './budgets.js';
 import { SemanticError } from './errors.js';
-import { OPERADORES_EN_SQL, operadoresDe } from './vocabulary.js';
+import { GRANULARIDADES, OPERADORES_EN_SQL, operadoresDe } from './vocabulary.js';
 
 const PARAMETRO_EMPRESA = '$1';
 
@@ -25,6 +25,77 @@ const OPERADORES_DE_LISTA = new Set(['in', 'notIn']);
 // `NULL`, que en SQL no es falso sino desconocido: cero filas y un 200 (hallazgo
 // 3 del abogado del diablo). Se rechaza en vez de adivinar.
 const OPERADORES_DE_UN_VALOR = new Set(['equals', 'notEquals']);
+
+// Las listas opcionales de la consulta declarativa (ADR 0007). Se nombran juntas
+// porque la comprobación es la misma: si vienen, vienen como arreglo.
+// `measures` no está aquí: no es opcional y su ausencia tiene un mensaje propio.
+const LISTAS_DE_LA_CONSULTA = ['dimensions', 'segments', 'filters', 'timeDimensions'];
+
+// Direcciones de orden. Se interpolan en el SQL en mayúsculas, así que salen de
+// una lista cerrada y se escriben exactamente así: `ASC` no es `asc`.
+const DIRECCIONES = new Set(['asc', 'desc']);
+
+const GRANULARIDADES_VALIDAS = new Set(GRANULARIDADES);
+
+// La forma de la consulta es un error del consumidor, no del servidor: sale con
+// código propio, `member` y sugerencia, como cualquier otro (hallazgo 4 del
+// abogado del diablo).
+function formaInvalida(member, suggestion) {
+  return new SemanticError({ code: 'INVALID_QUERY', member, suggestion });
+}
+
+// Puerta 1a · Forma de la consulta: lo que se puede rechazar sin catálogo, sin
+// esquema y sin base. Va antes de resolver miembros porque una consulta que no
+// tiene forma de consulta no tiene miembros que resolver: sin esta puerta, una
+// consulta sin `measures` terminaba preguntándole al catálogo por la fuente de
+// `undefined` y salía como error de configuración del servidor.
+function validarForma(query) {
+  if (query === null || typeof query !== 'object' || Array.isArray(query)) {
+    throw formaInvalida(
+      'query',
+      'Una consulta declarativa es un objeto JSON con measures y, opcionalmente, dimensions, timeDimensions, filters, segments, order y limit.',
+    );
+  }
+
+  if (!Array.isArray(query.measures) || query.measures.length === 0) {
+    throw formaInvalida(
+      'measures',
+      'Una consulta necesita al menos una medida: declara measures con los nombres de las medidas que quieres, por ejemplo ["reviews.count"].',
+    );
+  }
+
+  for (const campo of LISTAS_DE_LA_CONSULTA) {
+    if (query[campo] === undefined || Array.isArray(query[campo])) continue;
+    throw formaInvalida(campo, `${campo} se declara como una lista; recibí ${typeof query[campo]}.`);
+  }
+
+  // v1 exige granularidad en toda dimensión temporal: no hay forma de acotar por
+  // fecha sin agrupar por ella. La granularidad se interpola en el SQL, así que
+  // sale de una lista cerrada y se comprueba aquí y no en el dialecto, donde el
+  // rechazo sería un error del servidor.
+  (query.timeDimensions ?? []).forEach((temporal, indice) => {
+    if (GRANULARIDADES_VALIDAS.has(temporal?.granularity)) return;
+    throw formaInvalida(
+      `timeDimensions[${indice}].granularity`,
+      `Una dimensión temporal se agrupa por una granularidad de la lista: ${GRANULARIDADES.join(', ')}.`,
+    );
+  });
+
+  for (const [miembro, direccion] of Object.entries(query.order ?? {})) {
+    if (DIRECCIONES.has(direccion)) continue;
+    throw formaInvalida(
+      `order.${miembro}`,
+      `La dirección de orden se escribe exactamente asc o desc, en minúsculas; recibí ${JSON.stringify(direccion)}.`,
+    );
+  }
+
+  if (query.limit !== undefined && !(Number.isInteger(query.limit) && query.limit >= 1)) {
+    throw formaInvalida(
+      'limit',
+      `limit es un entero mayor o igual a 1 —el techo real lo pone tu clase de consumidor—; recibí ${JSON.stringify(query.limit)}.`,
+    );
+  }
+}
 
 // `fuentes` es el mapa nombre → { dialecto, pool } que el engine recibió. El
 // planificador sólo usa el dialecto, y lo toma de la fuente de la entidad de
@@ -70,6 +141,8 @@ function anotandoLaPuerta(puerta, paso) {
 // campos, es un intento de elegir empresa o presupuesto propio.
 function validar(paso) {
   const { query, ctx, presupuestos } = paso;
+
+  validarForma(query);
 
   for (const campo of ['companyId', 'consumer']) {
     if (query?.[campo] === undefined) continue;
@@ -441,7 +514,11 @@ function ordenDeSalida(query, dimensiones, medidas) {
           'Ordena por un miembro presente en measures, dimensions o timeDimensions de la misma consulta.',
       });
     }
-    if (direccion !== 'asc' && direccion !== 'desc') {
+    // Segunda cerradura: la puerta `validar` ya rechazó cualquier otra
+    // dirección, y desde una consulta esto es inalcanzable. Se deja porque el
+    // valor termina interpolado en el SQL y un cambio en la puerta de forma no
+    // debería poder convertirse en una inyección.
+    if (!DIRECCIONES.has(direccion)) {
       throw new Error(`Dirección de orden no soportada: ${direccion}`);
     }
     return `"${miembro}" ${direccion.toUpperCase()}`;
