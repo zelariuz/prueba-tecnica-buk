@@ -850,3 +850,58 @@ test('una medida count_distinct emite COUNT(DISTINCT columna) con su filtro', ()
   );
   assert.deepEqual(params, [EMPRESA, 'completed', 10000]);
 });
+
+// --- Hallazgo 3 del abogado del diablo: `equals` y `notEquals` comparan con UN
+// valor. Antes se tomaba `values[0]` y se ignoraba el resto: dos valores daban
+// el número de uno solo y una lista vacía daba `= NULL`, que en SQL no es falso
+// sino desconocido — cero filas y un 200, sin que nada avisara.
+test('equals con más de un valor se rechaza y manda a in', () => {
+  const error = errorDe(() =>
+    engineDePrueba().plan(
+      {
+        measures: ['reviews.count'],
+        filters: [
+          { member: 'reviews.status', operator: 'equals', values: ['completed', 'pending'] },
+        ],
+      },
+      CTX,
+    ),
+  );
+
+  assert.equal(error.code, 'INVALID_OPERATOR');
+  assert.equal(error.member, 'reviews.status');
+  assert.match(error.suggestion, /exactamente un valor/);
+  assert.match(error.suggestion, /\bin\b/);
+});
+
+test('equals y notEquals con lista vacía o sin values se rechazan', () => {
+  for (const operator of ['equals', 'notEquals']) {
+    for (const values of [[], undefined, 'completed']) {
+      const error = errorDe(() =>
+        engineDePrueba().plan(
+          {
+            measures: ['reviews.count'],
+            filters: [{ member: 'reviews.status', operator, ...(values === undefined ? {} : { values }) }],
+          },
+          CTX,
+        ),
+      );
+
+      assert.equal(error.code, 'INVALID_OPERATOR', `${operator} con ${JSON.stringify(values)}`);
+      assert.equal(error.member, 'reviews.status');
+    }
+  }
+});
+
+test('equals con un solo valor sigue emitiendo la misma comparación', () => {
+  const { sql, params } = engineDePrueba().plan(
+    {
+      measures: ['reviews.count'],
+      filters: [{ member: 'reviews.status', operator: 'equals', values: ['completed'] }],
+    },
+    CTX,
+  );
+
+  assert.match(sql, /WHERE company_id = \$1\n {4}AND status = \$2/);
+  assert.deepEqual(params, [EMPRESA, 'completed', 10000]);
+});

@@ -20,6 +20,12 @@ const ALIAS_AGREGADA = 'agregada';
 // Operadores cuyo valor es una lista: sin elementos no hay SQL que emitir.
 const OPERADORES_DE_LISTA = new Set(['in', 'notIn']);
 
+// Operadores que comparan con UN valor. Tomar `values[0]` y descartar el resto
+// devuelve un número que no es el que se pidió, y sin `values` compara contra
+// `NULL`, que en SQL no es falso sino desconocido: cero filas y un 200 (hallazgo
+// 3 del abogado del diablo). Se rechaza en vez de adivinar.
+const OPERADORES_DE_UN_VALOR = new Set(['equals', 'notEquals']);
+
 // `fuentes` es el mapa nombre → { dialecto, pool } que el engine recibió. El
 // planificador sólo usa el dialecto, y lo toma de la fuente de la entidad de
 // hechos: qué motor traduce esta consulta lo decide el dato que se consulta, no
@@ -550,6 +556,15 @@ function exigirOperador(filtro, tipo) {
       code: 'INVALID_OPERATOR',
       member: filtro.member,
       suggestion: `El operador ${filtro.operator} requiere al menos un valor: declara values con los valores a comparar.`,
+    });
+  }
+  // Un valor exacto, ni cero ni dos: comparar con el primero de una lista es
+  // responder otra pregunta sin decirlo.
+  if (OPERADORES_DE_UN_VALOR.has(filtro.operator) && !(Array.isArray(filtro.values) && filtro.values.length === 1)) {
+    throw new SemanticError({
+      code: 'INVALID_OPERATOR',
+      member: filtro.member,
+      suggestion: `El operador ${filtro.operator} lleva exactamente un valor: declara values como un arreglo de un elemento. Para comparar contra varios valores usa in o notIn.`,
     });
   }
   if (!OPERADORES_EN_SQL.has(filtro.operator)) {
