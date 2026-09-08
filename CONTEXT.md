@@ -69,8 +69,12 @@ equivalente en Cube, se indica para facilitar la lectura al equipo.
   entidad, dimensión y medida (`description`, valores permitidos, escala).
   No se infiere del nombre.
 - **Vista pública del catálogo**: lo que ve un consumidor: nombres semánticos,
-  tipos, descripciones, operadores permitidos, consultas tipo. Filtrada por
-  empresa y rol. Nunca incluye nombres de tablas ni columnas.
+  tipos, descripciones, operadores emitidos, consultas tipo. Nunca incluye
+  nombres de tablas ni columnas. **Es la misma para todo contexto**: `describe`
+  recibe el contexto de sesión porque es parte del contrato, pero no lo usa —lo
+  que varía por consumidor es el presupuesto, no el catálogo—. Una vista que
+  dependiera de un campo del contexto sería una vista que el consumidor puede
+  pedirse solo.
 - **Vista interna del catálogo**: mapeo físico completo. Solo del lado del servidor.
 - **Consulta tipo**: consulta declarativa con nombre y parámetros, registrada
   por el dueño del módulo. Sirve de plantilla, ejemplo y test de regresión.

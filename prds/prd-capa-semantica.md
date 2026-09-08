@@ -325,6 +325,13 @@ Nota sobre la caché: L1 y L2 sí están en alcance (ver Decisiones de
 Implementación); lo que queda fuera es lo que exige escritores o infraestructura
 adicional.
 
+**Actualización (08-09)**: entró un segundo dialecto, SQLite, como **prueba del
+seam** del dialecto —¿aguanta un motor de verdad distinto?— y no como feature: no
+está cableado en el servicio, que sigue con **una sola fuente**. "Fuentes
+externas" y "dialectos distintos de Postgres" siguen fuera de alcance como
+producto; lo que existe es un archivo hermano de `src/dialect/postgres.js` y una
+suite que lo ejercita en memoria. El resto del PRD no cambia.
+
 Cada punto tiene su costura nombrada en el diseño y se documenta como
 evolución con su costo y beneficio.
 

@@ -407,7 +407,9 @@ curl -s -H 'Authorization: Bearer demo-dashboard-empresa-a' \
   (2) introspección del esquema, (3) mapa de tipos físicos → semánticos,
   (4) traducción de errores nativos. Agregar un motor es agregar un archivo
   hermano de `dialect/postgres.js`; el catálogo, el planificador y el engine no
-  nombran ninguno.
+  nombran ninguno **salvo como valor por defecto inyectable**: `catalog.js` y
+  `engine.js` importan `postgres` sólo para resolver la fuente por defecto
+  cuando nadie pasa `fuentes`, y ese default se reemplaza por parámetro.
 - **`src/introspect.js` desapareció**: la introspección es `postgres.introspect(pool)`.
   Cómo se descubre el esquema depende del motor (`information_schema` y
   `pg_indexes` son de Postgres); la *forma* del snapshot sigue siendo del

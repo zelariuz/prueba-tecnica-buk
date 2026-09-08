@@ -9,7 +9,10 @@
 //      un `57014` para quien preguntó.
 //
 // Agregar un motor es agregar un archivo hermano de éste: ni el catálogo, ni el
-// planificador, ni el engine nombran un motor concreto.
+// planificador, ni el engine nombran un motor concreto, salvo como **valor por
+// defecto inyectable** —`catalog.js` y `engine.js` importan este módulo para
+// resolver la fuente por defecto cuando nadie pasa `fuentes`, y ese default se
+// reemplaza por parámetro sin tocar una línea de ninguno de los tres—.
 import { GRANULARIDADES } from '../vocabulary.js';
 import { SemanticError } from '../errors.js';
 

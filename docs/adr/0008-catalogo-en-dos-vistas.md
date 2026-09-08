@@ -7,9 +7,18 @@ daría un mapa a quien busque atacar.
 
 ## Decisión
 `describe(ctx)` devuelve la vista pública: nombres semánticos, tipos,
-descripciones, operadores permitidos, granularidades y consultas tipo,
-filtrada por empresa y rol, siempre detrás de autenticación. La vista interna
-(tablas, columnas, esquema físico, índices) existe solo del lado del servidor.
+descripciones, operadores que el planificador emite, granularidades y consultas
+tipo, siempre detrás de autenticación. La vista interna (tablas, columnas,
+esquema físico, índices) existe solo del lado del servidor.
+
+**La vista pública es la misma para todo contexto** (precisión del 08-09: antes
+este ADR decía "filtrada por empresa y rol", y el código nunca lo hizo). El
+contexto se recibe porque es parte del contrato, pero no se lee: lo que varía
+por consumidor es el **presupuesto**, no el catálogo, y una vista que dependiera
+de un campo del contexto sería una vista que el consumidor puede pedirse solo
+—`describe({ internal: true })` devuelve exactamente lo mismo, y hay un test que
+lo fija—. Filtrar el diccionario por empresa o por rol es una evolución con su
+propia decisión: hoy el diccionario es común a todas las empresas.
 
 ## Alternativas
 - Un solo `describe()` completo: más simple, expone el mapeo físico. Descartada.
