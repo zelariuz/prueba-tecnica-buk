@@ -764,3 +764,26 @@ test('el destino alcanzable sólo por la entidad ausente cae en NO_JOIN_PATH que
   assert.equal(error.member, 'departments');
   assert.match(error.suggestion, /employees/);
 });
+
+// Guardia de configuración: el catálogo puede conocer una fuente que el engine
+// no tiene configurada (el catálogo sólo necesita el dialecto para validar
+// tipos; el engine necesita además el pool). Sin guardia, `fuentes[fuente]?.dialecto`
+// da `undefined` y el planificador revienta con un TypeError al pedirle
+// `dateTrunc`: un error que no dice nada de lo que hay que arreglar.
+test('una fuente del catálogo que el engine no configuró es un error de configuración', () => {
+  const catalog = createCatalog({
+    fuentes: { postgres: { dialecto: dialectoPostgres }, otra: { dialecto: dialectoPostgres } },
+  });
+  for (const definicion of [reviews, employees, departments, visitas]) catalog.register(definicion);
+
+  // El engine sólo tiene configurada la fuente por defecto.
+  const engine = createEngine({ catalog, fuentes: { postgres: { dialecto: dialectoPostgres } } });
+  const error = errorDe(() => engine.plan({ measures: ['visitas.count'] }, CTX));
+
+  // No es un SemanticError: el consumidor no puede arreglar esto cambiando lo
+  // que pidió. Es el servidor el que está mal armado.
+  assert.equal(error.code, undefined);
+  assert.match(error.message, /otra/);
+  assert.match(error.message, /visitas/);
+  assert.match(error.message, /catálogo/);
+});

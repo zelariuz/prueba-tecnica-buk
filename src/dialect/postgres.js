@@ -87,6 +87,24 @@ const TIPOS_SEMANTICOS = new Map(
   }),
 );
 
+// La base que no está: el error no viene del SQL sino de no haber podido
+// hablarle al motor. Se reconoce por el `code` —los de socket que pone Node, y
+// la clase 08 de SQLSTATE, que es "excepción de conexión" en cualquier
+// Postgres, más el `57P01` con el que el servidor avisa que se está apagando— o,
+// cuando node-postgres no pone ninguno, por el texto de su propio timeout de
+// conexión. Ese texto es un detalle de esta librería y por eso vive aquí: el
+// engine no puede conocerlo sin volver a saber de Postgres.
+const ERRORES_DE_SOCKET = new Set(['ECONNREFUSED', 'ETIMEDOUT', 'ENOTFOUND']);
+
+function fuenteInalcanzable(error) {
+  const codigo = error?.code;
+  if (typeof codigo === 'string') {
+    if (ERRORES_DE_SOCKET.has(codigo)) return true;
+    if (codigo.startsWith('08') || codigo === '57P01') return true;
+  }
+  return /timeout exceeded when trying to connect/i.test(error?.message ?? '');
+}
+
 export const postgres = {
   name: 'postgres',
 
@@ -163,7 +181,19 @@ export const postgres = {
   //     cambió debajo, y ninguna consulta de esa entidad va a funcionar hasta
   //     que se vuelva a registrar: es un problema del servidor, no de quien
   //     preguntó.
+  //   * La conexión que no se pudo abrir (`ECONNREFUSED`, `ETIMEDOUT`,
+  //     `ENOTFOUND`, la clase 08 de SQLSTATE, `57P01` y el timeout de conexión
+  //     de node-postgres): `SOURCE_UNAVAILABLE`. Se traduce aquí y no en el
+  //     engine porque cuáles son esos errores depende del motor y de su
+  //     driver.
   traducirError(error, presupuesto) {
+    if (fuenteInalcanzable(error)) {
+      return new SemanticError({
+        code: 'SOURCE_UNAVAILABLE',
+        suggestion:
+          'La base de esta fuente no está respondiendo: no se pudo abrir una conexión. No es un problema de la consulta; reintenta más tarde.',
+      });
+    }
     if (error?.code === '57014') {
       return new SemanticError({
         code: 'QUERY_TIMEOUT',

@@ -49,7 +49,11 @@ export function createEngine({
     // Contra qué base se ejecuta y quién traduce sus errores sale de la fuente
     // de la entidad de hechos, que resolvió el planificador.
     const { pool: poolDeLaFuente, dialecto } = fuentesDelEngine[nombreDeFuente];
-    const cliente = await poolDeLaFuente.connect();
+    // Abrir la conexión falla de un modo que el SQL no puede: la base no está.
+    // Va envuelto porque un error crudo de socket saldría sin traducir y el
+    // consumidor recibiría un 500 sin nombre en vez del código que le dice que
+    // vuelva a intentar.
+    const cliente = await conectar(poolDeLaFuente, dialecto, presupuesto);
     try {
       await cliente.query('BEGIN');
       // SET no admite parámetros: el valor se interpola y por eso solo puede
@@ -66,6 +70,17 @@ export function createEngine({
       throw dialecto.traducirError(error, presupuesto);
     } finally {
       cliente.release();
+    }
+  }
+
+  // Qué significa un fallo al conectar lo sabe el dialecto, igual que cualquier
+  // otro error nativo: el engine no conoce ni un código de socket ni un
+  // SQLSTATE.
+  async function conectar(pool, dialecto, presupuesto) {
+    try {
+      return await pool.connect();
+    } catch (error) {
+      throw dialecto.traducirError(error, presupuesto);
     }
   }
 

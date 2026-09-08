@@ -48,7 +48,7 @@ const PREGUNTAS = [
   },
 ];
 
-const pool = new pg.Pool({ connectionString: DATABASE_URL });
+const pool = new pg.Pool({ connectionString: DATABASE_URL, connectionTimeoutMillis: 2000 });
 const telemetria = crearTelemetria();
 // Lo que haya que cerrar al final: los clientes de Redis de las dos instancias.
 const caches = [];

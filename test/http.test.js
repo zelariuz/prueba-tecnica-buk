@@ -12,6 +12,7 @@ import { createCatalog } from '../src/catalog.js';
 import { createEngine } from '../src/engine.js';
 import { crearMemoryStore } from '../src/cache/store.js';
 import { crearServidor } from '../src/http/server.js';
+import { SemanticError } from '../src/errors.js';
 import { crearTelemetria } from '../src/telemetry.js';
 import { tokensDeDemo } from '../src/http/tokens.js';
 import { departments } from '../src/definitions/departments.js';
@@ -302,5 +303,47 @@ describe('cliente que se va antes de la respuesta', { ...conBase, timeout: 15_00
     assert.equal(respuesta.status, 200);
     await respuesta.json();
     assert.deepEqual(engine.telemetry().clientGone, { dashboard: 1 });
+  });
+});
+
+// La fuente que no responde entra por el mismo camino que cualquier otro error
+// del engine: el servidor no sabe qué es SOURCE_UNAVAILABLE, sólo lo busca en la
+// tabla de códigos. Por eso alcanza con un engine que lo lanza; no hace falta
+// una base caída de verdad.
+describe('la fuente caída sale como 503 con Retry-After', { timeout: 10_000 }, () => {
+  let servidor;
+  let base;
+
+  before(async () => {
+    servidor = crearServidor({
+      engine: {
+        async run() {
+          throw new SemanticError({
+            code: 'SOURCE_UNAVAILABLE',
+            suggestion: 'La base de esta fuente no está respondiendo; reintenta más tarde.',
+          });
+        },
+      },
+      catalog: catalogQueNadieDebeTocar,
+      tokens,
+    });
+    await new Promise((listo) => servidor.listen(0, '127.0.0.1', listo));
+    base = `http://127.0.0.1:${servidor.address().port}`;
+  });
+
+  after(async () => {
+    await new Promise((listo) => servidor.close(listo));
+  });
+
+  it('responde 503 y le dice al cliente cuándo reintentar', async () => {
+    const respuesta = await fetch(`${base}/analytics/query`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${TOKEN_A}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ measures: ['reviews.count'] }),
+    });
+
+    assert.equal(respuesta.status, 503);
+    assert.equal(respuesta.headers.get('retry-after'), '5');
+    assert.equal((await respuesta.json()).code, 'SOURCE_UNAVAILABLE');
   });
 });

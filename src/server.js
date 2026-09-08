@@ -24,7 +24,11 @@ if (!DATABASE_URL) {
   process.exit(1);
 }
 
-const pool = new pg.Pool({ connectionString: DATABASE_URL });
+// Techo para abrir la conexión: sin él, una base que no responde deja la
+// petición esperando el timeout del sistema operativo. Con él, el dialecto
+// traduce el fallo a SOURCE_UNAVAILABLE y el consumidor recibe un 503 con
+// Retry-After en vez de una respuesta que nunca llega.
+const pool = new pg.Pool({ connectionString: DATABASE_URL, connectionTimeoutMillis: 2000 });
 const tokens = tokensDeDemo(process.env);
 
 const snapshot = await postgres.introspect(pool);

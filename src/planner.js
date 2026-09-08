@@ -105,7 +105,7 @@ function resolverMiembros(paso) {
   // dialecto de esa fuente es el que escribe el SQL. El planificador no nombra
   // ningún motor.
   const fuente = catalog.source(medidas[0]?.entidad);
-  const dialect = fuentes[fuente]?.dialecto;
+  const dialect = exigirFuenteConfigurada(fuentes, fuente, medidas[0]?.entidad);
   // Una derivada no se agrega: combina medidas que sí se agregan.
   const derivadas = medidas.filter((medida) => medida.definicion.type === 'ratio');
 
@@ -136,6 +136,22 @@ function resolverMiembros(paso) {
   }
 
   return { ...paso, fuente, dialect, medidas, derivadas, dimensiones, condiciones };
+}
+
+// El catálogo y el engine reciben el mismo mapa de fuentes, pero no tienen por
+// qué haberlo recibido igual: el catálogo sólo necesita el dialecto para validar
+// tipos y el engine necesita además el pool contra el que ejecutar. Si una
+// entidad quedó registrada con una fuente que el engine no tiene, sin esta
+// guardia `fuentes[fuente]?.dialecto` es `undefined` y la primera dimensión
+// temporal revienta con un `TypeError` que no nombra ni la fuente ni la entidad.
+// No es un `SemanticError`: el consumidor no puede arreglarlo cambiando lo que
+// pidió, está mal armado el servidor.
+function exigirFuenteConfigurada(fuentes, fuente, entidad) {
+  const dialecto = fuentes[fuente]?.dialecto;
+  if (dialecto) return dialecto;
+  throw new Error(
+    `La entidad ${entidad} está registrada en el catálogo con la fuente ${fuente}, que este engine no tiene configurada. Fuentes del engine: ${Object.keys(fuentes).join(', ') || '(ninguna)'}.`,
+  );
 }
 
 // Puerta 3 · Filtros: los de la consulta y los de sus segmentos son globales

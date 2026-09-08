@@ -6,7 +6,7 @@
 import { createServer } from 'node:http';
 
 import { SemanticError } from '../errors.js';
-import { CODIGOS_HTTP } from './codigos.js';
+import { CABECERAS_HTTP, CODIGOS_HTTP } from './codigos.js';
 import { crearTelemetria } from '../telemetry.js';
 
 // `registrarFallo` es la costura por la que salen los errores no estructurados:
@@ -79,7 +79,7 @@ export function crearServidor({
     } catch (error) {
       const estado = CODIGOS_HTTP[error?.code];
       if (estado) {
-        responder(respuesta, estado, cuerpoDeError(error));
+        responder(respuesta, estado, cuerpoDeError(error), CABECERAS_HTTP[error.code]);
         // Un cuerpo que superó el techo deja bytes sin leer en el socket: no se
         // siguen recibiendo los de algo que ya se rechazó. Se corta recién
         // cuando la respuesta salió, para que el 413 alcance a llegar.
@@ -153,10 +153,10 @@ function cuerpoDeError({ code, member, suggestion }) {
   };
 }
 
-function responder(respuesta, estado, cuerpo) {
+function responder(respuesta, estado, cuerpo, cabeceras) {
   // Sin nadie al otro lado no hay a quién responder; escribir en un socket
   // destruido no sirve de nada y en algunas versiones de Node emite error.
   if (respuesta.destroyed) return;
-  respuesta.writeHead(estado, { 'content-type': 'application/json; charset=utf-8' });
+  respuesta.writeHead(estado, { 'content-type': 'application/json; charset=utf-8', ...cabeceras });
   respuesta.end(JSON.stringify(cuerpo));
 }

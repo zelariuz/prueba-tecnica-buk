@@ -5,6 +5,7 @@ import pg from 'pg';
 
 import { createCatalog } from '../src/catalog.js';
 import { createEngine } from '../src/engine.js';
+import { crearTelemetria } from '../src/telemetry.js';
 import { departments } from '../src/definitions/departments.js';
 import { employees } from '../src/definitions/employees.js';
 import { reviews } from '../src/definitions/reviews.js';
@@ -651,5 +652,70 @@ describe('el esquema que cambió debajo del catálogo', conBase, () => {
     // "current transaction is aborted".
     const { rows } = await engine.run(conteoPorEstado, { companyId: EMPRESA_A, consumer: 'api' });
     assert.deepEqual(porEstado(rows), { completed: 5, pending: 4, calibrated: 2 });
+  });
+});
+
+// Doble del pool que ni siquiera llega a entregar un cliente: es lo que pasa
+// cuando la base no está. No necesita Postgres, así que corre siempre.
+function poolQueNoConecta(error) {
+  return {
+    async connect() {
+      throw error;
+    },
+  };
+}
+
+function errorDeRed(code, message = 'connect ECONNREFUSED 127.0.0.1:5433') {
+  const error = new Error(message);
+  error.code = code;
+  return error;
+}
+
+describe('el origen que se murió', () => {
+  function engineCon(pool, telemetria) {
+    const catalog = createCatalog();
+    for (const definicion of [reviews, employees, departments]) catalog.register(definicion);
+    return createEngine({ catalog, pool, telemetria });
+  }
+
+  const ctx = { companyId: EMPRESA_A, consumer: 'api' };
+
+  it('una conexión rechazada vuelve como SOURCE_UNAVAILABLE y no como error crudo', async () => {
+    const engine = engineCon(poolQueNoConecta(errorDeRed('ECONNREFUSED')));
+
+    const error = await errorAlEsperar(engine.run(conteoPorEstado, ctx));
+
+    assert.equal(error.code, 'SOURCE_UNAVAILABLE');
+    assert.match(error.suggestion, /más tarde/);
+  });
+
+  it('los demás errores de conexión del motor traducen igual', async () => {
+    for (const code of ['ETIMEDOUT', 'ENOTFOUND', '08006', '08001', '57P01']) {
+      const engine = engineCon(poolQueNoConecta(errorDeRed(code)));
+      const error = await errorAlEsperar(engine.run(conteoPorEstado, ctx));
+      assert.equal(error.code, 'SOURCE_UNAVAILABLE', `código nativo ${code}`);
+    }
+  });
+
+  it('el timeout de conexión de node-postgres también es la fuente que no está', async () => {
+    // node-postgres no le pone `code` a este error: lo distingue el mensaje, y
+    // conocerlo es trabajo del dialecto y de nadie más.
+    const engine = engineCon(poolQueNoConecta(new Error('timeout exceeded when trying to connect')));
+
+    const error = await errorAlEsperar(engine.run(conteoPorEstado, ctx));
+
+    assert.equal(error.code, 'SOURCE_UNAVAILABLE');
+  });
+
+  it('la telemetría lo cuenta por su código', async () => {
+    const telemetria = crearTelemetria();
+    const engine = engineCon(poolQueNoConecta(errorDeRed('ECONNREFUSED')), telemetria);
+
+    await errorAlEsperar(engine.run(conteoPorEstado, ctx));
+
+    const contadores = telemetria.snapshot();
+    assert.equal(contadores.byResult.error, 1);
+    assert.equal(contadores.byErrorCode.SOURCE_UNAVAILABLE, 1);
+    assert.equal(contadores.byGate.ejecutar, 1);
   });
 });
