@@ -31,7 +31,7 @@ src/
   definitions/departments.js departamentos: dimensión name
   definitions/attendance.js  asistencia: dimensión temporal `date`, segmento
                              `present` y la derivada `attendance_rate`
-  definitions/consultas-tipo.js  cinco plantillas del caso con parámetros `:nombre`
+  definitions/consultas-tipo.js  seis plantillas del caso con parámetros `:nombre`
   definitions/index.js       composición: qué módulos y qué consultas tipo
                              existen, y `registrarModulos(catalog, snapshot)`
   dialect/postgres.js        el motor, entero: sintaxis (dateTrunc,
@@ -664,7 +664,100 @@ tiene.
   escribe en una respuesta destruida. Test en `test/http.test.js` con un pool
   que duerme 1 s y un socket que se destruye a los 200 ms.
 
+## Correcciones tras el abogado del diablo (08-09)
+
+Revisión adversarial del repo antes de la entrega (informe completo en
+`prueba-tecnica/discusiones/25-abogado-diablo-entrega.md`). Diez hallazgos
+corregidos con TDD, un commit por hallazgo; los tres snapshots de SQL del repo
+no cambiaron.
+
+1. **Seed que contradecía a los tests** (`docker/init/02-seed.sql:24-48`). El
+   encabezado documentaba los valores viejos del caso (Ingeniería 2025-04-01 avg
+   3.40, filas de Ventas), de antes de que la consulta tipo llevara el segmento
+   `completed` como filtro global. Ahora dice lo que el caso da —4.35/2 y 3.80/1
+   en Ingeniería, Ventas sin filas— y explica por qué: el promedio es sólo sobre
+   completadas, igual que el SQL de referencia del enunciado. Sin tocar una fila.
+2. **`sum` sin SQL y `count_distinct` inexistente** (`src/planner.js:585`,
+   `src/catalog.js:25`). `sum` se aceptaba al registrar y moría con un `Error`
+   pelado al consultar (500). Ahora `sqlDeAgregado` emite `SUM` y
+   `COUNT(DISTINCT …)`, y entró el tipo de medida `count_distinct` (columna
+   obligatoria, sin exigencia de que sea numérica). Con él, la pregunta 2 del
+   enunciado tiene respuesta: `reviews.completed_employees`
+   (`src/definitions/reviews.js:43`) y la consulta tipo
+   `empleados-que-completaron-por-trimestre`
+   (`src/definitions/consultas-tipo.js:49`). Literales del seed: en 2025 la
+   empresa 1 tiene 3 evaluaciones completadas de 2 empleados distintos. No hizo
+   falta nada del dialecto: `COUNT(DISTINCT col) FILTER (WHERE …)` es estándar y
+   un test lo comprueba contra SQLite.
+3. **`equals`/`notEquals` con lista** (`src/planner.js:27`, `exigirOperador`).
+   Se usaba `values[0]`: dos valores daban el número de uno solo y `values: []`
+   daba `= NULL` —cero filas y un 200—. Ahora exigen exactamente un valor y
+   mandan a `in`/`notIn` con `INVALID_OPERATOR`.
+4. **La forma de la consulta no se validaba** → `INVALID_QUERY`
+   (`src/planner.js:52`, `validarForma`; `src/http/codigos.js:41` → 400). Cubre
+   `measures` ausente/vacío/no arreglo, las otras cuatro listas, la granularidad
+   de una `timeDimension` (ausente o fuera de `GRANULARIDADES`), la dirección de
+   orden y el `limit`. Antes eso salía como 500 con un mensaje que culpaba al
+   servidor —`exigirFuenteConfigurada` disparándose por una consulta sin
+   medidas— y el `Error` pelado de `dialect/postgres.js` por la granularidad ya
+   no es alcanzable desde una consulta.
+5. **Dry-run que regalaba el esquema físico** (`src/http/server.js:46-60`).
+   `?dryRun=true` devolvía el `sql` —con las tablas y columnas reales— a
+   cualquier token, mientras `/analytics/catalog` las esconde. Ahora devuelve
+   `{ params, plan }` (el plan lógico, sólo nombres semánticos) y agrega `sql`
+   sólo si la sesión del token trae `internal: true`
+   (`src/http/tokens.js:12`, token de demo `demo-interno-empresa-a`). Anotado en
+   `docs/adr/0008` y en el README.
+6. **`timestamp` aceptado en silencio** (`src/dialect/postgres.js:101,242`;
+   `src/catalog.js:303`). El mapa de tipos traducía los dos `timestamp` a `date`
+   mientras el README y `docs/riesgos.md` decían que uno sin zona se rechaza.
+   Los dos salieron del mapa y el dialecto declara ahora una **reserva** por
+   tipo: `timestamp without time zone` bajo una dimensión `date` es
+   `INVALID_DEFINITION`; `timestamptz` es advertencia de registro (el rango
+   cerrado `<= día` pierde casi todo el último día). Quién conoce esos nombres
+   sigue siendo el dialecto; el catálogo sólo aplica el nivel.
+7. **"Empleado activo" sin definir** (`src/definitions/employees.js:22,31`).
+   Es un ejemplo literal del enunciado y cada consumidor tenía que escribir el
+   filtro. Ahora hay segmento `active` y medida `active_headcount`, y
+   `headcount-por-departamento` pide las dos medidas lado a lado. Literales del
+   seed: Ventas 2 empleados y 1 activo, Ingeniería 2 y 2.
+8. **Operadores publicados pero no emitidos** (`src/vocabulary.js:35`,
+   `src/catalog.js:466`). La vista pública ofrecía `inDateRange`, `beforeDate` y
+   `afterDate`, que el planificador rechaza: un agente los leía del catálogo y
+   fallaba en bucle. `operadoresEmitidos(tipo)` deriva de la misma tabla que
+   `operadoresDe(tipo)` y es lo que `describe` publica; un test recorre la vista
+   entera y planifica cada operador publicado.
+9. **Documentos que contradecían al código.** El PRD lleva una nota fechada
+   (`prds/prd-capa-semantica.md`, Fuera de Alcance) diciendo que SQLite entró
+   como prueba del seam y no como feature, y que el servicio sigue con una sola
+   fuente. El ADR 0008 y `CONTEXT.md` decían "vista pública filtrada por empresa
+   y rol" y `describe` nunca miró el contexto: ahora dicen lo que hace —la vista
+   es la misma para todos; lo que varía por consumidor es el presupuesto—. Y
+   "nadie nombra un motor" quedó precisado como "salvo como valor por defecto
+   inyectable" (`src/dialect/postgres.js:11`).
+10. **Registro duplicado en silencio** (`src/catalog.js:549`). Registrar dos
+    veces el mismo nombre de entidad pisaba la definición anterior. Ahora es
+    `INVALID_DEFINITION` (member `entidad.name`) salvo que la definición sea
+    exactamente la misma —comparada por serialización canónica—, en cuyo caso es
+    idempotente.
+
+Quedaron **fuera** a propósito, con respuesta preparada en vez de código: la
+fuga de modelado del planificador que lee `catalog.entity()` (hallazgo 10, un
+refactor que no cabía antes de la entrega), `many_to_one` verificado contra el
+`unique` del snapshot (12) y el pool lleno que se reporta como
+`SOURCE_UNAVAILABLE` (13).
+
 ## Estado
+
+Correcciones del abogado del diablo terminadas (08-09): los diez hallazgos
+bloqueantes de la lista de arriba están corregidos con test, un commit cada uno.
+Verificado: **165 tests en verde** con `DATABASE_URL` y `REDIS_URL`, **107 sin
+ninguna variable** (1 se salta), los tres snapshots de SQL byte por byte iguales
+y `npm run demo` respondiendo las tres preguntas con caché de dos niveles.
+Códigos nuevos: `INVALID_QUERY` (400). Miembros nuevos:
+`reviews.completed_employees`, `employees.active` (segmento) y
+`employees.active_headcount`; consulta tipo nueva
+`empleados-que-completaron-por-trimestre`.
 
 Fase B terminada: SQLite es la segunda fuente y el seam del dialecto aguantó.
 Las mismas definiciones y el mismo engine responden el caso obligatorio contra
