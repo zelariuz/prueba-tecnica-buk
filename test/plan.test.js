@@ -673,9 +673,12 @@ test('el dry-run devuelve el plan lógico junto al SQL, sin abrir una conexión'
   // ejecutar: de dónde salen los datos, por dónde pasa, qué se agrega y con qué
   // presupuesto (historia 25).
   assert.equal(plan.entity, 'reviews');
+  // Los joins se describen por la relación declarada, nunca por columnas: el
+  // plan lógico sale por HTTP a cualquier token y no puede nombrar el esquema
+  // físico (ADR 0008).
   assert.deepEqual(plan.joins, [
-    { from: 'reviews', to: 'employees', foreignKey: 'employee_id', primaryKey: 'id' },
-    { from: 'employees', to: 'departments', foreignKey: 'department_id', primaryKey: 'id' },
+    { from: 'reviews', to: 'employees', via: 'employee', type: 'many_to_one' },
+    { from: 'employees', to: 'departments', via: 'department', type: 'many_to_one' },
   ]);
   assert.deepEqual(plan.dimensions, ['departments.name']);
   assert.deepEqual(plan.measures, ['reviews.completion_rate']);

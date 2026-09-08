@@ -193,8 +193,12 @@ describe('capa HTTP', { ...conBase, timeout: 10_000 }, () => {
     assert.deepEqual(plan.measures, ['reviews.count']);
     assert.equal(plan.budget.consumer, 'dashboard');
 
-    // Ninguna tabla física en el cuerpo entero, no sólo en el campo `sql`.
-    assert.doesNotMatch(JSON.stringify(cuerpo), /performance_reviews/);
+    // Ninguna tabla ni columna física en el cuerpo entero, no sólo en el campo
+    // `sql`: los joins del plan lógico se describen por la relación semántica
+    // (hallazgo del QA del 08-09: el plan traía employee_id y department_id).
+    for (const fisico of ['performance_reviews', 'employee_id', 'department_id', 'company_id']) {
+      assert.doesNotMatch(JSON.stringify(cuerpo), new RegExp(fisico), `${fisico} se filtró en el dry-run`);
+    }
   });
 
   it('un token interno sí recibe el SQL del dry-run', async () => {

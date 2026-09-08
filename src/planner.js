@@ -533,11 +533,15 @@ function describirPlan(paso) {
 
   const logico = {
     entity: raiz,
-    joins: aristas.map(({ desde, hacia, relacion }) => ({
+    // Los joins se describen por la relación declarada (`via`) y su tipo, nunca
+    // por las columnas que los resuelven: el plan lógico sale por HTTP a
+    // cualquier token y el esquema físico es interno (ADR 0008). Hallazgo del
+    // QA del 08-09: el plan traía `employee_id` y `department_id`.
+    joins: aristas.map(({ desde, hacia, relacion, via }) => ({
       from: desde,
       to: hacia,
-      foreignKey: relacion.foreignKey,
-      primaryKey: catalog.entity(hacia).primaryKey,
+      via,
+      type: relacion.type,
     })),
     // Las dimensiones temporales entran aquí como una dimensión más.
     dimensions: dimensiones.map((d) => d.miembro),
@@ -674,13 +678,15 @@ function caminoDeJoins(catalog, raiz, destinos) {
   while (pendientes.length > 0) {
     const actual = pendientes.shift();
     const relaciones = catalog.entity(actual).relationships ?? {};
-    for (const relacion of Object.values(relaciones)) {
+    for (const [via, relacion] of Object.entries(relaciones)) {
       if (relacion.type !== 'many_to_one' || previa.has(relacion.target)) continue;
       if (catalog.entity(relacion.target) === undefined) {
         ausentes.add(relacion.target);
         continue;
       }
-      previa.set(relacion.target, { desde: actual, relacion });
+      // `via` es el nombre de la relación en la definición: es lo único del
+      // join que puede salir en el plan lógico, porque es un nombre de negocio.
+      previa.set(relacion.target, { desde: actual, relacion, via });
       pendientes.push(relacion.target);
     }
   }
