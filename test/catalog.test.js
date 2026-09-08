@@ -432,6 +432,10 @@ test('la vista interna trae el mapeo físico y solo se obtiene por su propio mé
   );
 
   assert.deepEqual(interna.tables.reviews, {
+    // De qué fuente sale la entidad es parte del mapeo físico: el consumidor
+    // pregunta por nombres de negocio y no tiene por qué saber en qué base
+    // viven.
+    source: 'postgres',
     table: 'performance_reviews',
     primaryKey: 'id',
     companyColumn: 'company_id',
@@ -441,6 +445,34 @@ test('la vista interna trae el mapeo físico y solo se obtiene por su propio mé
 
   // El mapeo físico no existe en la vista pública ni por descuido.
   assert.equal(catalog.describe({ companyId: 1, consumer: 'api' }).tables, undefined);
+  const publica = catalog.describe({ companyId: 1, consumer: 'api' });
+  assert.equal(publica.entities.find((e) => e.name === 'reviews').source, undefined);
+});
+
+test('una entidad declara su fuente y el catálogo la guarda; sin declararla, es postgres', () => {
+  // Cada entidad pertenece a una fuente y una fuente tiene un dialecto. En esta
+  // fase hay un solo dialecto, pero la fuente ya se declara por entidad: es lo
+  // que permite que la siguiente agregue un motor sin tocar el catálogo.
+  const catalog = createCatalog({
+    fuentes: { postgres: { dialecto: postgres }, otra: { dialecto: postgres } },
+  });
+  catalog.register(reviews);
+  catalog.register({ ...departments, source: 'otra' });
+
+  const interna = catalog.describeInternal();
+  assert.equal(interna.tables.reviews.source, 'postgres');
+  assert.equal(interna.tables.departments.source, 'otra');
+});
+
+test('una definición de una fuente que el catálogo no conoce se rechaza al registrar', () => {
+  // Una fuente que nadie configuró no tiene dialecto, y sin dialecto no hay ni
+  // tipos que validar ni motor contra el cual ejecutar: un contrato roto se
+  // descubre al registrar y no cuando el dashboard ya está en producción.
+  const error = errorDe(() => createCatalog().register({ ...reviews, source: 'ventas' }));
+
+  assert.equal(error.code, 'INVALID_DEFINITION');
+  assert.equal(error.member, 'reviews.source');
+  assert.match(error.suggestion, /ventas/);
 });
 
 test('un contexto que se declara interno sigue recibiendo la vista pública', () => {

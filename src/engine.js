@@ -18,6 +18,11 @@ export function createEngine({
   catalog,
   pool,
   dialect = postgres,
+  // `fuentes` es el mapa nombre → { dialecto, pool } de las bases que este
+  // engine puede consultar (CONTEXT.md, "Fuente"). Sin él, el engine tiene una
+  // sola fuente —la del `pool` y el `dialect` de siempre—, que es exactamente
+  // lo que era hasta ahora: un engine que sólo recibe `pool` sigue funcionando.
+  fuentes,
   presupuestos = presupuestosPorDefecto,
   telemetria = crearTelemetria(),
   cache,
@@ -26,7 +31,8 @@ export function createEngine({
   // misma fuente. Además es lo que permite probar la expiración sin esperarla.
   reloj = Date.now,
 }) {
-  const planificar = crearPlanificador({ catalog, dialect, presupuestos });
+  const fuentesDelEngine = fuentes ?? { [dialect.name]: { dialecto: dialect, pool } };
+  const planificar = crearPlanificador({ catalog, fuentes: fuentesDelEngine, presupuestos });
 
   // Dry-run: el plan sin tocar la base (historia 25).
   function plan(query, ctx) {
@@ -39,8 +45,11 @@ export function createEngine({
   // conexión vuelve al pool sin el estado de esta petición. El cliente se
   // libera siempre, y ante un error se hace ROLLBACK antes de soltarlo para que
   // la siguiente petición no herede una transacción abierta.
-  async function ejecutar(sql, params, presupuesto) {
-    const cliente = await pool.connect();
+  async function ejecutar(sql, params, presupuesto, nombreDeFuente) {
+    // Contra qué base se ejecuta y quién traduce sus errores sale de la fuente
+    // de la entidad de hechos, que resolvió el planificador.
+    const { pool: poolDeLaFuente, dialecto } = fuentesDelEngine[nombreDeFuente];
+    const cliente = await poolDeLaFuente.connect();
     try {
       await cliente.query('BEGIN');
       // SET no admite parámetros: el valor se interpola y por eso solo puede
@@ -54,7 +63,7 @@ export function createEngine({
       // Qué significa un código nativo del motor lo sabe el dialecto: el engine
       // no conoce ningún código de error de Postgres, y lo que el dialecto no
       // reconoce vuelve tal cual.
-      throw dialect.traducirError(error, presupuesto);
+      throw dialecto.traducirError(error, presupuesto);
     } finally {
       cliente.release();
     }
@@ -70,7 +79,7 @@ export function createEngine({
       telemetria.registrarError({ consumer: ctx?.consumer, code: error?.code, gate: error?.gate });
       throw error;
     }
-    const { sql, params, medidas, presupuesto, advertencias } = plan;
+    const { sql, params, medidas, presupuesto, advertencias, fuente } = plan;
 
     // La identidad de la consulta nace de lo que realmente se va a
     // ejecutar: el SQL sin su marca de comentario, sus parámetros, la empresa y
@@ -117,7 +126,7 @@ export function createEngine({
     const comienzo = performance.now();
     let filas;
     try {
-      filas = await ejecutar(marcado(sql, queryId, ctx), params, presupuesto);
+      filas = await ejecutar(marcado(sql, queryId, ctx), params, presupuesto, fuente);
     } catch (error) {
       telemetria.registrarError({ consumer: ctx?.consumer, code: error?.code, gate: 'ejecutar' });
       throw error;

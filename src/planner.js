@@ -20,7 +20,11 @@ const ALIAS_AGREGADA = 'agregada';
 // Operadores cuyo valor es una lista: sin elementos no hay SQL que emitir.
 const OPERADORES_DE_LISTA = new Set(['in', 'notIn']);
 
-export function crearPlanificador({ catalog, dialect, presupuestos }) {
+// `fuentes` es el mapa nombre → { dialecto, pool } que el engine recibió. El
+// planificador sólo usa el dialecto, y lo toma de la fuente de la entidad de
+// hechos: qué motor traduce esta consulta lo decide el dato que se consulta, no
+// una constante del planificador.
+export function crearPlanificador({ catalog, fuentes, presupuestos }) {
   const puertas = [
     validar,
     resolverMiembros,
@@ -32,10 +36,10 @@ export function crearPlanificador({ catalog, dialect, presupuestos }) {
   ];
 
   return function planificar(query, ctx) {
-    let paso = { catalog, dialect, presupuestos, query, ctx };
+    let paso = { catalog, fuentes, presupuestos, query, ctx };
     for (const puerta of puertas) paso = anotandoLaPuerta(puerta, paso);
-    const { sql, params, medidas, presupuesto, advertencias, logico } = paso;
-    return { sql, params, medidas, presupuesto, advertencias, logico };
+    const { sql, params, medidas, presupuesto, advertencias, logico, fuente } = paso;
+    return { sql, params, medidas, presupuesto, advertencias, logico, fuente };
   };
 }
 
@@ -94,9 +98,14 @@ function validar(paso) {
 // ser lo que la entidad declaró. Los resuelve el catálogo, que es quien sabe
 // qué existe y quién corta con UNKNOWN_MEMBER y una sugerencia.
 function resolverMiembros(paso) {
-  const { catalog, dialect, query, parametro } = paso;
+  const { catalog, fuentes, query, parametro } = paso;
 
   const medidas = (query.measures ?? []).map((miembro) => catalog.measure(miembro));
+  // La entidad de hechos manda: su fuente es la fuente de la consulta, y el
+  // dialecto de esa fuente es el que escribe el SQL. El planificador no nombra
+  // ningún motor.
+  const fuente = catalog.source(medidas[0]?.entidad);
+  const dialect = fuentes[fuente]?.dialecto;
   // Una derivada no se agrega: combina medidas que sí se agregan.
   const derivadas = medidas.filter((medida) => medida.definicion.type === 'ratio');
 
@@ -126,7 +135,7 @@ function resolverMiembros(paso) {
     ]);
   }
 
-  return { ...paso, medidas, derivadas, dimensiones, condiciones };
+  return { ...paso, fuente, dialect, medidas, derivadas, dimensiones, condiciones };
 }
 
 // Puerta 3 · Filtros: los de la consulta y los de sus segmentos son globales
@@ -172,7 +181,7 @@ function aplicarFiltros(paso) {
 // SELECT multiplican filas y devuelven números incorrectos en silencio (ADR
 // 0006).
 function resolverCaminoDeJoins(paso) {
-  const { catalog, medidas, dimensiones, filtrados } = paso;
+  const { catalog, fuente, medidas, dimensiones, filtrados } = paso;
 
   const raiz = medidas[0].entidad;
   const intrusa = medidas.find((m) => m.entidad !== raiz);
@@ -184,11 +193,33 @@ function resolverCaminoDeJoins(paso) {
     });
   }
 
-  const aristas = caminoDeJoins(catalog, raiz, [
-    ...dimensiones.map((d) => d.entidad),
-    ...filtrados,
-  ]);
+  // Dos fuentes son dos bases: no hay JOIN que las cruce ni SQL que las alcance
+  // en una sola consulta. Se comprueba antes de buscar el camino —si no, el
+  // error diría que falta una relación, que es un diagnóstico falso— y otra vez
+  // sobre el camino encontrado, porque una entidad intermedia puede ser de otra
+  // fuente aunque el destino sea de la misma.
+  const destinos = [...dimensiones.map((d) => d.entidad), ...filtrados];
+  for (const destino of destinos) exigirMismaFuente(catalog, fuente, raiz, destino);
+
+  const aristas = caminoDeJoins(catalog, raiz, destinos);
+  for (const arista of aristas) exigirMismaFuente(catalog, fuente, raiz, arista.hacia);
+
   return { ...paso, raiz, aristas };
+}
+
+// Una consulta vive entera dentro de una fuente. Cruzar dos bases no es un
+// JOIN más caro: es una consulta que no existe, y la federación —traer las dos
+// mitades y unirlas en memoria— es otra pieza con otro presupuesto. La
+// sugerencia nombra las dos fuentes para que quede claro que lo que falta no es
+// una relación.
+function exigirMismaFuente(catalog, fuente, raiz, entidad) {
+  const otra = catalog.source(entidad);
+  if (otra === undefined || otra === fuente) return;
+  throw new SemanticError({
+    code: 'NO_JOIN_PATH',
+    member: entidad,
+    suggestion: `${entidad} vive en la fuente ${otra} y ${raiz} en la fuente ${fuente}: una consulta no puede cruzar dos fuentes. Pide ${entidad} en una segunda consulta.`,
+  });
 }
 
 // Puerta 5 · Agregación y derivadas: qué se agrega, con qué fórmula se combina

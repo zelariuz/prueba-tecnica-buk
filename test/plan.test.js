@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 
 import { createCatalog } from '../src/catalog.js';
 import { createEngine } from '../src/engine.js';
+import { postgres as dialectoPostgres } from '../src/dialect/postgres.js';
 import { departments } from '../src/definitions/departments.js';
 import { employees } from '../src/definitions/employees.js';
 import { reviews } from '../src/definitions/reviews.js';
@@ -432,6 +433,45 @@ test('dos entidades sin relación declarada cortan con NO_JOIN_PATH', () => {
   assert.equal(error.code, 'NO_JOIN_PATH');
   assert.equal(error.member, 'reviews');
   assert.match(error.suggestion, /employees/);
+});
+
+// Una entidad de otra fuente: otra base, otro dialecto. En esta fase el
+// dialecto es el mismo, pero la fuente no, y eso alcanza para que un JOIN entre
+// las dos sea imposible: no hay una sola consulta que las alcance.
+const visitas = {
+  name: 'visitas',
+  source: 'otra',
+  table: 'visitas',
+  primaryKey: 'id',
+  companyColumn: 'company_id',
+  description: 'Visitas al portal del empleado, en la base del módulo de portal.',
+  dimensions: {
+    canal: { column: 'canal', type: 'string', description: 'Canal por el que llegó la visita.' },
+  },
+  measures: { count: { type: 'count', description: 'Cantidad de visitas.' } },
+};
+
+test('una consulta que mezcla entidades de dos fuentes corta con NO_JOIN_PATH', () => {
+  const fuentes = {
+    postgres: { dialecto: dialectoPostgres },
+    otra: { dialecto: dialectoPostgres },
+  };
+  const catalog = createCatalog({ fuentes });
+  for (const definicion of [reviews, employees, departments, visitas]) catalog.register(definicion);
+
+  const error = errorDe(() =>
+    createEngine({ catalog, fuentes }).plan(
+      { measures: ['reviews.count'], dimensions: ['visitas.canal'] },
+      CTX,
+    ),
+  );
+
+  // Dos bases no se cruzan con un JOIN: la sugerencia nombra las dos fuentes
+  // para que quede claro que el problema no es una relación que falta.
+  assert.equal(error.code, 'NO_JOIN_PATH');
+  assert.equal(error.member, 'visitas');
+  assert.match(error.suggestion, /postgres/);
+  assert.match(error.suggestion, /otra/);
 });
 
 test('un filtro de consulta se aplica dentro de la CTE de su entidad', () => {

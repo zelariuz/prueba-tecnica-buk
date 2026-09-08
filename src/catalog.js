@@ -9,10 +9,12 @@ import { SemanticError } from './errors.js';
 import { masParecido } from './suggest.js';
 import { GRANULARIDADES, operadoresDe } from './vocabulary.js';
 
-// Toda entidad pertenece a una fuente, y una fuente tiene un dialecto. Cuando
-// la definición no la nombra, es la de siempre: el catálogo de hoy vive entero
-// sobre Postgres y una definición no debería tener que decirlo para eso.
-const FUENTE_POR_DEFECTO = 'postgres';
+// Toda entidad pertenece a una fuente, y una fuente tiene un dialecto
+// (CONTEXT.md, "Fuente"). Cuando la definición no la nombra es la de siempre:
+// el catálogo de hoy vive entero sobre Postgres y una definición no debería
+// tener que decirlo para eso. El nombre de la fuente por defecto es el del
+// dialecto por defecto: no hay una segunda copia de esa palabra.
+const FUENTE_POR_DEFECTO = postgres.name;
 const FUENTES_POR_DEFECTO = { [FUENTE_POR_DEFECTO]: { dialecto: postgres } };
 
 // Las medidas que agregan una columna con aritmética: sólo tienen sentido sobre
@@ -364,6 +366,9 @@ export function createCatalog({ fuentes = FUENTES_POR_DEFECTO } = {}) {
   // Por entidad, sus medidas derivadas en orden topológico: cada una después de
   // aquellas de las que depende.
   const ordenDeCalculo = new Map();
+  // Por entidad, el nombre de su fuente, ya normalizado: quien pregunta no
+  // tiene que volver a resolver el valor por defecto.
+  const fuentePorEntidad = new Map();
   // Última foto del esquema con la que se registró: entra al hash de versión
   // porque el mismo diccionario sobre otro esquema físico no es el mismo
   // contrato.
@@ -392,6 +397,10 @@ export function createCatalog({ fuentes = FUENTES_POR_DEFECTO } = {}) {
         if (medida.column) columnas[`${def.name}.${nombre}`] = medida.column;
       }
       tablas[def.name] = {
+        // De qué fuente sale la entidad es parte del mapeo físico y sólo del
+        // lado del servidor: el consumidor pide nombres de negocio y no tiene
+        // por qué saber en qué base viven (ADR 0008).
+        source: fuentePorEntidad.get(def.name),
         table: def.table,
         primaryKey: def.primaryKey,
         companyColumn: def.companyColumn,
@@ -498,12 +507,24 @@ export function createCatalog({ fuentes = FUENTES_POR_DEFECTO } = {}) {
     // físico. Quien registra contra una base viva pasa el de `introspect`.
     register(def, snapshot) {
       validarForma(def);
-      const dialecto = fuentes[def?.source ?? FUENTE_POR_DEFECTO]?.dialecto;
+      // La fuente de la entidad decide qué dialecto la traduce. Una fuente que
+      // nadie configuró no tiene dialecto, y sin dialecto no hay ni tipos que
+      // validar ni motor contra el cual ejecutar: se corta al registrar, como
+      // cualquier otra parte del contrato que no se sostiene.
+      const fuente = def.source ?? FUENTE_POR_DEFECTO;
+      const dialecto = fuentes[fuente]?.dialecto;
+      if (!dialecto) {
+        throw invalida(
+          `${def.name}.source`,
+          sugerenciaDe(fuente, Object.keys(fuentes), 'fuente', 'las fuentes configuradas'),
+        );
+      }
       if (snapshot) validarContraEsquema(def, snapshot);
       const deTipos = snapshot && dialecto ? validarTipos(def, snapshot, dialecto) : [];
       // El orden de cálculo de las derivadas se resuelve una vez, al registrar:
       // el engine lo recibe hecho y nunca tiene que descubrirlo por consulta.
       ordenDeCalculo.set(def.name, ordenDeDerivadas(def));
+      fuentePorEntidad.set(def.name, fuente);
       entidades.set(def.name, def);
       if (snapshot) esquema = snapshot;
       return {
@@ -600,6 +621,13 @@ export function createCatalog({ fuentes = FUENTES_POR_DEFECTO } = {}) {
 
     entity(name) {
       return entidades.get(name);
+    },
+
+    // La fuente de una entidad, ya normalizada. Es lo que el planificador
+    // consulta para saber qué dialecto traduce esta consulta y para negarse a
+    // cruzar dos fuentes en un mismo SQL.
+    source(name) {
+      return fuentePorEntidad.get(name);
     },
 
     // Las derivadas de una entidad en el orden en que pueden calcularse: cada
