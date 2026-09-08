@@ -317,17 +317,17 @@ test('la versión del catálogo es un hash estable de las definiciones y el esqu
   );
 
   // Cambiar una definición cambia la versión.
+  // Las mismas entidades con una medida más en `departments`. Va en un catálogo
+  // aparte y no re-registrando encima: una entidad se registra una sola vez
+  // (hallazgo 11), así que la definición cambiada entra desde el principio.
   const conMedidaNueva = createCatalog();
-  for (const definicion of [reviews, employees, departments]) {
+  const departamentosConTotal = {
+    ...departments,
+    measures: { total: { type: 'count', description: 'Cantidad de departamentos.' } },
+  };
+  for (const definicion of [reviews, employees, departamentosConTotal]) {
     conMedidaNueva.register(definicion, esquema);
   }
-  conMedidaNueva.register(
-    {
-      ...departments,
-      measures: { total: { type: 'count', description: 'Cantidad de departamentos.' } },
-    },
-    esquema,
-  );
   assert.notEqual(conMedidaNueva.version(), catalogoDelCaso(esquema).version());
 
   // Cambiar el esquema físico bajo las mismas definiciones también.
@@ -773,4 +773,41 @@ test('todo operador que la vista pública publica lo emite el planificador', () 
     ),
   );
   assert.equal(error.code, 'UNSUPPORTED_OPERATOR');
+});
+
+// --- Hallazgo 11 del abogado del diablo: registrar dos veces la misma entidad
+// pisaba la anterior en silencio. Dos módulos que eligen el mismo nombre
+// semántico no son un caso a resolver por orden de carga: es un choque de
+// contrato, y el que llega segundo se lo tiene que llevar como error.
+test('registrar dos veces la misma entidad con otra definición se rechaza', () => {
+  const catalog = createCatalog();
+  catalog.register(reviews, esquema);
+
+  const error = errorDe(() =>
+    catalog.register(
+      {
+        ...reviews,
+        description: 'Otra cosa que también quiere llamarse reviews.',
+      },
+      esquema,
+    ),
+  );
+
+  assert.equal(error.code, 'INVALID_DEFINITION');
+  assert.equal(error.member, 'reviews.name');
+  assert.ok(error.suggestion.length > 0, 'el error estructurado trae sugerencia');
+  // La definición que ya estaba sigue siendo la que manda.
+  assert.equal(catalog.entity('reviews').description, reviews.description);
+});
+
+test('registrar dos veces exactamente la misma definición es idempotente', () => {
+  const catalog = createCatalog();
+  const primera = catalog.register(reviews, esquema);
+  // La misma definición escrita de nuevo (otro objeto, mismo contenido): dos
+  // módulos que se registran en el arranque y en un reinicio parcial no pueden
+  // tumbar el servicio por hacer lo mismo dos veces.
+  const segunda = catalog.register(structuredClone(reviews), esquema);
+
+  assert.equal(segunda.ok, true);
+  assert.equal(segunda.version, primera.version);
 });

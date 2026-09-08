@@ -540,6 +540,19 @@ export function createCatalog({ fuentes = FUENTES_POR_DEFECTO } = {}) {
     // físico. Quien registra contra una base viva pasa el del dialecto.
     register(def, snapshot) {
       validarForma(def);
+      // Un nombre semántico es un contrato, y dos módulos no pueden tener el
+      // mismo: pisar en silencio al que ya estaba cambiaría lo que responden
+      // consultas que nadie tocó, y el orden de carga decidiría el significado
+      // de una palabra (hallazgo 11 del abogado del diablo). Volver a registrar
+      // *exactamente* lo mismo sí se acepta: es lo que hace un arranque que se
+      // repite, y no cambia nada.
+      const yaRegistrada = entidades.get(def.name);
+      if (yaRegistrada && canonica(yaRegistrada) !== canonica(def)) {
+        throw invalida(
+          `${def.name}.name`,
+          `Ya hay una entidad registrada con el nombre ${def.name} y esta definición no es la misma. Un nombre semántico pertenece a un solo módulo: elige otro nombre, o registra la definición nueva en un catálogo nuevo.`,
+        );
+      }
       // La fuente de la entidad decide qué dialecto la traduce. Una fuente que
       // nadie configuró no tiene dialecto, y sin dialecto no hay ni tipos que
       // validar ni motor contra el cual ejecutar: se corta al registrar, como

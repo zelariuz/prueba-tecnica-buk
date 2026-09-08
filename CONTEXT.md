@@ -51,7 +51,9 @@ equivalente en Cube, se indica para facilitar la lectura al equipo.
 ## Catálogo
 
 - **Catálogo**: registro central de definiciones. Valida al registrar, arma el
-  grafo de relaciones y expone `describe()`.
+  grafo de relaciones y expone `describe()`. Una entidad se registra **una sola
+  vez**: volver a registrar ese nombre con otra definición es
+  `INVALID_DEFINITION`; con exactamente la misma definición es idempotente.
 - **Esquema físico**: foto descubierta de tablas, columnas, tipos, llaves e
   índices (`information_schema`, `pg_indexes`). Se descubre, no se declara.
 - **Snapshot del esquema**: la foto ya materializada que produce el
