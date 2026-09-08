@@ -17,7 +17,21 @@ export const employees = {
   measures: {
     headcount: {
       type: 'count',
-      description: 'Cantidad de empleados.',
+      description: 'Cantidad de empleados, activos e inactivos.',
+    },
+    active_headcount: {
+      type: 'count',
+      segment: 'active',
+      description: 'Cantidad de empleados activos, según la regla del segmento `active`.',
+    },
+  },
+  // "Empleado activo" es un ejemplo del enunciado: una regla de negocio que
+  // tiene que estar escrita una sola vez, y no en cada consulta de cada
+  // consumidor (ADR 0005).
+  segments: {
+    active: {
+      description: 'Empleados vigentes en la empresa.',
+      filters: [{ member: 'employees.active', operator: 'equals', values: [true] }],
     },
   },
   relationships: {

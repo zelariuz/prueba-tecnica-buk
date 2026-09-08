@@ -91,10 +91,15 @@ export const consultasTipo = [
   },
   {
     name: 'headcount-por-departamento',
-    description: 'Cantidad de empleados por departamento.',
+    description:
+      'Cantidad de empleados por departamento, con el total y los activos lado a lado.',
     params: [],
     query: {
-      measures: ['employees.headcount'],
+      // Las dos medidas juntas y no sólo los activos: la diferencia entre el
+      // total y los activos es información, y esconderla obligaría a pedir dos
+      // consultas para verla. El filtro de "activo" viaja dentro de la medida
+      // (su segmento), así que no recorta la otra.
+      measures: ['employees.headcount', 'employees.active_headcount'],
       dimensions: ['departments.name'],
       order: { 'employees.headcount': 'desc' },
     },

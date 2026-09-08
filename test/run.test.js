@@ -816,3 +816,50 @@ describe('medidas sum y count_distinct', conBase, () => {
     assert.deepEqual(rows, [{ 'reviews.period': '2025-01-01', 'reviews.score_total': 12.5 }]);
   });
 });
+
+// --- Hallazgo 7 del abogado del diablo: "empleado activo" es un ejemplo
+// literal del enunciado y no estaba definido en ninguna parte. La consulta tipo
+// de headcount contaba también al inactivo 103, y cada consumidor tenía que
+// acordarse de escribir el filtro. Es exactamente lo que un segmento existe
+// para evitar (ADR 0005).
+describe('empleado activo', conBase, () => {
+  let pool;
+  let catalog;
+  let engine;
+
+  before(() => {
+    pool = new pg.Pool({ connectionString: DATABASE_URL });
+    catalog = createCatalog();
+    registrarModulos(catalog);
+    engine = createEngine({ catalog, pool });
+  });
+
+  after(async () => {
+    await pool.end();
+  });
+
+  it('la consulta tipo de headcount trae el total y los activos por departamento', async () => {
+    const { rows } = await engine.run(catalog.query('headcount-por-departamento'), {
+      companyId: EMPRESA_A,
+      consumer: 'api',
+    });
+
+    // Literales del seed: Ingeniería tiene a 100 y 101, los dos activos;
+    // Ventas tiene a 102 (activo) y 103 (inactivo).
+    assert.deepEqual(
+      [...rows].sort((a, b) => a['departments.name'].localeCompare(b['departments.name'])),
+      [
+        {
+          'departments.name': 'Ingeniería',
+          'employees.headcount': 2,
+          'employees.active_headcount': 2,
+        },
+        {
+          'departments.name': 'Ventas',
+          'employees.headcount': 2,
+          'employees.active_headcount': 1,
+        },
+      ],
+    );
+  });
+});
