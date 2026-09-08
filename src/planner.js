@@ -265,10 +265,12 @@ function resolverAgregacion(paso) {
     }
   }
 
-  // `::numeric` evita la división entera —dos COUNT son enteros y 3/4 da 0— y
-  // `NULLIF` convierte el denominador cero en NULL, que es la respuesta honesta:
-  // sin evaluaciones no hay porcentaje que informar. La escala la valida el
-  // catálogo como número, y por eso puede interpolarse.
+  // La conversión a numérico evita la división entera —dos COUNT son enteros y
+  // 3/4 da 0— y cómo se pide se la pregunta al dialecto: es lo que más cambia
+  // entre motores (`::numeric` en Postgres, `CAST(... AS REAL)` en SQLite).
+  // `NULLIF` sí es estándar y lo entienden los dos, así que se escribe aquí; el
+  // día que aparezca un motor que no lo tenga, se muda igual que el cast. La
+  // escala la valida el catálogo como número, y por eso puede interpolarse.
   const formulas = new Map();
   for (const nombre of ordenDeCalculo) {
     if (!necesarias.has(nombre)) continue;
@@ -279,7 +281,7 @@ function resolverAgregacion(paso) {
       bases.set(base.miembro, base);
       return `"${base.miembro}"`;
     };
-    const razon = `${parte(numerator)}::numeric / NULLIF(${parte(denominator)}, 0)`;
+    const razon = `${paso.dialect.aNumerico(parte(numerator))} / NULLIF(${parte(denominator)}, 0)`;
     formulas.set(nombre, scale === undefined ? razon : `${razon} * ${scale}`);
   }
 
@@ -410,7 +412,7 @@ function ctesPorEntidad(paso) {
     return (
       `${nombre} AS (\n` +
       `  SELECT ${[...columnas.get(nombre)].join(', ')}\n` +
-      `  FROM ${entidad.table}\n` +
+      `  FROM ${paso.dialect.tablaFisica(entidad.table)}\n` +
       `  WHERE ${filtrosDeLaCte.join('\n    AND ')}\n` +
       `)`
     );

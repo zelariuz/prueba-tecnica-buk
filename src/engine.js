@@ -40,11 +40,13 @@ export function createEngine({
     return { sql, params, plan: logico };
   }
 
-  // El timeout se fija con SET LOCAL dentro de la transacción: fuera de una
-  // transacción Postgres lo ignora, y dentro se deshace al cerrarla, así que la
-  // conexión vuelve al pool sin el estado de esta petición. El cliente se
-  // libera siempre, y ante un error se hace ROLLBACK antes de soltarlo para que
-  // la siguiente petición no herede una transacción abierta.
+  // Todo se ejecuta dentro de una transacción: el cliente se libera siempre, y
+  // ante un error se hace ROLLBACK antes de soltarlo para que la siguiente
+  // petición no herede una transacción abierta. Qué más hay que decirle a la
+  // sesión antes de la consulta —en Postgres, el `SET LOCAL statement_timeout`
+  // que hace cumplir el presupuesto— lo dice el dialecto: el engine no nombra
+  // ninguna sentencia de ningún motor, y un motor que no ofrece ninguna no
+  // recibe ninguna.
   async function ejecutar(sql, params, presupuesto, nombreDeFuente) {
     // Contra qué base se ejecuta y quién traduce sus errores sale de la fuente
     // de la entidad de hechos, que resolvió el planificador.
@@ -56,9 +58,9 @@ export function createEngine({
     const cliente = await conectar(poolDeLaFuente, dialecto, presupuesto);
     try {
       await cliente.query('BEGIN');
-      // SET no admite parámetros: el valor se interpola y por eso solo puede
-      // venir de la tabla de presupuestos, ya validado como entero.
-      await cliente.query(`SET LOCAL statement_timeout = ${milisegundos(presupuesto)}`);
+      for (const sentencia of dialecto.sentenciasDeSesion?.(presupuesto) ?? []) {
+        await cliente.query(sentencia);
+      }
       const resultado = await cliente.query(sql, params);
       await cliente.query('COMMIT');
       return resultado.rows;
@@ -234,13 +236,6 @@ function marcado(sql, queryId, ctx) {
 // el engine consulta.
 function nivelDe(guardado) {
   return guardado.nivel ?? 'cache-l1';
-}
-
-function milisegundos(presupuesto) {
-  if (!Number.isInteger(presupuesto.timeoutMs) || presupuesto.timeoutMs <= 0) {
-    throw new Error(`Timeout de presupuesto inválido: ${presupuesto.timeoutMs}`);
-  }
-  return presupuesto.timeoutMs;
 }
 
 // Postgres devuelve int8 y numeric como texto para no perder precisión; las

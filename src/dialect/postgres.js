@@ -116,6 +116,10 @@ export const postgres = {
     // incompatibilidad entre el tipo declarado y el físico es un error y no una
     // advertencia. Un motor de tipos laxos (SQLite) declarará `false`.
     tiposGarantizados: true,
+    // El motor puede cortar una sentencia por tiempo (`statement_timeout`), y
+    // por eso el presupuesto de tiempo de la clase de consumidor se hace
+    // cumplir de verdad en esta fuente.
+    timeoutDeSentencia: true,
   },
 
   // --- 1. Sintaxis SQL ------------------------------------------------------
@@ -133,6 +137,38 @@ export const postgres = {
 
   agregadoFiltrado(agregado, condicion) {
     return `${agregado} FILTER (WHERE ${condicion})`;
+  },
+
+  // Forzar aritmética no entera en una razón: dos COUNT son enteros y 3/4 daría
+  // 0. Cómo se pide eso es del motor —aquí un cast de Postgres, en SQLite un
+  // CAST estándar—, así que el planificador lo pregunta en vez de escribirlo.
+  aNumerico(expresion) {
+    return `${expresion}::numeric`;
+  },
+
+  // Cómo se nombra la tabla física dentro de la CTE que lleva el nombre de la
+  // entidad. En Postgres va pelada: una CTE no recursiva no puede referirse a sí
+  // misma, así que `FROM employees` dentro de `WITH employees AS (...)` resuelve
+  // la tabla base sin ambigüedad. No todos los motores resuelven así —SQLite le
+  // da precedencia a la CTE y lo llama referencia circular—, y por eso la
+  // pregunta es del dialecto y no una constante del planificador.
+  tablaFisica(tabla) {
+    return tabla;
+  },
+
+  // Sentencias que abren la sesión de una consulta, dentro de su transacción.
+  // El presupuesto de tiempo se hace cumplir con `SET LOCAL statement_timeout`:
+  // fuera de una transacción Postgres lo ignora, y dentro se deshace al
+  // cerrarla, así que la conexión vuelve al pool sin el estado de esta
+  // petición. `SET` no admite parámetros, así que el valor se interpola y por
+  // eso se valida aquí como entero del presupuesto. El engine no nombra esta
+  // sentencia: se la pide al dialecto, y un motor que no puede hacer cumplir un
+  // timeout —SQLite— simplemente no ofrece este método y no se emite nada.
+  sentenciasDeSesion(presupuesto) {
+    if (!Number.isInteger(presupuesto?.timeoutMs) || presupuesto.timeoutMs <= 0) {
+      throw new Error(`Timeout de presupuesto inválido: ${presupuesto?.timeoutMs}`);
+    }
+    return [`SET LOCAL statement_timeout = ${presupuesto.timeoutMs}`];
   },
 
   // --- 2. Introspección -----------------------------------------------------
