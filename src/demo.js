@@ -13,7 +13,7 @@ import { createCatalog } from './catalog.js';
 import { createEngine } from './engine.js';
 import { crearCacheDelServicio } from './cache/index.js';
 import { crearTelemetria } from './telemetry.js';
-import { introspect } from './introspect.js';
+import { postgres } from './dialect/postgres.js';
 import { registrarModulos } from './definitions/index.js';
 
 const { DATABASE_URL, REDIS_URL } = process.env;
@@ -56,7 +56,7 @@ const caches = [];
 try {
   // En producción el registro va siempre con el snapshot del esquema real: si
   // una definición nombra algo que la base no tiene, esto corta acá.
-  const snapshot = await introspect(pool);
+  const snapshot = await postgres.introspect(pool);
   const catalog = createCatalog();
   const advertencias = registrarModulos(catalog, snapshot);
   const estaInstancia = crearCacheDelServicio({ redisUrl: REDIS_URL, telemetria });

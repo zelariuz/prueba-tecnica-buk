@@ -5,7 +5,7 @@ import { readFileSync } from 'node:fs';
 import pg from 'pg';
 
 import { createCatalog } from '../src/catalog.js';
-import { introspect } from '../src/introspect.js';
+import { postgres } from '../src/dialect/postgres.js';
 import { departments } from '../src/definitions/departments.js';
 import { employees } from '../src/definitions/employees.js';
 import { reviews } from '../src/definitions/reviews.js';
@@ -260,7 +260,7 @@ const conBase = DATABASE_URL
 test('el snapshot descubierto de la base registra las definiciones del caso', conBase, async () => {
   const pool = new pg.Pool({ connectionString: DATABASE_URL });
   try {
-    const snapshot = await introspect(pool);
+    const snapshot = await postgres.introspect(pool);
     const catalog = createCatalog();
 
     for (const definicion of [reviews, employees, departments]) {

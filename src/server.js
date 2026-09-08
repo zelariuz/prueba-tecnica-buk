@@ -12,7 +12,7 @@ import { createCatalog } from './catalog.js';
 import { createEngine } from './engine.js';
 import { crearCacheDelServicio } from './cache/index.js';
 import { crearTelemetria } from './telemetry.js';
-import { introspect } from './introspect.js';
+import { postgres } from './dialect/postgres.js';
 import { registrarModulos } from './definitions/index.js';
 import { crearServidor } from './http/server.js';
 import { tokensDeDemo } from './http/tokens.js';
@@ -27,7 +27,7 @@ if (!DATABASE_URL) {
 const pool = new pg.Pool({ connectionString: DATABASE_URL });
 const tokens = tokensDeDemo(process.env);
 
-const snapshot = await introspect(pool);
+const snapshot = await postgres.introspect(pool);
 const catalog = createCatalog();
 const advertencias = registrarModulos(catalog, snapshot);
 for (const aviso of advertencias) {
