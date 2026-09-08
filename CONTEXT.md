@@ -32,7 +32,9 @@ equivalente en Cube, se indica para facilitar la lectura al equipo.
   (`completed` = `status = 'completed'`). Se declara de forma declarativa,
   nunca como SQL.
 - **Medida base**: la que se agrega directamente sobre las filas (`count`,
-  `sum`, `avg`). Es lo contrario de una derivada, y lo que una derivada combina.
+  `count_distinct`, `sum`, `avg`). Es lo contrario de una derivada, y lo que una
+  derivada combina. `count` cuenta filas y no nombra columna; las otras tres la
+  nombran, y `sum` y `avg` además exigen que sea numérica.
 - **Medida derivada**: se calcula a partir de otras medidas ya agregadas.
   En v1 solo el tipo `ratio`: `{ numerator, denominator, scale }`. Sus medidas
   base entran a la consulta agregada aunque el consumidor no las pida, y no

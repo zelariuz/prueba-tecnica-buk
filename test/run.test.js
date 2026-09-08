@@ -719,3 +719,100 @@ describe('el origen que se murió', () => {
     assert.equal(contadores.byGate.ejecutar, 1);
   });
 });
+
+// --- Hallazgo 2 del abogado del diablo. La pregunta 2 del enunciado es
+// "cuántos EMPLEADOS completaron su evaluación", no cuántas evaluaciones se
+// completaron: el empleado 100 tiene dos completadas en 2025 (1000 y 1001), así
+// que `completed_count` y `completed_employees` tienen que dar distinto.
+describe('medidas sum y count_distinct', conBase, () => {
+  let pool;
+  let catalog;
+  let engine;
+
+  before(() => {
+    pool = new pg.Pool({ connectionString: DATABASE_URL });
+    catalog = createCatalog();
+    registrarModulos(catalog);
+    engine = createEngine({ catalog, pool });
+  });
+
+  after(async () => {
+    await pool.end();
+  });
+
+  const DE_2025 = ['2025-01-01', '2025-12-31'];
+
+  it('cuenta empleados distintos y evaluaciones por separado en el año', async () => {
+    const { rows } = await engine.run(
+      {
+        measures: ['reviews.completed_count', 'reviews.completed_employees'],
+        timeDimensions: [
+          { dimension: 'reviews.period', granularity: 'year', dateRange: DE_2025 },
+        ],
+      },
+      { companyId: EMPRESA_A, consumer: 'api' },
+    );
+
+    // Literales del seed: en 2025 la empresa 1 tiene tres evaluaciones
+    // completadas (1000 y 1001 del empleado 100, 1002 del 101) y por lo tanto
+    // dos empleados distintos que completaron.
+    assert.deepEqual(rows, [
+      {
+        'reviews.period': '2025-01-01',
+        'reviews.completed_count': 3,
+        'reviews.completed_employees': 2,
+      },
+    ]);
+  });
+
+  it('la consulta tipo de empleados que completaron da los literales por trimestre', async () => {
+    const { rows } = await engine.run(
+      catalog.query('empleados-que-completaron-por-trimestre', { dateRange: DE_2025 }),
+      { companyId: EMPRESA_A, consumer: 'api' },
+    );
+
+    // 2025-01-01: 1000 (empleado 100) y 1002 (empleado 101) → 2.
+    // 2025-04-01: 1001 (empleado 100) → 1.
+    // 2025-07-01: la evaluación 1010 cae en ese trimestre y está pendiente, así
+    // que el grupo existe con 0 empleados que completaron. La medida trae su
+    // propio filtro y no recorta la consulta: eso es exactamente lo que la
+    // distingue de poner `completed` como segmento global.
+    assert.deepEqual(rows, [
+      { 'reviews.period': '2025-01-01', 'reviews.completed_employees': 2 },
+      { 'reviews.period': '2025-04-01', 'reviews.completed_employees': 1 },
+      { 'reviews.period': '2025-07-01', 'reviews.completed_employees': 0 },
+    ]);
+  });
+
+  it('una medida sum devuelve la suma de la columna como número', async () => {
+    // Definición de prueba: la suma de los scores de las evaluaciones
+    // completadas. Ninguna pregunta del caso la pide; existe para que el tipo
+    // `sum` que el catálogo acepta tenga una ejecución que lo respalde.
+    const conSuma = createCatalog();
+    conSuma.register({
+      ...reviews,
+      measures: {
+        ...reviews.measures,
+        score_total: {
+          type: 'sum',
+          column: 'score',
+          segment: 'completed',
+          description: 'Suma de los scores de las evaluaciones completadas.',
+        },
+      },
+    });
+
+    const { rows } = await createEngine({ catalog: conSuma, pool }).run(
+      {
+        measures: ['reviews.score_total'],
+        timeDimensions: [
+          { dimension: 'reviews.period', granularity: 'year', dateRange: DE_2025 },
+        ],
+      },
+      { companyId: EMPRESA_A, consumer: 'api' },
+    );
+
+    // Literales del seed: 4.20 (1000) + 3.80 (1001) + 4.50 (1002) = 12.50.
+    assert.deepEqual(rows, [{ 'reviews.period': '2025-01-01', 'reviews.score_total': 12.5 }]);
+  });
+});

@@ -22,7 +22,7 @@ const FUENTES_POR_DEFECTO = { [FUENTE_POR_DEFECTO]: { dialecto: postgres } };
 const AGREGADOS_NUMERICOS = new Set(['sum', 'avg']);
 
 const TIPOS_DE_DIMENSION = new Set(['string', 'number', 'date', 'boolean']);
-const TIPOS_DE_MEDIDA = new Set(['count', 'sum', 'avg']);
+const TIPOS_DE_MEDIDA = new Set(['count', 'count_distinct', 'sum', 'avg']);
 // Una medida derivada no agrega una columna: se calcula a partir de otras
 // medidas ya agregadas. En v1 solo existe la razón (ADR 0004).
 const TIPOS_DE_DERIVADA = new Set(['ratio']);

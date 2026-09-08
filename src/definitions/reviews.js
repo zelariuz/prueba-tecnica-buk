@@ -35,6 +35,17 @@ export const reviews = {
       segment: 'completed',
       description: 'Cantidad de evaluaciones completadas, según la regla del segmento `completed`.',
     },
+    // "Cuántos EMPLEADOS completaron su evaluación" no es "cuántas
+    // evaluaciones se completaron": un empleado puede tener más de una en el
+    // período (el 100 tiene dos en 2025). La pregunta del enunciado se responde
+    // contando empleados distintos, y eso es una medida declarada una vez, no
+    // un post-proceso del consumidor.
+    completed_employees: {
+      type: 'count_distinct',
+      column: 'employee_id',
+      segment: 'completed',
+      description: 'Empleados con al menos una evaluación completada en el período.',
+    },
     // Medida derivada: se calcula a partir de otras medidas ya agregadas y no
     // toca ninguna columna. El módulo declara la razón, no la división: quien
     // emite el SQL se encarga de la conversión a numérico y del denominador

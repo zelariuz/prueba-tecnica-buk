@@ -787,3 +787,66 @@ test('una fuente del catálogo que el engine no configuró es un error de config
   assert.match(error.message, /visitas/);
   assert.match(error.message, /catálogo/);
 });
+
+// --- Hallazgo 2 del abogado del diablo: `sum` se aceptaba al registrar y no
+// tenía SQL, y no existía `count_distinct`. Los dos tipos entran por el mismo
+// seam que todos: una medida más de una definición.
+
+// Definición de prueba: una suma sobre la misma columna `score` del caso.
+// Ninguna pregunta del enunciado pide una suma de scores, así que la definición
+// vive aquí; lo que se prueba es que el tipo que el catálogo acepta tenga SQL.
+const reviewsConSuma = {
+  ...reviews,
+  measures: {
+    ...reviews.measures,
+    score_total: {
+      type: 'sum',
+      column: 'score',
+      description: 'Suma de los scores de todas las evaluaciones.',
+    },
+    score_completado: {
+      type: 'sum',
+      column: 'score',
+      segment: 'completed',
+      description: 'Suma de los scores de las evaluaciones completadas.',
+    },
+  },
+};
+
+test('una medida sum emite SUM de su columna', () => {
+  const catalog = createCatalog();
+  for (const definicion of [reviewsConSuma, employees, departments]) catalog.register(definicion);
+
+  const { sql } = createEngine({ catalog }).plan(
+    { measures: ['reviews.score_total'], dimensions: ['reviews.status'] },
+    CTX,
+  );
+
+  assert.match(sql, /SUM\(reviews\.score\) AS "reviews\.score_total"/);
+});
+
+test('una medida sum con segmento emite SUM filtrado, igual que un count', () => {
+  const catalog = createCatalog();
+  for (const definicion of [reviewsConSuma, employees, departments]) catalog.register(definicion);
+
+  const { sql, params } = createEngine({ catalog }).plan(
+    { measures: ['reviews.score_completado'] },
+    CTX,
+  );
+
+  assert.match(sql, /SUM\(reviews\.score\) FILTER \(WHERE reviews\.status = \$2\)/);
+  assert.deepEqual(params, [EMPRESA, 'completed', 10000]);
+});
+
+test('una medida count_distinct emite COUNT(DISTINCT columna) con su filtro', () => {
+  const { sql, params } = engineDePrueba().plan(
+    { measures: ['reviews.completed_employees'] },
+    CTX,
+  );
+
+  assert.match(
+    sql,
+    /COUNT\(DISTINCT reviews\.employee_id\) FILTER \(WHERE reviews\.status = \$2\) AS "reviews\.completed_employees"/,
+  );
+  assert.deepEqual(params, [EMPRESA, 'completed', 10000]);
+});

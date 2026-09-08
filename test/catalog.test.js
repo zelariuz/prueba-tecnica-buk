@@ -408,6 +408,7 @@ test('describe entrega la vista pública: nombres semánticos, tipos y operadore
     [
       'reviews.avg_score',
       'reviews.completed_count',
+      'reviews.completed_employees',
       'reviews.completion_rate',
       'reviews.count',
     ],
@@ -439,7 +440,12 @@ test('la vista interna trae el mapeo físico y solo se obtiene por su propio mé
     table: 'performance_reviews',
     primaryKey: 'id',
     companyColumn: 'company_id',
-    columns: { 'reviews.status': 'status', 'reviews.period': 'period', 'reviews.avg_score': 'score' },
+    columns: {
+      'reviews.status': 'status',
+      'reviews.period': 'period',
+      'reviews.avg_score': 'score',
+      'reviews.completed_employees': 'employee_id',
+    },
     joins: [{ to: 'employees', foreignKey: 'employee_id' }],
   });
 
@@ -572,4 +578,72 @@ test('una consulta tipo desconocida o sin sus parámetros no se entrega', () => 
   );
   assert.equal(sinParametro.code, 'MISSING_PARAM');
   assert.equal(sinParametro.member, 'dateRange');
+});
+
+// --- Hallazgo 2: `count_distinct`. El catálogo lo valida como una medida más
+// —columna obligatoria y existente— pero, a diferencia de `sum` y `avg`, NO
+// exige que la columna sea numérica: contar valores distintos tiene sentido
+// sobre cualquier tipo.
+test('count_distinct exige columna y la publica en la vista pública', () => {
+  const catalog = createCatalog();
+
+  const sinColumna = errorDe(() =>
+    catalog.register({
+      ...reviews,
+      measures: {
+        ...reviews.measures,
+        distintos: { type: 'count_distinct', description: 'Empleados distintos.' },
+      },
+    }),
+  );
+  assert.equal(sinColumna.code, 'INVALID_DEFINITION');
+  assert.equal(sinColumna.member, 'reviews.distintos.column');
+
+  // La columna tiene que existir en el esquema físico, como cualquier otra.
+  const columnaInventada = errorDe(() =>
+    catalog.register(
+      {
+        ...reviews,
+        measures: {
+          ...reviews.measures,
+          distintos: {
+            type: 'count_distinct',
+            column: 'empleado_id',
+            description: 'Empleados distintos.',
+          },
+        },
+      },
+      esquema,
+    ),
+  );
+  assert.equal(columnaInventada.code, 'INVALID_DEFINITION');
+  assert.equal(columnaInventada.member, 'reviews.distintos.column');
+
+  // Contar distintos de una columna de texto es legítimo: el catálogo no exige
+  // numérico como sí hace con `sum` y `avg`.
+  const sobreTexto = createCatalog();
+  assert.equal(
+    sobreTexto.register(
+      {
+        ...reviews,
+        measures: {
+          ...reviews.measures,
+          estados: {
+            type: 'count_distinct',
+            column: 'status',
+            description: 'Estados distintos entre las evaluaciones.',
+          },
+        },
+      },
+      esquema,
+    ).ok,
+    true,
+  );
+
+  const publicada = catalogoDelCaso(esquema)
+    .describe({ companyId: 1, consumer: 'api' })
+    .entities.find((entidad) => entidad.name === 'reviews')
+    .measures.find((medida) => medida.name === 'reviews.completed_employees');
+  assert.equal(publicada.type, 'count_distinct');
+  assert.ok(publicada.description.length > 0, 'la medida publicada trae su descripción');
 });

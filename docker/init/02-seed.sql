@@ -35,6 +35,18 @@
 --               Ingeniería 2025-04-01: avg 3.30 (2004), completadas 1
 --               Ventas: no aparece (2001 está pending)
 --
+-- EMPLEADOS QUE COMPLETARON (count_distinct de employee_id sobre las
+-- completadas) de la empresa 1 en 2025. El empleado 100 tiene DOS completadas
+-- (1000 y 1001), así que contar evaluaciones y contar empleados da distinto:
+--   año 2025            → completadas 3, empleados distintos 2
+--   trimestre 2025-01-01 → completadas 2 (1000, 1002), empleados 2 (100, 101)
+--   trimestre 2025-04-01 → completadas 1 (1001),       empleados 1 (100)
+--   trimestre 2025-07-01 → 0 y 0: el grupo existe por la evaluación 1010, que
+--                          está pendiente
+--
+-- SUMA DE SCORES de las evaluaciones completadas de 2025 de la empresa 1:
+--   4.20 (1000) + 3.80 (1001) + 4.50 (1002) = 12.50
+--
 -- COMPLETITUD (completion_rate = completadas / evaluaciones * 100) de la
 -- empresa 1 por departamento, con las evaluaciones de 2025:
 --   Ingeniería → 4 evaluaciones (1000, 1001, 1002, 1003), 3 completadas → 75

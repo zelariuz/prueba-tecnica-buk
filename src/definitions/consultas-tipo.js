@@ -42,6 +42,24 @@ export const consultasTipo = [
     },
   },
   {
+    // La segunda pregunta del enunciado, dicha como está escrita: cuántos
+    // EMPLEADOS completaron su evaluación en cada trimestre. No lleva
+    // `segments`: la medida ya trae puesto el suyo, así que el conteo de
+    // empleados es el de los que completaron y el rango sigue siendo el rango.
+    name: 'empleados-que-completaron-por-trimestre',
+    description:
+      'Cuántos empleados distintos completaron al menos una evaluación en cada trimestre del rango pedido.',
+    params: ['dateRange'],
+    query: {
+      measures: ['reviews.completed_employees'],
+      timeDimensions: [
+        { dimension: 'reviews.period', granularity: 'quarter', dateRange: ':dateRange' },
+      ],
+      order: { 'reviews.period': 'asc' },
+      limit: 500,
+    },
+  },
+  {
     name: 'conteo-de-evaluaciones-por-estado',
     description: 'Cuántas evaluaciones hay en cada estado: pending, completed o calibrated.',
     params: [],

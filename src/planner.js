@@ -494,9 +494,16 @@ function expresionDeMedida(paso, medida) {
   );
 }
 
+// Cada tipo de medida base que el catálogo acepta tiene aquí su agregado, y
+// sólo aquí: si el catálogo admitiera un tipo que esta tabla no conoce, la
+// definición registraría bien y la consulta moriría con un error del servidor
+// (hallazgo 2 del abogado del diablo, que es exactamente lo que pasaba con
+// `sum`). `count` no nombra columna: cuenta filas.
 function sqlDeAgregado(medida, entidad) {
   if (medida.type === 'count') return 'COUNT(*)';
+  if (medida.type === 'count_distinct') return `COUNT(DISTINCT ${entidad}.${medida.column})`;
   if (medida.type === 'avg') return `AVG(${entidad}.${medida.column})`;
+  if (medida.type === 'sum') return `SUM(${entidad}.${medida.column})`;
   throw new Error(`Tipo de medida no soportado: ${medida.type}`);
 }
 

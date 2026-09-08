@@ -395,3 +395,57 @@ describe('las granularidades del dialecto SQLite', () => {
     });
   }
 });
+
+// --- Hallazgo 2: `count_distinct` no necesitó nada del dialecto. `COUNT(DISTINCT
+// col) FILTER (WHERE …)` es estándar y los dos motores lo entienden, así que la
+// misma medida devuelve el mismo número contra las dos fuentes.
+describe('count_distinct contra la segunda fuente', () => {
+  let pool;
+  let engine;
+
+  before(async () => {
+    pool = baseDelCaso();
+    ({ engine } = await armar(pool));
+  });
+
+  after(() => pool.cerrar());
+
+  it('cuenta los mismos empleados distintos que Postgres', async () => {
+    const { rows } = await engine.run(
+      {
+        measures: ['reviews.completed_count', 'reviews.completed_employees'],
+        timeDimensions: [
+          {
+            dimension: 'reviews.period',
+            granularity: 'quarter',
+            dateRange: ['2025-01-01', '2025-12-31'],
+          },
+        ],
+        order: { 'reviews.period': 'asc' },
+      },
+      { companyId: EMPRESA_A, consumer: 'api' },
+    );
+
+    // Los mismos literales del seed: 1000 y 1002 en el primer trimestre (dos
+    // empleados, 100 y 101) y 1001 en el segundo (el empleado 100). El tercer
+    // trimestre existe como grupo porque la evaluación 1010 cae ahí; está
+    // pendiente, así que las dos medidas valen 0.
+    assert.deepEqual(rows, [
+      {
+        'reviews.period': '2025-01-01',
+        'reviews.completed_count': 2,
+        'reviews.completed_employees': 2,
+      },
+      {
+        'reviews.period': '2025-04-01',
+        'reviews.completed_count': 1,
+        'reviews.completed_employees': 1,
+      },
+      {
+        'reviews.period': '2025-07-01',
+        'reviews.completed_count': 0,
+        'reviews.completed_employees': 0,
+      },
+    ]);
+  });
+});
