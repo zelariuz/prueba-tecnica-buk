@@ -13,14 +13,25 @@ export const OPERADORES_POR_TIPO = {
 };
 
 // De los operadores declarados, los que el planificador ya sabe emitir. El
-// resto se publica en el catálogo y se rechaza con `UNSUPPORTED_OPERATOR`
-// mientras no exista su SQL: prometer menos de lo declarado es preferible a
-// que un filtro se ignore en silencio.
+// resto sigue siendo válido para su tipo —pedirlo da `UNSUPPORTED_OPERATOR` y
+// no `INVALID_OPERATOR`, que es lo que le dice a quien pregunta si el operador
+// no aplica o si todavía no está— pero **no se publica**: un catálogo que
+// ofrece un operador que el planificador rechaza deja a un agente fallando en
+// bucle contra algo que leyó ahí (hallazgo 14 del abogado del diablo).
 export const OPERADORES_EN_SQL = new Set(['equals', 'notEquals', 'in']);
 
 // La granularidad se interpola en el SQL, así que sale de una lista cerrada.
 export const GRANULARIDADES = ['day', 'week', 'month', 'quarter', 'year'];
 
+// Los operadores del tipo: los que tienen sentido sobre una dimensión así. Es
+// la lista contra la que el engine decide si un operador aplica.
 export function operadoresDe(tipo) {
   return OPERADORES_POR_TIPO[tipo] ?? [];
+}
+
+// Los operadores del tipo que además tienen SQL: es lo que el catálogo publica.
+// Sale de la misma tabla que la de arriba —una sola fuente— para que la promesa
+// del catálogo no pueda separarse de lo que el planificador hace.
+export function operadoresEmitidos(tipo) {
+  return operadoresDe(tipo).filter((operador) => OPERADORES_EN_SQL.has(operador));
 }

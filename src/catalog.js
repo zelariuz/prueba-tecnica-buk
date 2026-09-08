@@ -7,7 +7,7 @@ import { canonica } from './canonical.js';
 import { postgres } from './dialect/postgres.js';
 import { SemanticError } from './errors.js';
 import { masParecido } from './suggest.js';
-import { GRANULARIDADES, operadoresDe } from './vocabulary.js';
+import { GRANULARIDADES, operadoresEmitidos } from './vocabulary.js';
 
 // Toda entidad pertenece a una fuente, y una fuente tiene un dialecto
 // (CONTEXT.md, "Fuente"). Cuando la definición no la nombra es la de siempre:
@@ -459,7 +459,11 @@ export function createCatalog({ fuentes = FUENTES_POR_DEFECTO } = {}) {
           name: `${def.name}.${nombre}`,
           type: dimension.type,
           description: dimension.description,
-          operators: operadoresDe(dimension.type),
+          // Sólo los que el planificador emite: el catálogo no promete lo que
+          // el engine rechaza (hallazgo 14). Un tipo cuyos operadores todavía no
+          // tienen SQL —`date`— se publica con la lista vacía, que es la
+          // verdad: hoy una dimensión temporal se acota con `timeDimensions`.
+          operators: operadoresEmitidos(dimension.type),
         })),
         measures: Object.entries(def.measures ?? {}).map(([nombre, medida]) => ({
           name: `${def.name}.${nombre}`,

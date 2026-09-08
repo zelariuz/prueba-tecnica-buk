@@ -240,7 +240,10 @@ curl -s -H 'Authorization: Bearer demo-dashboard-empresa-a' \
   `date` inDateRange, beforeDate, afterDate; `boolean` equals. Emitidos en SQL
   esta fase: `equals`, `notEquals`, `in`. Operador fuera del tipo →
   `INVALID_OPERATOR`; operador del tipo aún sin SQL → `UNSUPPORTED_OPERATOR`
-  (rechazar es mejor que aplicar un filtro a medias en silencio).
+  (rechazar es mejor que aplicar un filtro a medias en silencio). **La vista
+  pública publica sólo los emitidos** (`operadoresEmitidos`, corrección 08-09):
+  publicar un operador que el planificador rechaza deja a un agente fallando en
+  bucle contra algo que leyó en el catálogo.
 - `filters` y `segments` de la consulta se aplican dentro de la CTE de la
   entidad de su dimensión, junto al filtro de empresa, y esa entidad entra al
   camino de joins aunque no se pida como dimensión.

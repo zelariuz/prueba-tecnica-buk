@@ -123,7 +123,11 @@ equivalente en Cube, se indica para facilitar la lectura al equipo.
   largo de lo escrito: una sugerencia lejana confunde más que ninguna.
 - **Vocabulario de consulta**: la tabla de operadores válidos por tipo de
   dimensión y la lista de granularidades. Vive en un solo lugar porque el
-  catálogo la publica y el engine la aplica.
+  catálogo la publica y el engine la aplica. Se lee de dos formas, derivadas de
+  la misma tabla: los **operadores del tipo** (los que tienen sentido sobre una
+  dimensión así, y contra los que el engine decide `INVALID_OPERATOR`) y los
+  **operadores emitidos** (los del tipo que además tienen SQL). La vista pública
+  publica los emitidos: el catálogo no ofrece lo que el planificador rechaza.
 - **Forma de la consulta**: la consulta con sus valores literales reemplazados
   por parámetros. Dos consultas con la misma forma generan el mismo SQL.
 - **CacheStore**: la interfaz de caché del engine —`get(key)`, `set(key, value,

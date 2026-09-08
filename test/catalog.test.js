@@ -5,6 +5,8 @@ import { readFileSync } from 'node:fs';
 import pg from 'pg';
 
 import { createCatalog } from '../src/catalog.js';
+import { createEngine } from '../src/engine.js';
+import { registrarModulos } from '../src/definitions/index.js';
 import { postgres } from '../src/dialect/postgres.js';
 import { departments } from '../src/definitions/departments.js';
 import { employees } from '../src/definitions/employees.js';
@@ -395,11 +397,16 @@ test('describe entrega la vista pública: nombres semánticos, tipos y operadore
 
   const status = entidad.dimensions.find((d) => d.name === 'reviews.status');
   assert.equal(status.type, 'string');
-  assert.deepEqual(status.operators, ['equals', 'notEquals', 'in', 'notIn', 'contains']);
+  // Sólo los que el planificador emite: `notIn` y `contains` son válidos para el
+  // tipo string pero todavía no tienen SQL, así que no se publican (hallazgo 14).
+  assert.deepEqual(status.operators, ['equals', 'notEquals', 'in']);
   assert.ok(status.description.length > 0, 'la dimensión llega con su descripción');
 
+  // Ninguno de los tres operadores de fecha tiene SQL todavía, así que la
+  // dimensión temporal se publica sin operadores: hoy se acota con
+  // `timeDimensions` y su `dateRange`, y decirlo así es la verdad.
   const periodo = entidad.dimensions.find((d) => d.name === 'reviews.period');
-  assert.deepEqual(periodo.operators, ['inDateRange', 'beforeDate', 'afterDate']);
+  assert.deepEqual(periodo.operators, []);
 
   // Las derivadas se publican como una medida más, con su tipo: el consumidor
   // pide `reviews.completion_rate` sin saber de qué dos medidas sale.
@@ -700,4 +707,70 @@ test('una dimensión date sobre una columna date sigue registrando sin ruido', (
     0,
     'una columna date no produce ninguna advertencia de zona',
   );
+});
+
+// --- Hallazgo 14 del abogado del diablo: la vista pública publicaba en
+// `operators` los tres operadores de fecha (`inDateRange`, `beforeDate`,
+// `afterDate`) que el planificador rechaza con `UNSUPPORTED_OPERATOR`. Un
+// agente lee el catálogo, usa uno y falla en bucle. El catálogo publica ahora
+// sólo lo que el planificador emite, y este test lo comprueba recorriendo la
+// vista entera: ningún operador publicado puede caer en UNSUPPORTED_OPERATOR.
+const VALOR_DE_PRUEBA = {
+  string: 'x',
+  number: 1,
+  boolean: true,
+  date: '2025-01-01',
+};
+
+test('todo operador que la vista pública publica lo emite el planificador', () => {
+  const catalog = createCatalog();
+  registrarModulos(catalog);
+  const engine = createEngine({ catalog });
+  const vista = catalog.describe({ companyId: 1, consumer: 'api' });
+
+  // De qué entidad salen las medidas de la consulta de prueba: la propia, si
+  // tiene una medida base; si no (departamentos), una que llegue hasta ella.
+  const medidaDe = (entidad) =>
+    entidad.measures.find((m) => m.type !== 'ratio')?.name ?? 'reviews.count';
+
+  let probados = 0;
+  for (const entidad of vista.entities) {
+    for (const dimension of entidad.dimensions) {
+      for (const operator of dimension.operators) {
+        probados += 1;
+        engine.plan(
+          {
+            measures: [medidaDe(entidad)],
+            filters: [
+              {
+                member: dimension.name,
+                operator,
+                values: [VALOR_DE_PRUEBA[dimension.type]],
+              },
+            ],
+          },
+          { companyId: 1, consumer: 'api' },
+        );
+      }
+    }
+  }
+
+  // Si la vista publicara cero operadores el test pasaría sin comprobar nada.
+  assert.ok(probados >= 8, `se probaron ${probados} operadores publicados`);
+
+  // Y lo que se sacó de la vista sigue siendo válido para el tipo: pedirlo da
+  // UNSUPPORTED_OPERATOR, no INVALID_OPERATOR. La distinción es la que le dice
+  // a quien pregunta si el operador no aplica o si todavía no está.
+  const error = errorDe(() =>
+    engine.plan(
+      {
+        measures: ['reviews.count'],
+        filters: [
+          { member: 'reviews.period', operator: 'beforeDate', values: ['2025-01-01'] },
+        ],
+      },
+      { companyId: 1, consumer: 'api' },
+    ),
+  );
+  assert.equal(error.code, 'UNSUPPORTED_OPERATOR');
 });

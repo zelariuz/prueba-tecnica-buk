@@ -246,7 +246,8 @@ con la sugerencia calculada por distancia de edición
 (`reviews.avg_scor` → `reviews.avg_score`).
 
 `describe(ctx)` es lo que ve un dashboard o un agente: nombres de negocio,
-tipos, descripciones, operadores válidos, granularidades y consultas tipo. Nunca
+tipos, descripciones, operadores **que el planificador emite**, granularidades y
+consultas tipo. Nunca
 una tabla ni una columna (ADR 0008): `describe(ctx)` devuelve la vista pública
 aunque el contexto pida lo contrario. El mapeo físico sale por otro método,
 `describeInternal()`, que no recibe contexto de consumidor y vive del lado del
