@@ -4,9 +4,20 @@
 import { createHash } from 'node:crypto';
 
 import { canonica } from './canonical.js';
+import { postgres } from './dialect/postgres.js';
 import { SemanticError } from './errors.js';
 import { masParecido } from './suggest.js';
 import { GRANULARIDADES, operadoresDe } from './vocabulary.js';
+
+// Toda entidad pertenece a una fuente, y una fuente tiene un dialecto. Cuando
+// la definición no la nombra, es la de siempre: el catálogo de hoy vive entero
+// sobre Postgres y una definición no debería tener que decirlo para eso.
+const FUENTE_POR_DEFECTO = 'postgres';
+const FUENTES_POR_DEFECTO = { [FUENTE_POR_DEFECTO]: { dialecto: postgres } };
+
+// Las medidas que agregan una columna con aritmética: sólo tienen sentido sobre
+// números. `count` cuenta filas y no mira ninguna columna.
+const AGREGADOS_NUMERICOS = new Set(['sum', 'avg']);
 
 const TIPOS_DE_DIMENSION = new Set(['string', 'number', 'date', 'boolean']);
 const TIPOS_DE_MEDIDA = new Set(['count', 'sum', 'avg']);
@@ -234,6 +245,61 @@ function validarContraEsquema(def, snapshot) {
   }
 }
 
+// Compatibilidad de tipos: el tipo declarado de una dimensión decide qué
+// operadores publica el catálogo, y el tipo físico decide qué hay de verdad en
+// la columna. Si no calzan, el catálogo promete un vocabulario que la base no
+// puede cumplir —`inDateRange` sobre una columna de texto no es una consulta
+// lenta, es una consulta que miente— y una medida `avg` o `sum` sobre texto
+// falla recién en la base, con un error del motor que nadie pidió.
+//
+// Quién traduce el tipo físico al semántico es el dialecto de la fuente de la
+// entidad: `numeric` significa algo distinto en cada motor y el catálogo no
+// tiene por qué saberlo. Un tipo físico que el dialecto no reconoce no se juzga
+// (`tipoSemantico` devuelve `undefined`): es la respuesta conservadora, la misma
+// que da el catálogo cuando no hay snapshot.
+//
+// Que la incompatibilidad sea error o advertencia lo decide el dialecto con su
+// capacidad `tiposGarantizados`: un motor que declara y hace cumplir el tipo de
+// cada columna convierte el desajuste en un hecho; uno de tipos laxos (SQLite)
+// lo deja en sospecha, y ahí rechazar el registro sería negarse a hablar con el
+// motor.
+function incompatibilidadesDeTipo(def, snapshot, dialecto) {
+  const columnas = snapshot.tables?.[def.table]?.columns ?? {};
+  const problemas = [];
+
+  const semantico = (columna) => dialecto.tipoSemantico(columnas[columna]);
+
+  for (const [nombre, dimension] of Object.entries(def.dimensions ?? {})) {
+    const fisico = semantico(dimension.column);
+    if (fisico === undefined || fisico === dimension.type) continue;
+    problemas.push({
+      member: `${def.name}.${nombre}`,
+      detalle: `La dimensión ${def.name}.${nombre} se declara de tipo ${dimension.type}, pero la columna ${def.table}.${dimension.column} es ${columnas[dimension.column]}, que en ${dialecto.name} es de tipo ${fisico}. Declara type '${fisico}' o apunta la dimensión a otra columna.`,
+    });
+  }
+
+  for (const [nombre, medida] of Object.entries(def.measures ?? {})) {
+    if (!AGREGADOS_NUMERICOS.has(medida.type)) continue;
+    const fisico = semantico(medida.column);
+    if (fisico === undefined || fisico === 'number') continue;
+    problemas.push({
+      member: `${def.name}.${nombre}`,
+      detalle: `La medida ${def.name}.${nombre} agrega con ${medida.type} la columna ${def.table}.${medida.column}, que es ${columnas[medida.column]}: de tipo ${fisico} y no number. Una medida ${medida.type} sólo puede agregar columnas numéricas.`,
+    });
+  }
+
+  return problemas;
+}
+
+function validarTipos(def, snapshot, dialecto) {
+  const problemas = incompatibilidadesDeTipo(def, snapshot, dialecto);
+  if (dialecto.capabilities?.tiposGarantizados === false) {
+    return problemas.map(({ member, detalle }) => ({ member, warning: detalle }));
+  }
+  for (const { member, detalle } of problemas) throw invalida(member, detalle);
+  return [];
+}
+
 // Advertencias: problemas que no impiden registrar pero que el dueño del módulo
 // debería corregir antes de producción. La dimensión temporal es la que más
 // filas recorre —toda consulta la acota por rango— y sin índice que la cubra
@@ -289,7 +355,10 @@ function reemplazarParametros(valor, params, nombre) {
 // Clases de miembro, con el nombre que se usa al hablarle al consumidor.
 const CLASES = { dimensions: 'dimensión', measures: 'medida', segments: 'segmento' };
 
-export function createCatalog() {
+// `fuentes` es el mapa nombre → { dialecto } de las fuentes que este catálogo
+// conoce. El catálogo no ejecuta nada, así que no le importa el pool: sólo el
+// dialecto, que es quien traduce los tipos físicos de esa fuente.
+export function createCatalog({ fuentes = FUENTES_POR_DEFECTO } = {}) {
   const entidades = new Map();
   const consultasTipo = new Map();
   // Por entidad, sus medidas derivadas en orden topológico: cada una después de
@@ -429,7 +498,9 @@ export function createCatalog() {
     // físico. Quien registra contra una base viva pasa el de `introspect`.
     register(def, snapshot) {
       validarForma(def);
+      const dialecto = fuentes[def?.source ?? FUENTE_POR_DEFECTO]?.dialecto;
       if (snapshot) validarContraEsquema(def, snapshot);
+      const deTipos = snapshot && dialecto ? validarTipos(def, snapshot, dialecto) : [];
       // El orden de cálculo de las derivadas se resuelve una vez, al registrar:
       // el engine lo recibe hecho y nunca tiene que descubrirlo por consulta.
       ordenDeCalculo.set(def.name, ordenDeDerivadas(def));
@@ -438,7 +509,7 @@ export function createCatalog() {
       return {
         ok: true,
         version: version(),
-        warnings: snapshot ? advertenciasDe(def, snapshot) : [],
+        warnings: snapshot ? [...deTipos, ...advertenciasDe(def, snapshot)] : [],
       };
     },
 

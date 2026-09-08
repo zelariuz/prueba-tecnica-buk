@@ -103,6 +103,103 @@ test('la definición sobre una tabla que no existe en el esquema falla al regist
   assert.match(error.suggestion, /performance_reviews/);
 });
 
+// El tipo declarado de una dimensión decide sus operadores y el tipo físico
+// decide qué hay de verdad en la columna. Si no calzan, el catálogo promete un
+// vocabulario que la base no puede cumplir: `inDateRange` sobre una columna de
+// texto no es una consulta lenta, es una consulta que miente. Quien traduce el
+// tipo físico al semántico es el dialecto de la fuente de la entidad.
+test('una dimensión declarada date sobre una columna de texto se rechaza al registrar', () => {
+  const error = errorDe(() =>
+    createCatalog().register(
+      {
+        ...reviews,
+        dimensions: {
+          ...reviews.dimensions,
+          status: { ...reviews.dimensions.status, type: 'date' },
+        },
+      },
+      esquema,
+    ),
+  );
+
+  assert.equal(error.code, 'INVALID_DEFINITION');
+  assert.equal(error.member, 'reviews.status');
+  // La sugerencia nombra los dos tipos: el declarado y el que tiene la columna.
+  assert.match(error.suggestion, /date/);
+  assert.match(error.suggestion, /text/);
+});
+
+test('una medida avg sobre una columna de texto se rechaza al registrar', () => {
+  const error = errorDe(() =>
+    createCatalog().register(
+      {
+        ...reviews,
+        measures: {
+          ...reviews.measures,
+          avg_score: { ...reviews.measures.avg_score, column: 'status' },
+        },
+      },
+      esquema,
+    ),
+  );
+
+  assert.equal(error.code, 'INVALID_DEFINITION');
+  assert.equal(error.member, 'reviews.avg_score');
+  assert.match(error.suggestion, /avg/);
+  assert.match(error.suggestion, /text/);
+});
+
+test('una dimensión number sobre una columna bigint registra sin problema', () => {
+  // El tipo semántico no es el tipo físico: `bigint`, `numeric` y `real` son
+  // todos `number` para el consumidor.
+  const { ok } = createCatalog().register(
+    {
+      ...reviews,
+      dimensions: {
+        ...reviews.dimensions,
+        employee_id: {
+          column: 'employee_id',
+          type: 'number',
+          description: 'Identificador del empleado evaluado.',
+        },
+      },
+    },
+    esquema,
+  );
+
+  assert.equal(ok, true);
+});
+
+test('un dialecto sin tipos garantizados advierte en vez de rechazar', () => {
+  // Un motor de tipos laxos (SQLite) no puede prometer que una columna
+  // declarada `TEXT` no guarde números: ahí la incompatibilidad es una
+  // sospecha, no un hecho, y rechazar el registro sería negarse a hablar con
+  // el motor. La capacidad la declara el dialecto, no el catálogo.
+  const laxo = {
+    ...postgres,
+    name: 'laxo',
+    capabilities: { ...postgres.capabilities, tiposGarantizados: false },
+  };
+  const catalog = createCatalog({ fuentes: { postgres: { dialecto: laxo } } });
+
+  const { ok, warnings } = catalog.register(
+    {
+      ...reviews,
+      dimensions: {
+        ...reviews.dimensions,
+        status: { ...reviews.dimensions.status, type: 'date' },
+      },
+    },
+    esquema,
+  );
+
+  assert.equal(ok, true, 'la advertencia no impide registrar');
+  const aviso = warnings.find((a) => a.member === 'reviews.status');
+  assert.ok(aviso, `se esperaba una advertencia de tipo: ${JSON.stringify(warnings)}`);
+  assert.match(aviso.warning, /date/);
+  assert.match(aviso.warning, /text/);
+});
+
 test('registrar una dimensión temporal sin índice devuelve una advertencia, no un error', () => {
   const catalog = createCatalog();
 
