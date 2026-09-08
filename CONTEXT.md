@@ -102,6 +102,9 @@ equivalente en Cube, se indica para facilitar la lectura al equipo.
   `QUERY_TIMEOUT` (la ejecución superó el timeout del presupuesto),
   `SCHEMA_DRIFT` (el SQL nombró una tabla o columna que la base ya no tiene: el
   esquema cambió debajo del catálogo y hay que re-registrar las definiciones),
+  `SOURCE_UNAVAILABLE` (la base de la fuente no respondió: la conexión ni
+  siquiera se pudo abrir. Sale como 503 con `Retry-After`, porque reintentar sí
+  puede funcionar),
   `INVALID_DEFINITION` (la definición no cumple la forma o nombra algo que el
   esquema físico no tiene), `UNSUPPORTED_OPERATOR` (operador válido para el tipo
   de la dimensión que el planificador todavía no emite), `UNKNOWN_QUERY`
@@ -176,8 +179,11 @@ equivalente en Cube, se indica para facilitar la lectura al equipo.
 - **Dialecto**: la única pieza que conoce un motor. Tiene cuatro
   responsabilidades, y ninguna otra pieza puede tener una de ellas:
   1. **Sintaxis SQL**: lo que varía entre motores y el planificador pregunta
-     (`dateTrunc`, `agregadoFiltrado`), más la tabla de **capacidades**
-     (`tiposGarantizados`, …).
+     (`dateTrunc`, `agregadoFiltrado`, `aNumerico` para forzar aritmética no
+     entera y `tablaFisica` para nombrar la tabla dentro de una CTE que se
+     llama igual), más las sentencias con que el engine abre la sesión de una
+     consulta (`sentenciasDeSesion`, opcional) y la tabla de **capacidades**
+     (`tiposGarantizados`, `timeoutDeSentencia`, …).
   2. **Introspección del esquema**: cómo se descubre el snapshot en este motor
      (`introspect(pool)`). La *forma* del snapshot es del catálogo; de dónde
      salen los datos, del motor.
@@ -187,14 +193,27 @@ equivalente en Cube, se indica para facilitar la lectura al equipo.
      declarado de una dimensión y el de la columna que agrega una medida.
   4. **Traducción de errores nativos**: `traducirError(error, presupuesto)`
      convierte el código del motor en un error semántico (`QUERY_TIMEOUT`,
-     `SCHEMA_DRIFT`) y deja pasar tal cual lo que no reconoce. Ninguna otra
-     pieza nombra un código de error de un motor.
+     `SCHEMA_DRIFT`, `SOURCE_UNAVAILABLE`) y deja pasar tal cual lo que no
+     reconoce. Ninguna otra pieza nombra un código de error de un motor, ni el
+     texto de uno: SQLite no tiene SQLSTATE y sus errores se distinguen por el
+     mensaje, que es un detalle que vive dentro de su dialecto.
+
+  Hay **dos dialectos**: `postgres` (el motor del caso) y `sqlite`
+  (`node:sqlite`, sin dependencias), que existe para probar que el seam aguanta
+  —las mismas definiciones y el mismo engine dan las mismas filas contra los dos
+  motores— y para que lo que un motor no puede prometer tenga dónde decirse.
 - **Capacidad del dialecto**: lo que el motor puede prometer, y de lo que
   dependen decisiones del catálogo y del planificador. `tiposGarantizados`
   significa que el motor declara y hace cumplir el tipo de cada columna: con
   ella, un tipo declarado que no calza con el físico es un error de definición;
   sin ella (un motor de tipos laxos), la misma incompatibilidad es sólo una
-  advertencia de registro.
+  advertencia de registro. `timeoutDeSentencia` significa que el motor puede
+  cortar una consulta por tiempo; sin ella —SQLite no tiene `statement_timeout`—
+  el dialecto no ofrece `sentenciasDeSesion`, el engine no emite ninguna y el
+  presupuesto de tiempo de la clase de consumidor **no se hace cumplir en esa
+  fuente**. Una capacidad es el lugar donde una promesa que el motor no puede
+  sostener se dice en voz alta, en vez de quedar como un `if` escondido en el
+  engine o, peor, como una promesa falsa.
 - **Telemetría**: señales de monitoreo del engine. Se dice "telemetría" y no
   "métrica" para no confundir con las medidas de negocio. Vive en memoria del
   proceso, se lee con `engine.telemetry()` y cuenta, por consumidor: consultas

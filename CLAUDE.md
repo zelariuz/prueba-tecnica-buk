@@ -35,9 +35,19 @@ src/
   definitions/index.js       composición: qué módulos y qué consultas tipo
                              existen, y `registrarModulos(catalog, snapshot)`
   dialect/postgres.js        el motor, entero: sintaxis (dateTrunc,
-                             agregadoFiltrado y capacidades), introspección del
+                             agregadoFiltrado, aNumerico, tablaFisica,
+                             sentenciasDeSesion y capacidades), introspección del
                              esquema, mapa de tipos físicos → semánticos y
                              traducción de errores nativos
+  dialect/sqlite.js          el segundo motor, con las mismas cuatro
+                             responsabilidades sobre `node:sqlite`: dateTrunc con
+                             strftime/printf, introspección por PRAGMA, tipos por
+                             afinidad y errores por texto. Declara lo que no
+                             puede prometer (tiposGarantizados: false,
+                             timeoutDeSentencia: false)
+  dialect/sqlite-pool.js     adaptador de DatabaseSync al contrato mínimo de pool
+                             (connect → { query, release }); traduce los
+                             parámetros posicionales $n a los nombrados de SQLite
   budgets.js                 presupuesto por clase de consumidor (timeout, filas,
                              rango y TTL de caché)
   cache/store.js             interfaz CacheStore (get/set/delete async) y
@@ -73,7 +83,8 @@ src/
                              catálogo y queryId)
   http/server.js             las dos rutas con node:http; token → ctx, techo de
                              64 KiB al cuerpo y delega
-  http/codigos.js            mapa código de error → código HTTP (incluido 413)
+  http/codigos.js            mapa código de error → código HTTP (incluido 413) y
+                             cabeceras por código (Retry-After del 503)
   http/tokens.js             tabla de tokens de demo desde DEMO_TOKENS
   server.js                  bin del servicio `api`: introspecta, registra con
                              snapshot y escucha
@@ -94,9 +105,16 @@ test/
   redis.test.js              caché L2 contra Redis de verdad: dos instancias,
                              llaves con empresa por SCAN y Redis inalcanzable;
                              se salta sin REDIS_URL
+  sqlite.test.js             la segunda fuente por los seams engine.run,
+                             engine.plan y catalog.register; base en memoria, sin
+                             variables de entorno
   snapshots/caso-obligatorio.sql  SQL esperado del caso, comparado por igualdad
+  snapshots/caso-obligatorio-sqlite.sql  el mismo caso, emitido por el dialecto
+                             SQLite: mismas CTE, mismos $n, otra sintaxis
   snapshots/completion-rate.sql   SQL esperado de la derivada, con su etapa agregada
   fixtures/snapshot.json     foto del esquema generada desde la base del caso
+  fixtures/caso-sqlite.sql   el mismo esquema y las mismas 16 evaluaciones,
+                             escritos para SQLite
 docker/init/
   01-schema.sql            DDL del caso, copiado sin cambios
   02-seed.sql              seed determinista + conteos esperados en el encabezado
@@ -429,6 +447,106 @@ curl -s -H 'Authorization: Bearer demo-dashboard-empresa-a' \
   `NO_JOIN_PATH` nombrando las dos fuentes: dos bases no se cruzan con un JOIN,
   y la federación es otra pieza con otro presupuesto.
 
+## Decisiones de la fase B
+
+Se agregó **SQLite** (`node:sqlite`, sin dependencias ni flags) como segunda
+fuente. No es una fuente de producción: existe para responder una pregunta —¿el
+seam del dialecto aguanta un motor de verdad distinto?— y para que lo que un
+motor no puede prometer tenga dónde decirse. La respuesta es que **sí**: las
+mismas definiciones (`reviews`, `employees`, `departments`, con una sola línea
+distinta, `source: 'sqlite'`), el mismo catálogo, el mismo planificador y el
+mismo engine devuelven contra SQLite **exactamente las mismas filas** del caso
+obligatorio y la misma `completion_rate` (75) que contra Postgres.
+
+### Lista de hallazgos: lo que estaba pegado a Postgres
+
+Cuatro cosas que el planificador o el engine tenían escritas en dialecto
+Postgres sin que se notara, porque no había con qué comparar. Cada una es ahora
+una pregunta al dialecto, y ninguna cambió el SQL de Postgres (los dos snapshots
+del repo siguen byte por byte iguales):
+
+1. **`SET LOCAL statement_timeout` en el engine** (`src/engine.js`, en
+   `ejecutar`). El engine nombraba una sentencia que sólo existe en Postgres.
+   Ahora pide `dialecto.sentenciasDeSesion(presupuesto)` y emite lo que reciba;
+   un dialecto que no ofrece el método no recibe nada. La validación del entero
+   se fue con la sentencia, a `postgres.sentenciasDeSesion`.
+2. **`::numeric` en la fórmula de una derivada** (`src/planner.js`,
+   `resolverAgregacion`). Era el cast de Postgres escrito a mano en el
+   planificador. Ahora es `dialect.aNumerico(expresion)`: `::numeric` allá,
+   `CAST(... AS REAL)` acá. Sin esto, `completion_rate` contra SQLite daría 0 en
+   vez de 75, que es exactamente el bug que el `::numeric` evitaba.
+3. **El nombre de la tabla dentro de una CTE que se llama igual**
+   (`src/planner.js`, `ctesPorEntidad`). `WITH employees AS (SELECT ... FROM
+   employees ...)`: Postgres resuelve la tabla base —una CTE no recursiva no
+   puede referirse a sí misma—, pero **SQLite le da precedencia a la CTE** y
+   corta con `circular reference: employees`. Es el hallazgo que no se veía
+   venir: el planificador daba por sentada una regla de resolución de nombres.
+   Ahora es `dialect.tablaFisica(tabla)`: el nombre pelado en Postgres,
+   calificado con el esquema (`main.employees`) en SQLite.
+4. **El contrato del pool es asíncrono.** `DatabaseSync` es síncrona, pero el
+   engine hace `await` sobre `query` y `.catch()` sobre el `ROLLBACK`. El
+   adaptador devuelve promesas aunque no espere nada — la misma decisión que
+   `CacheStore`: la forma de la interfaz la fija el más lento, y cambiarla para
+   que quepa el adaptador habría sido justo lo que esta fase vino a evitar.
+
+Lo que **no** hubo que mover, y por qué se revisó igual: el estilo de
+placeholder `$1` (SQLite lo lee como parámetro *nombrado* `1`, así que el
+adaptador convierte el arreglo posicional en `{ 1: v, 2: v, … }` y el SQL queda
+idéntico en los dos motores), las comillas dobles de los identificadores, el
+`LIMIT` con parámetro, `NULLIF`, `COUNT(*) FILTER (WHERE …)` (SQLite lo soporta
+desde 3.30; Node 24 trae 3.53) y `BEGIN`/`COMMIT`/`ROLLBACK`. `aNumeros` del
+engine tampoco cambió: SQLite devuelve los enteros como números y `Number()`
+sobre un número no hace nada.
+
+### Lo que SQLite no puede garantizar
+
+- **El tipo de una columna** (`tiposGarantizados: false`): un tipo declarado es
+  una *afinidad*, no una restricción, y nada impide que una columna `NUMERIC`
+  tenga un texto en una fila. Por eso una incompatibilidad entre el tipo de una
+  dimensión y el físico sale como **advertencia** de registro y no como
+  `INVALID_DEFINITION`. El catálogo ya lo soportaba desde la fase A; esta fase
+  es la primera vez que ese camino se ejecuta.
+- **El presupuesto de tiempo** (`timeoutDeSentencia: false`): no hay
+  `statement_timeout` ni equivalente por sentencia, así que el engine no emite
+  ninguna sentencia de sesión y **el timeout de la clase de consumidor no se
+  hace cumplir en esta fuente**. El resto del presupuesto (límite de filas, TTL
+  de caché, rango obligatorio) sí, porque lo aplica el planificador. Un test lo
+  fija: la consulta corre dentro de `BEGIN`/`COMMIT` y no hay ni un `SET`.
+- **Parámetros booleanos**: `node:sqlite` no acepta un `true` de JavaScript como
+  valor de parámetro. Ninguna consulta de esta fase lo usa —el segmento
+  `present = true` es del módulo de asistencia, que vive en la fuente Postgres—,
+  así que el adaptador no convierte y la limitación queda anotada aquí en vez de
+  disimulada con una conversión que nadie ejercita.
+- **El seed de asistencia**: `generate_series` no existe en SQLite. La tabla
+  `attendance` está en el fixture con su esquema y **sin filas**; ninguna
+  consulta de la suite de SQLite la toca.
+
+### Origen que muere: `SOURCE_UNAVAILABLE`
+
+- `pool.connect()` estaba **fuera** del `try` de `ejecutar`: un error de
+  conexión salía sin traducir y llegaba al consumidor como 500 sin nombre. Ahora
+  pasa por `dialecto.traducirError` como cualquier otro error nativo.
+- `postgres.traducirError` reconoce `ECONNREFUSED`, `ETIMEDOUT`, `ENOTFOUND`, la
+  clase **08** de SQLSTATE (excepción de conexión), `57P01` (el servidor se está
+  apagando) y el texto del timeout de conexión de node-postgres —que no trae
+  `code`, y conocer ese texto es trabajo del dialecto y de nadie más—.
+- **503 con `Retry-After: 5`**, y es el único código que lleva cabecera:
+  reintentar la misma consulta más tarde sí puede funcionar, a diferencia del
+  `QUERY_TIMEOUT` (504). La cabecera sale de `CABECERAS_HTTP` en
+  `src/http/codigos.js`, una tabla y no lógica, como la de códigos.
+- Los pools de `src/server.js` y `src/demo.js` llevan
+  `connectionTimeoutMillis: 2000`: sin techo, una base que no responde deja la
+  petición esperando el timeout del sistema operativo.
+
+### Guardia de fuente no configurada
+
+`resolverMiembros` hacía `fuentes[fuente]?.dialecto` y seguía con `undefined`: si
+el catálogo conocía una fuente que el engine no tenía configurada, el fallo
+aparecía como `TypeError` en la primera dimensión temporal. Ahora lanza un
+`Error` —**no** un `SemanticError`: es un error de configuración del servidor, no
+del consumidor— que nombra la entidad, su fuente y las fuentes que el engine sí
+tiene.
+
 ## Arreglos de revisión de la fase 6
 
 - **Techo del cuerpo HTTP**: `cuerpoDe()` acumulaba sin límite. Ahora cuenta
@@ -542,6 +660,17 @@ curl -s -H 'Authorization: Bearer demo-dashboard-empresa-a' \
   que duerme 1 s y un socket que se destruye a los 200 ms.
 
 ## Estado
+
+Fase B terminada: SQLite es la segunda fuente y el seam del dialecto aguantó.
+Las mismas definiciones y el mismo engine responden el caso obligatorio contra
+los dos motores con las mismas filas; los cuatro pedazos de Postgres que
+quedaban fuera del dialecto (`SET LOCAL`, `::numeric`, el nombre de la tabla
+dentro de su CTE homónima y la asincronía del pool) están listados arriba con lo
+que se hizo con cada uno. Se sumaron `SOURCE_UNAVAILABLE` (503 con
+`Retry-After`) y la guardia de fuente no configurada. Verificado: 139 tests en
+verde con `DATABASE_URL` y `REDIS_URL`, 87 sin ninguna variable (los 16 de
+SQLite corren en los dos modos, en memoria), y `npm run demo` sigue respondiendo
+las tres preguntas con caché de dos niveles.
 
 Fase A terminada: el dialecto quedó como la única pieza que conoce un motor
 (sintaxis, introspección, mapa de tipos y errores nativos), cada entidad declara

@@ -308,7 +308,7 @@ queda en el log del servidor.
 | 401 | `MISSING_TENANT` (sin token o token desconocido) |
 | 400 | `FORBIDDEN_FIELD`, `UNKNOWN_MEMBER`, `NO_JOIN_PATH`, `INVALID_OPERATOR`, `UNSUPPORTED_OPERATOR`, `MULTI_ENTITY_MEASURES`, `MISSING_TIME_RANGE`, `INVALID_CONSUMER`, `UNKNOWN_QUERY`, `MISSING_PARAM`, `INVALID_JSON` |
 | 413 | `PAYLOAD_TOO_LARGE` (el cuerpo pasó los 64 KiB) |
-| 503 | `SCHEMA_DRIFT` (la base ya no calza con el catálogo) |
+| 503 | `SCHEMA_DRIFT` (la base ya no calza con el catálogo), `SOURCE_UNAVAILABLE` (la base de la fuente no responde; la respuesta lleva `Retry-After: 5`) |
 | 504 | `QUERY_TIMEOUT` |
 | 500 | cualquier otro error, sin filtrar detalles internos |
 
@@ -321,6 +321,45 @@ una tabla o una columna que ya no existe, y eso significa que el esquema cambió
 debajo de un catálogo ya registrado. No es una consulta mal escrita —el
 consumidor no puede arreglarla cambiando lo que pidió—, sino una dependencia
 rota hasta que alguien vuelva a introspectar y re-registrar las definiciones.
+
+`SOURCE_UNAVAILABLE` es el otro 503, y es el único que lleva `Retry-After`: la
+conexión a la base de la fuente ni siquiera se pudo abrir (`ECONNREFUSED`, un
+DNS que no resuelve, la clase 08 de SQLSTATE, el `57P01` con que el servidor
+avisa que se apaga, o el timeout de conexión del pool, fijado en 2 s). A
+diferencia del `QUERY_TIMEOUT`, aquí volver más tarde con la misma consulta sí
+puede funcionar, y el servicio lo dice con la cabecera en vez de dejar que el
+cliente lo adivine. Quien traduce esos errores es el dialecto, como cualquier
+otro error nativo: el engine no conoce ni un código de socket ni un SQLSTATE.
+
+## Segunda fuente: SQLite
+
+El repo trae un segundo dialecto, `src/dialect/sqlite.js`, sobre el `node:sqlite`
+que Node 24 incluye. **No está para producción**: está para probar que el seam
+del dialecto aguanta. La prueba es que las mismas definiciones (`reviews`,
+`employees`, `departments`), el mismo planificador y el mismo engine responden
+el caso obligatorio contra SQLite con **exactamente las mismas filas** que
+contra Postgres — Ingeniería 2025-01-01 con promedio 4.35 y 2 completadas,
+Ingeniería 2025-04-01 con 3.8 y 1— y `completion_rate` con los mismos 75. Lo
+único que cambia en una definición es una línea: `source: 'sqlite'`.
+
+Todo lo que hubo que mover para que eso funcionara está listado en `CLAUDE.md`
+("Decisiones de la fase B"): eran cuatro cosas que el planificador y el engine
+tenían escritas en dialecto Postgres sin saberlo.
+
+Lo que SQLite **no** puede prometer queda dicho en sus capacidades, no
+escondido: `tiposGarantizados: false` (una incompatibilidad de tipo al registrar
+es advertencia y no error, porque un tipo declarado es afinidad y no
+restricción) y `timeoutDeSentencia: false` (**no hay forma de hacer cumplir el
+presupuesto de tiempo**: SQLite no tiene `statement_timeout`, así que el engine
+no emite ninguna sentencia de sesión contra esta fuente).
+
+Sus tests no necesitan variables de entorno —la base es en memoria y se arma
+desde `test/fixtures/caso-sqlite.sql`, con las mismas 16 evaluaciones del seed—,
+así que corren siempre:
+
+```bash
+node --test test/sqlite.test.js
+```
 
 ## Telemetría
 
