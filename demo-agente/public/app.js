@@ -406,6 +406,11 @@ function tarjetaDeSalto(salto, indice) {
   const cuerpos = document.createElement('div');
   cuerpos.className = 'cuerpos';
   cuerpos.append(panel('enviado', salto.enviado), panel('recibido', salto.recibido));
+  // El dry-run con token interno trae el SQL que emitió la capa: se muestra
+  // aparte, con saltos de línea de verdad y los $n señalados con su valor.
+  if (typeof salto.recibido?.sql === 'string') {
+    cuerpos.append(panelSql(salto.recibido.sql, salto.recibido.params));
+  }
   tarjeta.append(cuerpos);
 
   return fila;
@@ -462,6 +467,42 @@ function panel(titulo, valor) {
     resumenCrudo.textContent = 'crudo';
     detalles.append(resumenCrudo, texto('pre', valor));
     caja.append(detalles);
+  }
+  return caja;
+}
+
+// SQL con palabras clave y parámetros marcados. Se arma con nodos y
+// `textContent`, nunca con HTML: el texto viene de la capa.
+const PALABRAS_SQL =
+  /\b(WITH|SELECT|FROM|WHERE|AND|OR|NOT|AS|ON|JOIN|LEFT|INNER|GROUP BY|ORDER BY|LIMIT|FILTER|COUNT|AVG|SUM|NULLIF|CAST|DISTINCT|ASC|DESC|IN|NULL|TRUE|FALSE|DATE_TRUNC|IS)\b/g;
+
+function panelSql(sql, params = []) {
+  const caja = document.createElement('div');
+  caja.className = 'cuerpo ancho';
+  caja.append(texto('span', 'SQL emitido por la capa (los $n son parámetros, nunca texto interpolado)', 'etiqueta'));
+  const pre = document.createElement('pre');
+  pre.className = 'sql';
+  const partes = sql.split(/(\$\d+)/);
+  for (const parte of partes) {
+    const parametro = /^\$(\d+)$/.exec(parte);
+    if (parametro) {
+      const nodo = texto('span', parte, 'param');
+      const valor = params[Number(parametro[1]) - 1];
+      if (valor !== undefined) nodo.title = `${parte} = ${JSON.stringify(valor)}`;
+      pre.append(nodo);
+      continue;
+    }
+    let ultimo = 0;
+    for (const m of parte.matchAll(PALABRAS_SQL)) {
+      if (m.index > ultimo) pre.append(document.createTextNode(parte.slice(ultimo, m.index)));
+      pre.append(texto('span', m[0], 'kw'));
+      ultimo = m.index + m[0].length;
+    }
+    if (ultimo < parte.length) pre.append(document.createTextNode(parte.slice(ultimo)));
+  }
+  caja.append(pre);
+  if (params.length) {
+    caja.append(texto('p', `parámetros: ${params.map((v, i) => `$${i + 1} = ${JSON.stringify(v)}`).join(' · ')}`, 'medicion'));
   }
   return caja;
 }

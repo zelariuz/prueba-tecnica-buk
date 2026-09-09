@@ -530,6 +530,25 @@ form.controles {
   min-width: 0;
 }
 
+.cuerpo.ancho {
+  grid-column: 1 / -1;
+}
+
+pre.sql {
+  white-space: pre;
+}
+
+pre.sql .kw {
+  color: var(--capa-texto);
+  font-weight: 500;
+}
+
+pre.sql .param {
+  color: var(--acento-texto);
+  font-weight: 500;
+  cursor: help;
+}
+
 pre {
   margin: 0.25rem 0 0;
   padding: 0.6rem 0.7rem;
