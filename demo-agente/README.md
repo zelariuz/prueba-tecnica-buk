@@ -17,11 +17,16 @@ Dos caminos, la misma página:
 
 ## Requisitos
 
-- La capa arriba en Docker (desde la raíz del repo: `docker compose up -d --build`).
-- Node 24 (probado en v24.18.0). Sin dependencias: `node:http`, `fetch` nativo.
-- Para el camino con agente: Claude Code logueado (probado en 2.1.266) con
-  crédito del Agent SDK. Si no está, la demo arranca igual, la casilla queda
-  apagada con el motivo y `agente=1` en la URL se ignora con una nota.
+- **La capa arriba en Docker**: desde la raíz del repo,
+  `docker compose up -d --build`. La demo no importa nada de `src/`: habla con la
+  capa solo por HTTP, igual que cualquier otro consumidor.
+- **Node 24** (probado en v24.18.0). Sin dependencias: `node:http` y `fetch`
+  nativo.
+- Para el camino con agente: **Claude Code logueado** (probado en **2.1.266** y **2.1.267**)
+  **con crédito del Agent SDK**, y el modelo **`claude-sonnet-5`** (configurable
+  con `MODELO`). Si algo de eso falla, la demo arranca igual, la casilla queda
+  apagada con el motivo a la vista y `agente=1` en la URL se ignora con una nota:
+  **el camino sin agente es el respaldo y no necesita nada de Claude Code**.
 
 ## Dos comandos
 
@@ -34,25 +39,26 @@ Si la capa no responde, el arranque muere diciendo exactamente qué levantar.
 
 ## Qué muestra
 
-Los saltos se numeran en la página según el rastro real: sin agente son dos,
-con agente son tres (o cinco si hubo corrección).
+Los saltos se numeran en la página según el rastro real: sin agente son dos
+(el 2 y el 3 de esta lista), con agente son tres, o cinco si hubo corrección.
 
-- **Al agente** — `claude -p --resume agente-buk`, solo con la casilla
+- **Salto 1 — al agente** — `claude -p --resume agente-buk`, solo con la casilla
   marcada. Enviado: el texto en lenguaje natural (el editado, si lo hay) más
   la frase fija `Filtros: desde …, hasta …[, departamento …]`. Recibido: el
   texto crudo, que debe ser solo el JSON de la consulta o
   `{"noPuedo": "motivo"}`. Debajo, el costo, los milisegundos de API, los
   tokens leídos de caché y el id de sesión.
-- **Dry-run** — `POST /analytics/query?dryRun=true` con el token `interno`:
+- **Salto 2 — dry-run** — `POST /analytics/query?dryRun=true` con el token `interno`:
   `params`, `plan` y `sql`. El SQL solo lo recibe una sesión interna; el
   agente nunca lo ve.
-- **Consulta** — `POST /analytics/query` con el token `agente`: `rows` y
+- **Salto 3 — consulta** — `POST /analytics/query` con el token `agente`: `rows` y
   `meta` (`servedFrom`, `asOf`, `queryId`, `warnings`).
-- **Corrección** (solo con agente, y solo una vez) — si la consulta se rechaza
+- **Salto 3b — corrección** (solo con agente, y solo una vez) — si la consulta se rechaza
   con 4xx, se le devuelven al agente `code`, `member` y `suggestion` y se
   repite **solo** la consulta: el dry-run ya mostró el plan y el SQL de lo que
   escribió primero. Un segundo rechazo termina el rastro; nunca hay un tercer
-  intento. Si la corrección es `noPuedo`, termina ahí.
+  intento. Si la corrección es `noPuedo`, termina ahí. Lo que sigue a la
+  corrección es otro salto 3, marcado "consulta (corregida)".
 
 Un `noPuedo` del agente deja el rastro en un solo salto y la capa no se toca.
 Un texto que no es JSON queda como salto `fallo` con lo crudo a la vista: para
@@ -71,18 +77,32 @@ un 5xx es `fallo`: ahí no hay JSON que corregir.
 ## La sesión del agente
 
 Al arrancar, la demo pide el catálogo y **asegura** la sesión: si no hay
-ninguna guardada, o si la versión del catálogo cambió, crea una nueva con
+ninguna guardada, o si el catálogo cambió, crea una nueva con
 `claude -p -n agente-buk --session-id <uuid nuevo>` y el prompt de creación
 (rol, catálogo público entero, reglas del vocabulario y contrato de salida).
-El uuid y la versión quedan en `.sesion.json` (ignorado por git); no van al
-`.env`. La consola dice si la creó o la reutilizó y por qué.
+El uuid, la versión del catálogo y su **huella** quedan en `.sesion.json`
+(ignorado por git); no van al `.env`. La consola dice si la creó o la reutilizó
+y por qué.
+
+La decisión de recrear se toma con la **huella** —sha256 del catálogo público
+entero, con las claves ordenadas— y no con `catalogo.version`: la versión de la
+capa es el hash de las definiciones más el esquema físico, y registrar una
+consulta tipo no la cambia. Como el prompt de creación lleva el catálogo entero,
+guiarse por la versión dejaría al agente hablando de un catálogo que ya no es el
+que la capa publica.
 
 `GET /agente/sesion` muestra el prompt de creación completo, el system prompt
-de la llamada, el nombre, el uuid, la versión del catálogo, el modelo, la
-versión de Claude Code y la fecha de creación. Es la página para decir "esto
-es todo lo que el agente sabe".
+de la llamada, el nombre, el uuid, la versión y la huella del catálogo, el
+modelo, la versión de Claude Code y la fecha de creación. Además explica cómo
+se lee un rechazo: un `{"noPuedo": …}` del agente sale como `estado: rechazo`,
+igual que un 4xx de la capa, y el **destino** del salto dice de quién viene —el
+del agente corta el rastro sin tocar la capa; el de la capa abre la corrección—;
+y que si el agente envuelve el JSON en un bloque de código la demo se lo tolera
+(leniencia deliberada), pero la prosa no. Es la página para decir "esto es todo
+lo que el agente sabe".
 
-Regla: nunca abrir esa sesión de forma interactiva mientras la demo corre.
+Regla: **nunca abrir esa sesión de forma interactiva mientras el mini back la
+usa**. Son el mismo uuid: dos clientes hablándole a la vez se pisan el hilo.
 
 ## Cómo se llama a Claude Code (y cuánto cuesta)
 
@@ -110,9 +130,11 @@ por llamada y costo):
 | … más `--system-prompt` | 515 tokens | 0,002 USD |
 
 Con esos flags y la sesión ya creada, un clic real de la demo costó entre
-0,0023 y 0,0044 USD, con 3.500-5.500 tokens leídos de caché y 3,2-5,9 s en el
-salto 1. La capa, en el mismo rastro, contesta en 2-19 ms: esa es la
-diferencia que la demo hace ver.
+**0,002 y 0,004 USD**, con 3.500-5.500 tokens leídos de caché y **3-6 s** en el
+salto 1. La capa, en el mismo rastro, contesta en **milisegundos** (2-19 ms):
+esa es la diferencia que la demo hace ver. El QA del 09-09 (`docs/qa.md`, 14
+corridas) volvió a dar lo mismo: 3,2-6,2 s y 0,0025-0,0056 USD por llamada al
+agente, 2-17 ms por llamada a la capa.
 
 ## Las 7 preguntas preparadas
 
@@ -126,7 +148,7 @@ consultas tipo del catálogo y la trampa:
 | Asistencia por departamento y mes | Otra entidad, otra dimensión temporal |
 | Empleados que completaron por trimestre | La medida trae puesto su segmento |
 | Conteo de evaluaciones por estado | La clase `agente` exige rango: la demo se lo agrega |
-| Headcount por departamento | **Solo responde con un token de otra clase**: `employees` no tiene dimensión temporal ni camino de joins hacia una, así que no hay rango posible y la consulta termina en `MISSING_TIME_RANGE`. El dry-run interno sí pasa |
+| Headcount por departamento | **No es ejecutable por la clase `agente`**: `employees` no publica dimensión temporal ni tiene camino de joins hacia una, así que no hay `timeDimensions` posible y la consulta termina en `MISSING_TIME_RANGE`. El dry-run interno sí pasa —el token interno no tiene rango obligatorio—, y por eso el rastro muestra el plan y el SQL de algo que la consulta real después rechaza. Con agente se ve entero: JSON correcto → rechazo → corrección → `noPuedo` ("la entidad employees no publica una dimensión temporal") |
 | Sueldo promedio por departamento | La trampa: `employees.salary_avg` no existe → `UNKNOWN_MEMBER` con sugerencia |
 
 ## Tests
@@ -140,7 +162,28 @@ por los dos seams de comportamiento, con dobles inyectados:
 
 - `ejecutar(peticion, { agente, capa, reloj })` → el rastro de saltos.
 - `asegurarSesion({ claude, catalogo, estado })` → crear, conservar o recrear
-  la sesión, y `promptDeCreacion(catalogo)` como función pura.
+  la sesión, y `promptDeCreacion(catalogo)` y `huellaDelCatalogo(catalogo)` como
+  funciones puras.
 
 El HTML, el `spawn` de `claude`, el adaptador `fetch` y el arranque no tienen
 tests: son efectos, y se verifican mirando la página.
+
+Lo que sí se verificó a mano, contra la capa real y Claude Code real, está en
+**[`docs/qa.md`](docs/qa.md)**: las 7 preguntas por los dos caminos, con las
+filas, el reintento, la caché, los tiempos y el costo.
+
+## Los archivos
+
+```
+index.js            arranque: configuración, catálogo, sesión y escucha
+preguntas.json      las 7 preguntas preparadas (datos, no código)
+src/ejecutar.js     el seam: petición → rastro de saltos
+src/sesion.js       el seam: crear/conservar/recrear la sesión, prompt y huella
+src/protocolo.js    las palabras que se cruzan con el agente: prompt del clic,
+                    prompt de corrección y lectura del JSON que devuelve
+src/preguntas.js    busca la preparada y sustituye :desde, :hasta, :departamento
+src/agente.js       efectos de Claude Code: spawn, flags, .sesion.json, versión
+src/capa.js         efectos de la capa: fetch, token por nombre, milisegundos
+src/servidor.js     URL → petición, rastro → HTML
+src/render.js       la página y /agente/sesion
+```

@@ -116,8 +116,10 @@ flowchart LR
   servidor sin JavaScript (o mínimo). Escucha en :3100 (configurable).
 - **Configuración por `.env`**: URL de la capa, token de clase `agente`
   (`demo-agente-empresa-a` en el compose), token interno
-  (`demo-interno-empresa-a`), nombre de la sesión (`agente-buk`), UUID fijo de
-  la sesión, modelo (`claude-sonnet-5`), tope de tiempo del agente, puerto.
+  (`demo-interno-empresa-a`), nombre de la sesión (`agente-buk`), modelo
+  (`claude-sonnet-5`), tope de tiempo del agente, puerto. El UUID de la sesión
+  **no va en el `.env`**: es un uuid aleatorio persistido en `.sesion.json` junto
+  a la versión y la huella del catálogo con el que se creó la sesión.
   `.env.example` en el repo; `.env` ignorado.
 - **Preguntas preparadas** en un archivo JSON propio de la demo: nombre, texto
   en lenguaje natural con marcadores para los filtros, JSON preparado con

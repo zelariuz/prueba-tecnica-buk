@@ -667,6 +667,24 @@ El seed vive en 2025, así que "los últimos tres meses" de la tercera pregunta
 son los últimos tres meses **de los datos** (junio a agosto de 2025), no los del
 calendario de hoy.
 
+## Demo agente
+
+`demo-agente/` es una página aparte que muestra **lo que viaja** entre un
+consumidor y la capa: el JSON de la consulta, el plan y el SQL del dry-run
+interno, y las filas de la consulta real con el token de clase `agente`, salto
+por salto y con el nombre del token en cada uno. Tiene dos caminos: la pregunta
+preparada que va directo a la capa, y el mismo recorrido con el JSON escrito por
+una sesión de Claude Code que **solo conoce el catálogo público**.
+
+Habla con la capa solo por HTTP, no importa nada de `src/` y tiene sus propios
+tests (`cd demo-agente && npm test`, sin Docker ni Claude Code). Con la capa
+arriba se levanta con `cd demo-agente && npm start` y vive en
+<http://localhost:3100/>.
+
+Cómo levantarla, qué muestra cada salto y cuánto cuesta cada llamada al agente:
+[`demo-agente/README.md`](demo-agente/README.md). El QA de las 7 preguntas por
+los dos caminos: [`demo-agente/docs/qa.md`](demo-agente/docs/qa.md).
+
 ## Autoría y uso de IA
 
 Autor: **Bastián Hermosilla N.** Construido con Claude Code (Claude Fable 5.1)

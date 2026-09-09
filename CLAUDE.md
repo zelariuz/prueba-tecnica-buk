@@ -124,7 +124,27 @@ docs/
 docker-compose.yml         db (Postgres 16, host 5433), redis (host 6380) y api
                            (host 3000, espera a que db y redis estén sanos)
 Dockerfile                 imagen del servicio api (node:24-alpine, USER node)
+demo-agente/               demo web del rastro de llamadas: paquete aparte, con su
+                           package.json, su README y sus tests. NO importa nada de
+                           `src/`; habla con la capa solo por HTTP (:3000). Dos
+                           caminos: pregunta preparada directa, o el mismo camino
+                           con el JSON escrito por una sesión de Claude Code que
+                           sólo conoce el catálogo público.
+  index.js                 arranque: catálogo, sesión y escucha en :3100
+  src/ejecutar.js          seam 1: petición → rastro de saltos
+  src/sesion.js            seam 2: crear/conservar/recrear la sesión, prompt de
+                           creación y huella del catálogo
+  src/protocolo.js         las palabras del agente: prompt del clic, prompt de
+                           corrección y lectura del JSON que devuelve
+  docs/qa.md               QA del 09-09: las 7 preguntas × 2 caminos, de verdad
 ```
+
+**Comandos de la demo** (con la capa arriba):
+`cp demo-agente/.env.example demo-agente/.env` y
+`cd demo-agente && npm start` → <http://localhost:3100/>.
+**Sus tests corren aparte**: `cd demo-agente && npm test` (sin Postgres, sin
+Docker, sin Claude Code y sin variables). El `npm test` de la raíz **no** los
+corre: sólo mira `test/`.
 
 ## Comandos
 
@@ -790,6 +810,40 @@ cómo va todo, el evento dice qué acaba de pasar.
   varias sentencias de un mismo `-c` en una transacción y `ALTER SYSTEM` no
   corre dentro de una—.
 
+## Demo agente (09-09)
+
+`demo-agente/`, fases 1 a 3 cerradas. PRD `prds/prd-demo-agente.md`, plan
+`plans/plan-demo-agente.md`, QA `demo-agente/docs/qa.md`.
+
+- **Sesión nombrada de Claude Code**, no una llamada suelta: se crea una vez con
+  `claude -p -n agente-buk --session-id <uuid>` y el prompt de creación (rol,
+  catálogo público entero, reglas del vocabulario, contrato de salida), y cada
+  clic la retoma con `--resume`. Así el catálogo se manda una vez y no por clic.
+  El uuid no es configuración: se genera al arrancar y vive en `.sesion.json`.
+- **Flags que hacen barata cada llamada**: `--tools ""` (sin herramientas, no
+  explora el disco), `--setting-sources ""` (ignora settings del usuario y del
+  repo) y `--system-prompt` con dos líneas que reemplazan el andamiaje de Claude
+  Code. Medido: 62.037 → 9.201 → **515 tokens** de entrada por llamada; un clic
+  real cuesta 0,002-0,004 USD y tarda 3-6 s, contra los milisegundos de la capa.
+- **Huella del catálogo, no versión**: la sesión se recrea cuando cambia el
+  sha256 canónico del catálogo público **entero**, guardado en `.sesion.json`
+  junto a `version`. La versión de la capa es el hash de las definiciones más el
+  esquema físico y **no cubre las consultas tipo** (decisión de la fase 4), así
+  que guiarse por ella dejaría al agente hablando de un catálogo viejo.
+- **Consultas tipo con `query` en la vista pública** (ADR 0008): `describe(ctx)`
+  publica la plantilla declarativa tal cual se registró, con sus marcadores
+  `:nombre` sin sustituir, y el prompt manda copiarla cuando la pregunta
+  coincide. Sin eso el agente copiaba la forma pero no el `segments` de la
+  consulta tipo del caso, y la pregunta 1 daba 3,4 en 2025-04-01 y filas de
+  Ventas de más. Con eso da 4,35/2 y 3,8/1, igual que el seed. No cambia la
+  versión del catálogo ni los snapshots de SQL.
+- **Estados del rastro**: `ok`, `rechazo`, `fallo`. Un `{"noPuedo": …}` del
+  agente sale como `rechazo` igual que un 4xx de la capa —el `destino` del salto
+  dice de quién viene—; un 5xx es `fallo`, porque ahí no hay JSON que corregir.
+  Un JSON envuelto en un bloque de código se tolera a propósito; la prosa no.
+- **Regla de operación**: nunca abrir esa sesión de forma interactiva mientras
+  el mini back la usa. Es el mismo uuid.
+
 ## Estado
 
 Identidad de la fuente en la llave de caché (09-09, discusión 26 P12-P16): la
@@ -808,6 +862,11 @@ aislamiento entre bases en `cache.test.js`, la forma de la llave en
 en verde** con `DATABASE_URL` y `REDIS_URL` (contra Docker, el rol `capa` sí
 puede ejecutar `pg_control_system()`: origen `motor`), 114 sin nada (1 se
 salta). Snapshots de SQL sin cambios.
+
+Al 09-09, con el test del `query` de las consultas tipo en la vista pública: la
+raíz corre **180 tests en verde** con `DATABASE_URL` y `REDIS_URL`, y **115 sin
+nada** (1 se salta). `demo-agente` corre sus **39** aparte. Snapshots de SQL sin
+cambios.
 
 Log por consulta terminado (08-09): el engine emite un evento por `run` y por
 `plan` por la costura `observar`, y el servicio `api` lo escribe como una línea
