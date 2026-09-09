@@ -112,8 +112,11 @@ function casillaDelAgente({ peticion, agenteDisponible, agenteMotivo }) {
   if (agenteDisponible) {
     return `<label>
       <input type="checkbox" name="agente" value="1"${marcada} style="width:auto"> Usar agente
-      — el JSON lo escribe la sesión de Claude Code (<a href="/agente/sesion">ver su prompt</a>).
-    </label>`;
+    </label>
+    <p class="nota">Marcado: el texto de arriba se le manda a una sesión de Claude Code, que escribe el
+      JSON de la consulta leyendo el catálogo (<a href="/agente/sesion">lo que sabe esa sesión</a>: un
+      prompt fijo que arma este mini back al crearla, con el catálogo pegado).
+      Sin marcar: se manda el JSON preparado de esta pregunta, sin ningún modelo de por medio.</p>`;
   }
   return `<label class="apagado">
       <input type="checkbox" name="agente" value="1" disabled style="width:auto"> Usar agente
