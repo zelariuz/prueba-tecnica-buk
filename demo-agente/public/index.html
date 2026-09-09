@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Rastro del agente</title>
+    <!-- Las fuentes entran como hoja de impresión que se promueve al cargar: si
+         no hay internet, la página se pinta igual con las de sistema. Nada
+         depende de que lleguen. -->
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap"
+      media="print"
+      onload="this.media='all'"
+    />
+    <link rel="stylesheet" href="/estilo.css" />
+  </head>
+  <body>
+    <header class="cabecera">
+      <h1>Rastro del agente</h1>
+      <p class="datos" id="datos-cabecera">cargando…</p>
+      <button type="button" class="tema" id="tema">luna</button>
+    </header>
+
+    <main class="pagina">
+      <div class="lateral">
+        <section class="panel">
+          <form class="controles" id="controles">
+            <label class="campo">
+              <span class="etiqueta">Pregunta preparada</span>
+              <select id="pregunta" name="pregunta"></select>
+              <span class="nota">
+                Cada pregunta trae su JSON fijo, escrito a mano en <code>preguntas.json</code>. Sin
+                "usar agente", ese JSON es el "enviado" de los saltos a la capa y los filtros solo
+                sustituyen desde, hasta y departamento: no cambian la forma de la consulta. Con
+                "usar agente", el JSON lo escribe él a partir del texto y puede diferir del
+                preparado.
+              </span>
+            </label>
+
+            <label class="campo">
+              <span class="etiqueta">Texto en lenguaje natural</span>
+              <textarea id="texto" name="texto"></textarea>
+              <span class="nota">Es lo que se le manda al agente. Editable.</span>
+            </label>
+
+            <div class="fila">
+              <label class="campo">
+                <span class="etiqueta">Desde</span>
+                <input type="date" id="desde" name="desde" value="2025-06-01" required />
+              </label>
+              <label class="campo">
+                <span class="etiqueta">Hasta</span>
+                <input type="date" id="hasta" name="hasta" value="2025-08-31" required />
+              </label>
+            </div>
+
+            <label class="campo">
+              <span class="etiqueta">Departamento</span>
+              <input type="text" id="departamento" name="departamento" value="" placeholder="vacío = todos" />
+            </label>
+
+            <div>
+              <label class="casilla" id="casilla-agente">
+                <input type="checkbox" id="agente" name="agente" value="1" />
+                <span>Usar agente</span>
+              </label>
+              <p class="nota" id="nota-agente">
+                Marcado: el texto de arriba se le manda a una sesión de Claude Code, que escribe el
+                JSON de la consulta leyendo el catálogo. Sin marcar: se manda el JSON preparado de
+                esta pregunta, sin ningún modelo de por medio.
+                <button type="button" class="enlace" id="ver-prompt">lo que sabe esa sesión</button>
+              </p>
+            </div>
+
+            <button type="submit" class="ejecutar" id="ejecutar">Ejecutar</button>
+          </form>
+        </section>
+
+        <section class="panel">
+          <h2 class="etiqueta">Sesión del agente</h2>
+          <dl class="tabla-sesion" id="tabla-sesion"></dl>
+          <p class="nota">
+            <button type="button" class="enlace" id="ver-prompt-2">ver el prompt completo</button>
+          </p>
+        </section>
+      </div>
+
+      <section>
+        <div id="aviso"></div>
+        <div id="resumen"></div>
+        <div class="rastro" id="rastro">
+          <p class="vacio">
+            Elige una pregunta, ajusta los filtros y pulsa Ejecutar. Cada salto aparece acá apenas
+            termina, con lo que se envió y lo que se recibió.
+          </p>
+        </div>
+      </section>
+    </main>
+
+    <dialog id="modal-sesion">
+      <div class="modal-cabecera">
+        <h2>La sesión del agente</h2>
+        <p class="datos" id="modal-datos"></p>
+        <button type="button" id="cerrar-modal">Cerrar</button>
+      </div>
+      <div class="modal-cuerpo">
+        <h3>System prompt de la llamada</h3>
+        <pre id="modal-sistema"></pre>
+        <h3>Prompt de creación de la sesión</h3>
+        <p class="nota">
+          Esto es todo lo que el agente sabe: rol, catálogo público tal cual lo publica la capa,
+          reglas del vocabulario y contrato de salida.
+        </p>
+        <pre id="modal-creacion"></pre>
+      </div>
+    </dialog>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
