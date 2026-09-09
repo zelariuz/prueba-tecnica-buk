@@ -145,10 +145,23 @@ export function bloqueSalto(salto, indice) {
 </div>`;
 }
 
-// Lo que el agente manda y recibe es texto plano; lo de la capa es JSON. Los
-// dos se muestran tal cual viajaron.
+// Lo de la capa es JSON y se indenta. Lo del agente es texto plano tal cual
+// viajó; si ese texto resulta ser JSON (el caso normal), se muestra indentado
+// y debajo, en una línea, el crudo, para que se siga viendo lo que salió del
+// proceso.
 function comoTexto(valor) {
-  return typeof valor === 'string' ? valor : JSON.stringify(valor, null, 2);
+  if (typeof valor !== 'string') return JSON.stringify(valor, null, 2);
+  const indentado = jsonIndentado(valor);
+  return indentado ? `${indentado}\n\ncrudo: ${valor}` : valor;
+}
+
+function jsonIndentado(texto) {
+  try {
+    const limpio = texto.trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '');
+    return JSON.stringify(JSON.parse(limpio), null, 2);
+  } catch {
+    return null;
+  }
 }
 
 function medicion(meta) {
