@@ -1,7 +1,7 @@
 // El segundo seam: asegurar que existe la sesión nombrada de Claude Code con
 // la que se habla por clic. Decide una sola cosa —crear, conservar o recrear—
 // y deja el resto (spawn, disco) a los adaptadores inyectados.
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 export const NOMBRE_POR_DEFECTO = 'agente-buk';
 
@@ -22,24 +22,60 @@ export async function asegurarSesion({
   nuevoUuid = randomUUID,
   ahora = () => new Date().toISOString(),
 }) {
+  const huella = huellaDelCatalogo(catalogo);
   const guardada = estado.leer();
-  if (guardada && guardada.version === catalogo.version) {
-    return { id: guardada.uuid, creada: false, motivo: 'la sesión guardada sigue vigente' };
+  if (guardada && guardada.huella === huella) {
+    return {
+      id: guardada.uuid,
+      creada: false,
+      motivo: 'la sesión guardada sigue vigente',
+      version: catalogo.version,
+      huella,
+    };
   }
 
   // La sesión lleva puesto el catálogo con el que se creó: si la capa publica
-  // otra versión, la vieja se abandona (no se borra) y nace una con uuid nuevo.
+  // cualquier otra cosa, la vieja se abandona (no se borra) y nace una con uuid
+  // nuevo.
   const uuid = nuevoUuid();
   await claude(
     ['-p', '-n', nombre, '--session-id', uuid, '--model', modelo],
     promptDeCreacion(catalogo),
   );
-  estado.guardar({ uuid, version: catalogo.version, creadaEn: ahora() });
+  estado.guardar({ uuid, version: catalogo.version, huella, creadaEn: ahora() });
   return {
     id: uuid,
     creada: true,
-    motivo: guardada ? 'catalogo cambió' : 'no había sesión guardada',
+    motivo: guardada ? 'el catálogo cambió' : 'no había sesión guardada',
+    version: catalogo.version,
+    huella,
   };
+}
+
+// Qué catálogo aprendió esta sesión: sha256 de la serialización canónica
+// —claves ordenadas— del catálogo público entero, truncado a 16 caracteres.
+//
+// NO se compara `catalogo.version`: la versión de la capa es el hash de las
+// definiciones más el esquema físico, y registrar una consulta tipo no la
+// cambia (decisión de la capa, no descuido). Como el prompt de creación lleva
+// el catálogo entero —consultas tipo incluidas—, guiarse por la versión dejaría
+// al agente hablando de un catálogo que ya no es el que la capa publica.
+export function huellaDelCatalogo(catalogo) {
+  return createHash('sha256').update(canonico(catalogo)).digest('hex').slice(0, 16);
+}
+
+// Serialización canónica: mismas claves, mismo texto, sin importar en qué orden
+// las serializó la capa. `undefined` no existe en el JSON que llega por HTTP;
+// si apareciera, se escribe como null antes que romper la huella.
+function canonico(valor) {
+  if (Array.isArray(valor)) return `[${valor.map(canonico).join(',')}]`;
+  if (valor !== null && typeof valor === 'object') {
+    const pares = Object.keys(valor)
+      .sort()
+      .map((clave) => `${JSON.stringify(clave)}:${canonico(valor[clave])}`);
+    return `{${pares.join(',')}}`;
+  }
+  return JSON.stringify(valor) ?? 'null';
 }
 
 // Lo único que el agente sabe. Es una función pura del catálogo: la página
@@ -69,7 +105,13 @@ REGLAS DEL VOCABULARIO QUE EL CATÁLOGO NO DICE:
 - "segments" es una lista de nombres de segmento del catálogo.
 - "order" es opcional: un objeto { "<miembro>": "asc" | "desc" }.
 - "limit" es opcional: un entero.
-- Las consultas de "queries" del catálogo son ejemplos ya resueltos: cópiales la forma.
+- Cada entrada de "queries" del catálogo trae su "query": la consulta declarativa tal
+  cual la registró el dueño del módulo, con un marcador ":nombre" en el lugar de cada
+  parámetro (por ejemplo "dateRange": ":dateRange"). Son ejemplos ya resueltos.
+- Si la pregunta coincide con una consulta tipo, COPIA su "query" entero —"segments",
+  "order" y "limit" incluidos— y reemplaza cada marcador ":nombre" por el valor que
+  te pidan. No la rearmes de memoria desde la descripción: lo que no se ve en la
+  descripción (un segmento, un orden) es justo lo que decide el resultado.
 - No inventes miembros. Si el catálogo no lo publica, no existe.
 
 CONTRATO DE SALIDA:

@@ -123,6 +123,12 @@ async function saltoAlAgente(enviado, { agente, reloj }, destino = 'agente') {
   };
   const escrito = fallo ? null : comoJson(texto);
   if (!escrito) return { salto: { ...completo, estado: 'fallo' }, consulta: null };
+  // `noPuedo` sale como `estado: rechazo`, igual que un 4xx de la capa, pero no
+  // es lo mismo y la página lo deja ver: el `destino` del salto dice quién
+  // rechazó. El del agente es "no sé traducir esto con este catálogo" y corta el
+  // rastro sin tocar la capa; el de la capa es "este JSON está mal" y abre la
+  // corrección. Un solo estado para los dos porque los dos son lo mismo para
+  // quien mira: alguien dijo que no, y nadie se cayó.
   if (escrito.noPuedo) return { salto: { ...completo, estado: 'rechazo' }, consulta: null };
   return { salto: { ...completo, estado: 'ok' }, consulta: escrito };
 }
@@ -148,7 +154,11 @@ Devuelve el JSON corregido, o {"noPuedo": "motivo breve"} si el catálogo no alc
 }
 
 // El contrato dice "solo JSON", pero un modelo puede envolverlo en un bloque de
-// código igual: se le tolera la envoltura, no la prosa.
+// código igual. La leniencia es deliberada: se le tolera la envoltura ``` y no
+// la prosa. Un modelo que agrega markdown sigue habiendo entendido la pregunta,
+// y castigar eso convertiría un detalle de formato en un salto fallido; un
+// modelo que explica en vez de responder no entendió el contrato, y ese sí
+// tiene que verse roto en la página.
 function comoJson(texto) {
   const limpio = String(texto ?? '')
     .trim()

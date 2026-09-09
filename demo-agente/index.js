@@ -46,7 +46,7 @@ if (claudeCode) {
     console.log(
       `Sesión ${nombre} ${asegurada.creada ? 'creada' : 'reutilizada'} (${asegurada.motivo}) — ${
         asegurada.id
-      }, catálogo ${catalogo.version}.`,
+      }, catálogo versión ${asegurada.version}, huella ${asegurada.huella}.`,
     );
   } catch (error) {
     agenteMotivo = `no se pudo asegurar la sesión ${nombre} (${error.message})`;

@@ -1,13 +1,14 @@
 // Tests del segundo seam: `asegurarSesion`. Entra por ahí con `claude` y la
 // persistencia inyectados como dobles —nada de `spawn`, nada de disco— y
 // comprueba la única decisión que hay: crear, conservar o recrear la sesión
-// según la versión del catálogo con la que se creó.
+// según la huella del catálogo con el que se creó.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { asegurarSesion, promptDeCreacion } from '../src/sesion.js';
+import { asegurarSesion, huellaDelCatalogo, promptDeCreacion } from '../src/sesion.js';
 
 const catalogo = { version: 'v1', granularities: ['month'], entities: [], queries: [] };
+const huella = huellaDelCatalogo(catalogo);
 
 // Doble de `claude`: registra los argumentos y el prompt que le llegó por
 // stdin, y contesta como el CLI cuando la creación sale bien.
@@ -45,26 +46,68 @@ test('sin estado previo crea la sesión, la guarda y avisa que la creó', async 
   assert.equal(claude.llamadas.length, 1);
 });
 
-test('con un estado de la misma versión del catálogo conserva la sesión y no llama a claude', async () => {
+test('con un estado de la misma huella del catálogo conserva la sesión y no llama a claude', async () => {
   const claude = claudeFalso();
-  const estado = estadoFalso({ uuid: 'guardado-1', version: 'v1', creadaEn: '2026-09-09' });
+  const estado = estadoFalso({ uuid: 'guardado-1', version: 'v1', huella, creadaEn: '2026-09-09' });
 
   const sesion = await asegurarSesion({ claude, catalogo, estado });
 
-  assert.deepEqual(sesion, { id: 'guardado-1', creada: false, motivo: 'la sesión guardada sigue vigente' });
+  assert.deepEqual(sesion, {
+    id: 'guardado-1',
+    creada: false,
+    motivo: 'la sesión guardada sigue vigente',
+    version: 'v1',
+    huella,
+  });
   assert.equal(claude.llamadas.length, 0);
 });
 
-test('si la versión del catálogo cambió recrea la sesión con un uuid nuevo y lo dice', async () => {
+test('si el catálogo cambió recrea la sesión con un uuid nuevo y lo dice', async () => {
   const claude = claudeFalso();
-  const estado = estadoFalso({ uuid: 'guardado-1', version: 'v0', creadaEn: '2026-09-09' });
+  const estado = estadoFalso({ uuid: 'guardado-1', version: 'v0', huella: 'otra', creadaEn: '2026-09-09' });
 
   const sesion = await asegurarSesion({ claude, catalogo, estado, nuevoUuid: () => 'uuid-2' });
 
   assert.equal(sesion.id, 'uuid-2');
   assert.equal(sesion.creada, true);
-  assert.equal(sesion.motivo, 'catalogo cambió');
+  assert.equal(sesion.motivo, 'el catálogo cambió');
   assert.equal(estado.guardado.version, 'v1');
+  assert.equal(estado.guardado.huella, huella);
+});
+
+// La versión del catálogo NO cubre las consultas tipo: registrar una no la
+// cambia (decisión de la capa, CLAUDE.md fase 4). Si la sesión se guiara por
+// ella, un catálogo con otras consultas tipo seguiría hablándole a un agente
+// que aprendió las viejas. Por eso la huella es del catálogo entero.
+test('misma versión pero otra consulta tipo: la huella cambia y la sesión se recrea', async () => {
+  const claude = claudeFalso();
+  const estado = estadoFalso({ uuid: 'guardado-1', version: 'v1', huella, creadaEn: '2026-09-09' });
+  const conOtraConsulta = {
+    ...catalogo,
+    queries: [{ name: 'nueva', params: [], query: { measures: ['reviews.count'] } }],
+  };
+
+  const sesion = await asegurarSesion({
+    claude,
+    catalogo: conOtraConsulta,
+    estado,
+    nuevoUuid: () => 'uuid-3',
+  });
+
+  assert.equal(sesion.id, 'uuid-3');
+  assert.equal(sesion.motivo, 'el catálogo cambió');
+  assert.equal(estado.guardado.version, 'v1');
+  assert.notEqual(estado.guardado.huella, huella);
+});
+
+// La huella no depende del orden en que la capa serializó sus claves: dos
+// catálogos con el mismo contenido son el mismo catálogo.
+test('la huella es del contenido del catálogo, no del orden de sus claves', () => {
+  assert.equal(
+    huellaDelCatalogo({ version: 'v1', granularities: ['month'], entities: [], queries: [] }),
+    huellaDelCatalogo({ queries: [], entities: [], granularities: ['month'], version: 'v1' }),
+  );
+  assert.notEqual(huellaDelCatalogo(catalogo), huellaDelCatalogo({ ...catalogo, entities: [{}] }));
 });
 
 // El prompt de creación es lo único que el agente sabe: si algo no está acá,
@@ -74,7 +117,20 @@ const catalogoReal = {
   version: '219f834021759c19',
   granularities: ['day', 'month'],
   entities: [{ name: 'reviews', measures: [{ name: 'reviews.avg_score' }] }],
-  queries: [{ name: 'evaluaciones', query: { measures: ['reviews.avg_score'] } }],
+  queries: [
+    {
+      name: 'evaluaciones',
+      description: 'Score promedio por trimestre.',
+      params: ['dateRange'],
+      query: {
+        measures: ['reviews.avg_score'],
+        segments: ['reviews.completed'],
+        timeDimensions: [
+          { dimension: 'reviews.period', granularity: 'quarter', dateRange: ':dateRange' },
+        ],
+      },
+    },
+  ],
 };
 
 test('el prompt de creación lleva el catálogo entero, con su versión, tal cual lo publica la capa', () => {
@@ -104,4 +160,18 @@ test('el prompt de creación prohíbe el SQL y los miembros inventados', () => {
 
   assert.match(prompt, /nunca escribes SQL/i);
   assert.match(prompt, /no inventes/i);
+});
+
+// El hallazgo de la fase 2: sin ver el `query` de la consulta tipo, el agente
+// copiaba la forma pero no el `segments`, y la pregunta del caso daba otro
+// número. Ahora el catálogo lo trae y el prompt manda copiarlo.
+test('el prompt de creación manda copiar el query de la consulta tipo que coincide, marcadores incluidos', () => {
+  const prompt = promptDeCreacion(catalogoReal);
+
+  assert.match(prompt, /"query"/);
+  assert.match(prompt, /copia/i);
+  assert.match(prompt, /segments/);
+  assert.match(prompt, /:nombre/);
+  // Y el ejemplo viaja entero en el catálogo, con su marcador sin sustituir.
+  assert.ok(prompt.includes('":dateRange"'));
 });

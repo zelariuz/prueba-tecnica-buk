@@ -152,10 +152,27 @@ export function renderSesion({ sesion, catalogo, modelo, claudeCode, agenteMotiv
   <tr><th>nombre</th><td>${escapar(sesion.nombre)}</td></tr>
   <tr><th>uuid</th><td>${escapar(sesion.id)}</td></tr>
   <tr><th>versión del catálogo</th><td>${escapar(catalogo?.version ?? '')}</td></tr>
+  <tr><th>huella del catálogo</th><td>${escapar(sesion.huella ?? '')}</td></tr>
   <tr><th>creada</th><td>${escapar(sesion.creadaEn ?? '')} (${escapar(sesion.motivo ?? '')})</td></tr>
   <tr><th>modelo</th><td>${escapar(modelo ?? '')}</td></tr>
   <tr><th>Claude Code</th><td>${escapar(claudeCode ?? '')}</td></tr>
 </table>
+<p class="nota">La sesión se recrea cuando cambia la <strong>huella</strong>, no la
+versión: la versión de la capa es el hash de las definiciones más el esquema
+físico y no cubre las consultas tipo, así que un catálogo con otras consultas
+tipo tiene la misma versión y otra huella. La huella es sha256 del catálogo
+público entero con las claves ordenadas.</p>
+<h2>Cómo se lee un rechazo</h2>
+<p class="nota">Un <code>{"noPuedo": "…"}</code> del agente sale en el rastro como
+<code>estado: rechazo</code>, igual que un 4xx de la capa. No son lo mismo y el
+<strong>destino</strong> del salto dice de quién viene: el del agente es "no sé
+traducir esto con este catálogo" y corta el rastro sin tocar la capa; el de la
+capa es "este JSON está mal" y abre el salto de corrección. Un 5xx no es rechazo
+sino <code>fallo</code>: ahí no hay nada que corregir.</p>
+<p class="nota">El contrato pide JSON pelado, pero si el agente lo envuelve en un
+bloque <code>```</code> la demo se lo tolera —leniencia deliberada— y sigue. Lo
+que no se tolera es la prosa: un texto que no parsea queda como salto
+<code>fallo</code> con lo crudo a la vista.</p>
 <h2>System prompt de la llamada</h2>
 <pre>${escapar(PROMPT_DE_SISTEMA)}</pre>
 <h2>Prompt de creación de la sesión</h2>
