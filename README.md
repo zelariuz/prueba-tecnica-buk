@@ -33,6 +33,22 @@ Parquet/S3.
 - Node 24 o superior.
 - Docker con Compose.
 
+## Probarlo en dos comandos (sólo Docker)
+
+No hace falta Node ni variables de entorno para ver el caso funcionando:
+
+```bash
+git clone https://github.com/zelariuz/prueba-tecnica-buk.git && cd prueba-tecnica-buk
+docker compose up -d --build              # Postgres 16 con esquema y seed, Redis y el servicio api en :3000
+docker compose exec api node src/demo.js  # las tres preguntas del caso, caché L1 y L2, telemetría al final
+```
+
+Con eso el servicio ya responde por HTTP; los `curl` de "El servicio HTTP" más
+abajo funcionan tal cual con los tokens de demo. La suite de 179 tests sí
+necesita Node 24 en el host (siguiente sección). Si revisas el repo con Claude
+Code, abre la carpeta y pide "corre la demo y explícame el caso obligatorio":
+`CLAUDE.md` trae el mapa del repo, los comandos y qué mirar.
+
 ## Cómo correr
 
 ```bash
