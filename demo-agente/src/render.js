@@ -1,15 +1,30 @@
 // La página: HTML armado en el servidor, sin JavaScript. Dibuja el formulario
 // y el rastro que devolvió el seam. No decide nada —si algo se ve raro, el
 // rastro venía raro— y por eso no tiene tests: se verifica mirándola.
+//
+// Sale en piezas porque el servidor la escribe por trozos: primero
+// `inicioDePagina` (que ya es una página usable: formulario incluido), después
+// un `bloqueSalto` por salto a medida que terminan, y al final `finDePagina`.
+// `render` las junta para los caminos que no esperan a nadie.
 import { preguntas } from './preguntas.js';
 import { promptDeCreacion, PROMPT_DE_SISTEMA } from './sesion.js';
 
-export function render({
-  rastro,
+export function render({ rastro, error, ...pagina }) {
+  return (
+    inicioDePagina(pagina) +
+    (error ? bloqueError(error) : '') +
+    (rastro ? rastro.map((salto, indice) => bloqueSalto(salto, indice)).join('\n') : '') +
+    '\n'
+  );
+}
+
+// Lo que se puede escribir antes de que empiece a pasar algo: la cabecera, el
+// estilo y el formulario. El navegador ya tiene una página con la que
+// interactuar mientras el salto al agente sigue en curso.
+export function inicioDePagina({
   peticion,
   pregunta,
   texto,
-  error,
   nota,
   agenteDisponible = false,
   agenteMotivo = null,
@@ -27,16 +42,33 @@ export function render({
   .salto { border-left: 4px solid #999; padding-left: .8rem; margin: 1.5rem 0; }
   .ok { border-color: #2a7; } .rechazo { border-color: #d81; } .fallo { border-color: #c33; }
   pre { background: #f4f4f4; padding: .6rem; overflow-x: auto; white-space: pre-wrap; }
-  .nota, .apagado { color: #666; }
+  .nota, .apagado, .cargando { color: #666; }
   .error { border-left: 4px solid #c33; padding-left: .8rem; }
 </style>
 <h1>Demo agente — rastro de llamadas a la capa semántica</h1>
 ${formulario({ peticion, pregunta, texto, agenteDisponible, agenteMotivo })}
 ${nota ? `<p class="nota">${escapar(nota)} — se ejecutó el camino sin agente.</p>` : ''}
-${error ? bloqueError(error) : ''}
 ${pregunta ? cabeceraDeLaPregunta({ pregunta, texto }) : ''}
-${rastro ? rastro.map((salto, indice) => bloqueSalto(salto, indice)).join('\n') : ''}
 `;
+}
+
+// El "Cargando…" y cómo se apaga, sin una línea de JavaScript: cada aviso es un
+// párrafo con su id, y cuando su salto termina se escribe un `<style>` que lo
+// oculta. Una regla de estilo que llega después vale para lo que ya se pintó
+// —el navegador re-aplica el estilo al documento entero—, así que el aviso
+// desaparece solo. El `finDePagina` apaga de una vez el que haya quedado
+// colgando: el rastro puede terminar en cualquier salto.
+export function avisoDeCarga(numero, quien = null) {
+  const de = quien ? ` (${quien})` : '';
+  return `<p class="cargando" id="cargando-${numero}">Cargando… salto ${numero}${de} en curso…</p>\n`;
+}
+
+export function ocultarAviso(numero) {
+  return `<style>#cargando-${numero}{display:none}</style>\n`;
+}
+
+export function finDePagina() {
+  return '<style>.cargando{display:none}</style>\n';
 }
 
 function formulario({ peticion, pregunta, texto, agenteDisponible, agenteMotivo }) {
@@ -95,7 +127,7 @@ function cabeceraDeLaPregunta({ pregunta, texto }) {
 ${pregunta.nota ? `<p class="nota">Nota: ${escapar(pregunta.nota)}</p>` : ''}`;
 }
 
-function bloqueSalto(salto, indice) {
+export function bloqueSalto(salto, indice) {
   // El token se nombra, nunca se muestra su valor: el valor no sale del `.env`.
   const token = salto.token
     ? `token <code>${escapar(salto.token)}</code>`
@@ -181,7 +213,7 @@ lo publica la capa, reglas del vocabulario y contrato de salida.</p>
 <pre>${escapar(promptDeCreacion(catalogo ?? {}))}</pre>`;
 }
 
-function bloqueError(error) {
+export function bloqueError(error) {
   return `<div class="error"><p><strong>No se pudo ejecutar:</strong> ${escapar(error)}</p></div>`;
 }
 

@@ -5,7 +5,16 @@ import { createServer } from 'node:http';
 
 import { ejecutar } from './ejecutar.js';
 import { preguntaPorId, preguntas, prepararTexto } from './preguntas.js';
-import { render, renderSesion } from './render.js';
+import {
+  avisoDeCarga,
+  bloqueError,
+  bloqueSalto,
+  finDePagina,
+  inicioDePagina,
+  ocultarAviso,
+  render,
+  renderSesion,
+} from './render.js';
 
 export function crearServidor({
   capa,
@@ -59,12 +68,33 @@ export function crearServidor({
       return;
     }
 
+    // La página sale por trozos y no de una vez: el salto al agente tarda
+    // 3-6 s, y esperarlo dejaba el navegador en blanco todo ese rato. Se
+    // escribe la cabecera con el formulario, después cada salto en cuanto
+    // `ejecutar` avisa que quedó listo, y al final el cierre. Como no hay
+    // `Content-Length`, `node:http` responde con `Transfer-Encoding: chunked`
+    // y el navegador va pintando lo que llega — sin una línea de JavaScript.
+    respuesta.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    respuesta.write(inicioDePagina(pagina));
+    respuesta.write(avisoDeCarga(1, conAgente ? 'agente' : 'capa'));
     try {
-      const rastro = await ejecutar({ ...peticion, usarAgente: conAgente }, { agente, capa, reloj });
-      responder(respuesta, 200, render({ ...pagina, rastro }));
+      await ejecutar(
+        { ...peticion, usarAgente: conAgente },
+        {
+          agente,
+          capa,
+          reloj,
+          alSalto: (salto, indice) =>
+            respuesta.write(
+              ocultarAviso(indice + 1) + bloqueSalto(salto, indice) + '\n' + avisoDeCarga(indice + 2),
+            ),
+        },
+      );
     } catch (error) {
-      responder(respuesta, 200, render({ ...pagina, error: error.message }));
+      // La pregunta que no existe: el error va donde habría ido el rastro.
+      respuesta.write(bloqueError(error.message));
     }
+    respuesta.end(finDePagina());
   });
 }
 
