@@ -204,6 +204,16 @@ export const postgres = {
     return [`SET LOCAL statement_timeout = ${presupuesto.timeoutMs}`];
   },
 
+  // Identidad del clúster: el `system_identifier` que Postgres crea en `initdb`
+  // y que las réplicas físicas heredan byte a byte. Es la identidad de los
+  // DATOS, no de la máquina: dos réplicas del mismo primario dan el mismo, y una
+  // base restaurada en otro ambiente da otro. Si el rol no puede ejecutar
+  // `pg_control_system()`, el engine cae a la huella de la conexión.
+  async identificador(pool) {
+    const { rows } = await pool.query('SELECT system_identifier::text AS id FROM pg_control_system()');
+    return `postgres:${rows[0].id}`;
+  },
+
   // --- 2. Introspección -----------------------------------------------------
   async introspect(pool, esquema = ESQUEMA) {
     const [columnas, indices] = await Promise.all([

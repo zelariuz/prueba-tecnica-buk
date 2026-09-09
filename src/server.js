@@ -42,7 +42,7 @@ for (const aviso of advertencias) {
 // Redis es la que hace que dos instancias compartan lo que ya se calculó, y es
 // opcional: sin `REDIS_URL` el servicio arranca igual, sólo con L1.
 const telemetria = crearTelemetria();
-const caches = crearCacheDelServicio({ redisUrl: REDIS_URL, telemetria });
+const caches = crearCacheDelServicio({ redisUrl: REDIS_URL, prefijo: process.env.CACHE_PREFIX, telemetria });
 if (!REDIS_URL) {
   console.warn('[caché] sin REDIS_URL: sólo L1 en memoria, cada instancia con la suya.');
 }

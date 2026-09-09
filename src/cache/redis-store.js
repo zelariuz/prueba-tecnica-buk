@@ -5,8 +5,9 @@
 import { createClient } from 'redis';
 
 // Namespace de las llaves. La llave completa queda
-// `capa:{versión del catálogo}:{empresa}:{queryId}`: el prefijo separa nuestras
-// llaves de las de cualquier otro que comparta el Redis, y el resto lo arma el
+// `capa:{versión del catálogo}:{empresa}:{fuente}.{huella}:{queryId}`: el prefijo
+// separa nuestras llaves de las de cualquier otro que comparta el Redis —y a un
+// ambiente de otro, vía `CACHE_PREFIX`—, y el resto lo arma el
 // engine —es el único que sabe de qué empresa y de qué contrato de datos es una
 // consulta—. Que la empresa esté **en el texto** de la llave, y no sólo dentro
 // del hash, es lo que permite auditar con un `SCAN` que ninguna entrada quedó

@@ -9,6 +9,7 @@ import pg from 'pg';
 
 import { createCatalog } from '../src/catalog.js';
 import { createEngine } from '../src/engine.js';
+import { postgres } from '../src/dialect/postgres.js';
 import { crearMemoryStore } from '../src/cache/store.js';
 import { crearTelemetria } from '../src/telemetry.js';
 import { departments } from '../src/definitions/departments.js';
@@ -66,6 +67,39 @@ describe('caché L1 en memoria', { ...conBase, timeout: 15_000 }, () => {
     assert.equal(segunda.meta.servedFrom, 'cache-l1');
     assert.deepEqual(porEstado(segunda.rows), ESTADOS_EMPRESA_A);
     assert.deepEqual(segunda.rows, primera.rows);
+  });
+
+  // El queryId identifica la consulta y no la base: dos despliegues con una
+  // fuente que se llama igual (`postgres`) sobre bases distintas producen el
+  // mismo queryId. La llave lleva la fuente con su huella para que, si comparten
+  // un store, no compartan entradas.
+  it('dos engines sobre bases distintas con el mismo catálogo no comparten entradas', async () => {
+    const compartido = crearMemoryStore();
+    const { engine: sobreLaBase } = armar({ cache: compartido });
+    const catalog = createCatalog();
+    for (const definicion of [reviews, employees, departments]) catalog.register(definicion);
+    const sobreOtraBase = createEngine({
+      catalog,
+      cache: compartido,
+      fuentes: { postgres: { dialecto: postgres, pool: poolQueRespondeVacio({ host: 'otra-base', port: 5432, database: 'capa' }) } },
+    });
+
+    const primera = await sobreLaBase.run(CONTEO_POR_ESTADO, DASHBOARD_A);
+    const enLaOtra = await sobreOtraBase.run(CONTEO_POR_ESTADO, DASHBOARD_A);
+    const repetida = await sobreLaBase.run(CONTEO_POR_ESTADO, DASHBOARD_A);
+
+    assert.equal(primera.meta.servedFrom, 'live');
+    assert.equal(enLaOtra.meta.servedFrom, 'live', 'la otra base no puede recibir la entrada de esta');
+    assert.deepEqual(enLaOtra.rows, [], 'lo que devolvió es lo suyo, no lo de la base real');
+    assert.equal(repetida.meta.servedFrom, 'cache-l1');
+    assert.equal(primera.meta.queryId, enLaOtra.meta.queryId, 'mismo queryId: es la llave la que separa');
+  });
+
+  it('contra la base real la identidad de la fuente sale del motor', async () => {
+    const { engine } = armar({ cache: crearMemoryStore() });
+    const identidad = await engine.identidadDeFuente('postgres');
+    assert.equal(identidad.origen, 'motor');
+    assert.match(identidad.huella, /^[0-9a-f]{8}$/);
   });
 
   it('el hit no consulta la base y la telemetría lo cuenta con su hit ratio', async () => {
@@ -302,5 +336,48 @@ describe('el dry-run nunca toca la caché', () => {
 
     assert.match(sql, /^WITH/);
     assert.equal(plan.entity, 'reviews');
+  });
+});
+
+// Un pool que acepta cualquier consulta y no devuelve filas: sirve para simular
+// "otra base" sin levantar una, con la conexión que se le indique.
+function poolQueRespondeVacio(options) {
+  const cliente = { async query() { return { rows: [] }; }, release() {} };
+  return { options, async connect() { return cliente; }, async query() { return { rows: [] }; } };
+}
+
+describe('identidad de la fuente para la llave de caché', () => {
+  function engineCon(fuentes) {
+    return createEngine({ catalog: createCatalog(), fuentes });
+  }
+
+  it('el id configurado por quien despliega manda, y sale como huella de 8 hex', async () => {
+    const engine = engineCon({ postgres: { dialecto: postgres, pool: {}, id: 'rds-rrhh-prod' } });
+    const identidad = await engine.identidadDeFuente('postgres');
+    assert.equal(identidad.origen, 'configurado');
+    assert.match(identidad.huella, /^[0-9a-f]{8}$/);
+  });
+
+  it('sin id ni motor que responda, la huella nace de la conexión y dos hosts dan dos huellas', async () => {
+    const a = engineCon({ postgres: { dialecto: postgres, pool: { options: { host: 'a', port: 5432, database: 'capa' } } } });
+    const b = engineCon({ postgres: { dialecto: postgres, pool: { options: { host: 'b', port: 5432, database: 'capa' } } } });
+    const [deA, deB] = await Promise.all([a.identidadDeFuente('postgres'), b.identidadDeFuente('postgres')]);
+    assert.equal(deA.origen, 'conexion');
+    assert.notEqual(deA.huella, deB.huella);
+  });
+
+  it('la conexión por cadena de conexión no lleva usuario ni contraseña a la huella', async () => {
+    const conClave = engineCon({ postgres: { dialecto: postgres, pool: { options: { connectionString: 'postgres://u:secreto@host:5433/capa' } } } });
+    const otraClave = engineCon({ postgres: { dialecto: postgres, pool: { options: { connectionString: 'postgres://otro:otra@host:5433/capa' } } } });
+    const [una, otra] = await Promise.all([conClave.identidadDeFuente('postgres'), otraClave.identidadDeFuente('postgres')]);
+    assert.equal(una.huella, otra.huella, 'misma base, misma huella, sin importar la credencial');
+  });
+
+  it('sin nada que la distinga, la huella nace del nombre y se resuelve una sola vez', async () => {
+    const engine = engineCon({ postgres: { dialecto: postgres, pool: {} } });
+    const primera = await engine.identidadDeFuente('postgres');
+    const segunda = await engine.identidadDeFuente('postgres');
+    assert.equal(primera.origen, 'nombre');
+    assert.equal(primera.huella, segunda.huella);
   });
 });

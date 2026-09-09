@@ -128,6 +128,12 @@ describe('caché L2 en Redis', { ...conRedis, timeout: 20_000 }, () => {
     const sinEmpresa = llaves.filter((llave, i) => !['1', '2'].includes(empresas[i]));
     assert.deepEqual(sinEmpresa, [], 'no puede existir una llave sin la empresa');
     assert.ok(empresas.includes('1') && empresas.includes('2'), 'están las dos empresas');
+    // `prefijo : versión : empresa : fuente.huella : queryId`
+    const fuentes = llaves.map((llave) => llave.split(':')[3]);
+    assert.ok(
+      fuentes.every((fuente) => /^postgres\.[0-9a-f]{8}$/.test(fuente)),
+      `toda llave lleva la fuente con su huella: ${fuentes.join(', ')}`,
+    );
   });
 
   // El caso que la historia 35 quiere garantizar, con Redis de verdad: una L2

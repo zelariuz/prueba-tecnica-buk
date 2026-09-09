@@ -10,7 +10,7 @@ import { crearMemoryStore, MAXIMO_DE_ENTRADAS } from './store.js';
 import { crearRedisStore } from './redis-store.js';
 import { crearTieredStore } from './tiered.js';
 
-export function crearCacheDelServicio({ redisUrl, telemetria }) {
+export function crearCacheDelServicio({ redisUrl, telemetria, prefijo }) {
   const l1 = crearMemoryStore();
   if (!redisUrl) {
     return {
@@ -24,11 +24,13 @@ export function crearCacheDelServicio({ redisUrl, telemetria }) {
   // caché no conoce la telemetría —recibe un callback— para que se pueda armar
   // sin ella.
   const alFallar = ({ nivel }) => telemetria?.registrarErrorDeCache({ nivel });
-  const l2 = crearRedisStore({ url: redisUrl, alFallar });
+  // El prefijo separa ambientes que comparten un Redis (`CACHE_PREFIX`, por
+  // defecto `capa`): dos despliegues con la misma fuente no deben verse.
+  const l2 = crearRedisStore({ url: redisUrl, alFallar, ...(prefijo ? { prefijo } : {}) });
 
   return {
     cache: crearTieredStore({ l1, l2, alFallar }),
-    descripcion: `L1 en memoria (hasta ${MAXIMO_DE_ENTRADAS} entradas) + L2 en Redis (${redisUrl})`,
+    descripcion: `L1 en memoria (hasta ${MAXIMO_DE_ENTRADAS} entradas) + L2 en Redis (${redisUrl}, prefijo ${prefijo || 'capa'})`,
     cerrar: () => l2.cerrar(),
   };
 }

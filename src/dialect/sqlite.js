@@ -133,6 +133,13 @@ export const sqlite = {
   // le ofrece. Inventar aquí un `SET` que el motor ignora sería peor que no
   // tenerlo: parecería que el timeout se aplica.
 
+  // Identidad de la base: SQLite no tiene identificador propio; lo más cercano
+  // es el archivo. Una base en memoria no tiene ninguno, y el engine cae al
+  // nombre de la fuente.
+  async identificador(pool) {
+    return pool.archivo && pool.archivo !== ':memory:' ? `sqlite:${pool.archivo}` : undefined;
+  },
+
   // --- 2. Introspección -----------------------------------------------------
   async introspect(pool, esquema = ESQUEMA) {
     const { rows: tablas } = await pool.query(TABLAS);

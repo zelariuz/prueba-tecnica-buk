@@ -8,6 +8,8 @@
 import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import { createCatalog } from '../src/catalog.js';
 import { createEngine } from '../src/engine.js';
@@ -447,5 +449,26 @@ describe('count_distinct contra la segunda fuente', () => {
         'reviews.completed_employees': 0,
       },
     ]);
+  });
+});
+
+describe('identidad de la fuente SQLite', () => {
+  it('una base en archivo se identifica por su archivo; una en memoria, por el nombre', async () => {
+    const archivo = join(tmpdir(), `capa-identidad-${process.pid}.sqlite`);
+    const enArchivo = crearPoolSqlite({ archivo });
+    const enMemoria = crearPoolSqlite();
+    try {
+      const engine = createEngine({
+        catalog: createCatalog({ fuentes: { archivo: { dialecto: sqlite }, memoria: { dialecto: sqlite } } }),
+        fuentes: { archivo: { dialecto: sqlite, pool: enArchivo }, memoria: { dialecto: sqlite, pool: enMemoria } },
+      });
+      const [deArchivo, deMemoria] = await Promise.all([engine.identidadDeFuente('archivo'), engine.identidadDeFuente('memoria')]);
+      assert.equal(deArchivo.origen, 'motor');
+      assert.equal(deMemoria.origen, 'nombre');
+      assert.notEqual(deArchivo.huella, deMemoria.huella);
+    } finally {
+      enArchivo.cerrar();
+      enMemoria.cerrar();
+    }
   });
 });

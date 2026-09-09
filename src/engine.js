@@ -41,6 +41,8 @@ export function createEngine({
   observarSql = false,
 }) {
   const fuentesDelEngine = fuentes ?? { [dialect.name]: { dialecto: dialect, pool } };
+  // Huella por fuente, resuelta una vez (ver `identidadDeFuente`).
+  const huellas = new Map();
   const planificar = crearPlanificador({ catalog, fuentes: fuentesDelEngine, presupuestos });
 
   // Dry-run: el plan sin tocar la base (historia 25). También se observa: el
@@ -170,12 +172,16 @@ export function createEngine({
     registro.queryId = queryId;
 
     // La llave con la que la caché guarda es el `queryId` con su procedencia
-    // escrita al lado: `{versión del catálogo}:{empresa}:{queryId}`. El hash ya
-    // lleva las dos cosas adentro —el aislamiento no depende del texto—, pero en
-    // un Redis compartido entre instancias lo que no se ve no se puede auditar:
-    // con la empresa en el texto, comprobar que ninguna entrada quedó sin dueño
-    // es un `SCAN`, y no un acto de fe en el hash.
-    const llave = `${catalogVersion}:${ctx.companyId}:${queryId}`;
+    // escrita al lado: `{versión del catálogo}:{empresa}:{fuente}.{huella}:{queryId}`.
+    // El hash ya lleva empresa y versión adentro —el aislamiento no depende del
+    // texto—, pero en un Redis compartido entre instancias lo que no se ve no se
+    // puede auditar: con la empresa en el texto, comprobar que ninguna entrada
+    // quedó sin dueño es un `SCAN`, y no un acto de fe en el hash. La fuente va
+    // con su huella porque el queryId identifica la consulta y no la base: dos
+    // despliegues con una fuente que se llama igual sobre bases distintas
+    // producirían el mismo queryId, y sin la huella compartirían entradas.
+    const { huella } = await identidadDeFuente(fuente);
+    const llave = `${catalogVersion}:${ctx.companyId}:${fuente}.${huella}:${queryId}`;
 
     // Puerta · Buscar en caché. Va después de planificar, no antes: una
     // consulta inválida se rechaza igual, esté o no en la caché.
@@ -288,7 +294,19 @@ export function createEngine({
     }
   }
 
-  return { plan, run, telemetry: telemetria.snapshot };
+  // Identidad de una fuente para la llave de caché: quién es la base detrás
+  // del nombre. Prioridad: (1) el `id` que configuró quien despliega en el mapa
+  // `fuentes`; (2) lo que el motor sabe de sí mismo (`dialecto.identificador`:
+  // en Postgres el `system_identifier`, que las réplicas físicas comparten);
+  // (3) la conexión del pool (host, puerto y base); (4) el nombre. Sale como
+  // huella de 8 hex: distingue bases sin escribir un host en Redis. Se resuelve
+  // una vez por fuente y se recuerda; un paso que falla cede al siguiente.
+  function identidadDeFuente(nombre) {
+    if (!huellas.has(nombre)) huellas.set(nombre, resolverIdentidad(nombre, fuentesDelEngine[nombre]));
+    return huellas.get(nombre);
+  }
+
+  return { plan, run, telemetry: telemetria.snapshot, identidadDeFuente };
 }
 
 // El evento que ve el observador: qué se pidió, qué se planificó, de dónde
@@ -392,4 +410,46 @@ function identificarConsulta({ sql, params, companyId, catalogVersion }) {
     .update(canonica({ sql, params, companyId, catalogVersion }))
     .digest('hex')
     .slice(0, 16);
+}
+
+// Resuelve la identidad de una fuente probando cada origen en orden; el primero
+// que devuelve algo gana. Los fallos (un rol sin permiso para
+// `pg_control_system()`, un pool falso sin `options`) no son errores: son
+// "este origen no sabe", y se pasa al siguiente.
+async function resolverIdentidad(nombre, { id, dialecto, pool } = {}) {
+  const origenes = [
+    ['configurado', async () => id],
+    ['motor', async () => dialecto?.identificador?.(pool)],
+    ['conexion', async () => conexionDe(pool)],
+    ['nombre', async () => nombre],
+  ];
+  for (const [origen, obtener] of origenes) {
+    let texto;
+    try {
+      texto = await obtener();
+    } catch {
+      texto = undefined;
+    }
+    if (texto) return { fuente: nombre, origen, huella: huellaDe(texto) };
+  }
+  throw new Error(`La fuente "${nombre}" no tiene identidad posible`);
+}
+
+// Host, puerto y base de un pool de node-postgres, sin usuario ni contraseña:
+// lo que identifica a qué base se conecta, y nada más.
+function conexionDe(pool) {
+  const opciones = pool?.options;
+  if (!opciones) return undefined;
+  if (opciones.connectionString) {
+    const url = new URL(opciones.connectionString);
+    return `${url.hostname}:${url.port || '5432'}${url.pathname}`;
+  }
+  if (opciones.host || opciones.database) {
+    return `${opciones.host ?? 'localhost'}:${opciones.port ?? 5432}/${opciones.database ?? ''}`;
+  }
+  return undefined;
+}
+
+function huellaDe(texto) {
+  return createHash('sha256').update(String(texto)).digest('hex').slice(0, 8);
 }

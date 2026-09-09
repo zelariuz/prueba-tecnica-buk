@@ -59,7 +59,7 @@ try {
   const snapshot = await postgres.introspect(pool);
   const catalog = createCatalog();
   const advertencias = registrarModulos(catalog, snapshot);
-  const estaInstancia = crearCacheDelServicio({ redisUrl: REDIS_URL, telemetria });
+  const estaInstancia = crearCacheDelServicio({ redisUrl: REDIS_URL, prefijo: process.env.CACHE_PREFIX, telemetria });
   caches.push(estaInstancia);
   const engine = createEngine({ catalog, pool, telemetria, cache: estaInstancia.cache });
 
@@ -110,7 +110,7 @@ try {
     console.log('esta consulta volvería a la base. Levanta Redis y define REDIS_URL para verlo');
     console.log('(ver .env.example). Se salta esta parte.');
   } else {
-    const otraInstancia = crearCacheDelServicio({ redisUrl: REDIS_URL, telemetria });
+    const otraInstancia = crearCacheDelServicio({ redisUrl: REDIS_URL, prefijo: process.env.CACHE_PREFIX, telemetria });
     caches.push(otraInstancia);
     const otroEngine = createEngine({ catalog, pool, telemetria, cache: otraInstancia.cache });
     const consulta = catalog.query(PREGUNTAS[0].consulta, PREGUNTAS[0].params);

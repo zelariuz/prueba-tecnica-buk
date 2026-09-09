@@ -44,6 +44,7 @@ export function crearPoolSqlite({ archivo = ':memory:' } = {}) {
   const cliente = { query, release() {} };
 
   return {
+    archivo,
     query,
     async connect() {
       return cliente;
