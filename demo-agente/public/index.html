@@ -68,8 +68,16 @@
               <label class="campo" id="campo-texto" hidden>
                 <span class="etiqueta">Texto en lenguaje natural</span>
                 <textarea id="texto" name="texto"></textarea>
-                <span class="nota">Es lo que se le manda al agente, con los filtros de arriba. Editable.</span>
+                <span class="nota">Es lo que se le manda al agente, con los filtros de arriba.</span>
               </label>
+              <label class="casilla" id="casilla-enganche" hidden>
+                <input type="checkbox" id="enganche" checked />
+                <span>Enganchado a la pregunta preparada</span>
+              </label>
+              <p class="nota" id="nota-enganche" hidden>
+                Marcado: al cambiar la pregunta, las fechas o el departamento, el texto se
+                reescribe con el preparado. Desmarcado: el texto es tuyo y nadie lo toca.
+              </p>
             </div>
 
             <button type="submit" class="ejecutar" id="ejecutar">Ejecutar</button>

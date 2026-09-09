@@ -80,7 +80,19 @@ export function crearServidor({
       return;
     }
     if (url.pathname === '/api/rastro') {
-      await responderRastro(url, respuesta, { capa, agente, agenteMotivo, reloj });
+      // POST con cuerpo JSON: el texto editable puede ser largo y no cabe en
+      // una URL con garantías. GET con query sigue aceptado (links viejos).
+      let peticion;
+      try {
+        peticion =
+          peticionHttp.method === 'POST'
+            ? peticionDeCuerpo(await leerCuerpo(peticionHttp))
+            : peticionDeUrl(url);
+      } catch (error) {
+        responderJson(respuesta, 400, { error: error.message });
+        return;
+      }
+      await responderRastro(peticion, respuesta, { capa, agente, agenteMotivo, reloj });
       return;
     }
 
@@ -92,8 +104,7 @@ export function crearServidor({
 // saltos esperar y qué texto se mandó de verdad), una línea por salto en el
 // momento en que `ejecutar` avisa, y `fin` con el total. La pregunta que no
 // existe sale como `error` y cierra: es lo único que `ejecutar` lanza.
-async function responderRastro(url, respuesta, { capa, agente, agenteMotivo, reloj }) {
-  const peticion = peticionDe(url);
+async function responderRastro(peticion, respuesta, { capa, agente, agenteMotivo, reloj }) {
   const pregunta = preguntaPorId(peticion.pregunta);
   const texto = pregunta ? peticion.texto || prepararTexto(pregunta.texto, peticion) : peticion.texto;
 
@@ -172,7 +183,38 @@ function decodificar(pathname) {
   }
 }
 
-function peticionDe(url) {
+const LIMITE_DE_CUERPO = 16 * 1024;
+
+async function leerCuerpo(peticionHttp) {
+  let total = 0;
+  const trozos = [];
+  for await (const trozo of peticionHttp) {
+    total += trozo.length;
+    if (total > LIMITE_DE_CUERPO) throw new Error(`cuerpo de más de ${LIMITE_DE_CUERPO} bytes`);
+    trozos.push(trozo);
+  }
+  return Buffer.concat(trozos).toString('utf8');
+}
+
+function peticionDeCuerpo(texto) {
+  let datos;
+  try {
+    datos = texto ? JSON.parse(texto) : {};
+  } catch {
+    throw new Error('el cuerpo no es JSON');
+  }
+  const campo = (nombre) => (typeof datos[nombre] === 'string' ? datos[nombre] : '');
+  return {
+    pregunta: campo('pregunta') || preguntas[0].id,
+    texto: campo('texto'),
+    desde: campo('desde'),
+    hasta: campo('hasta'),
+    departamento: campo('departamento'),
+    usarAgente: datos.usarAgente === true || datos.agente === '1' || datos.agente === 1,
+  };
+}
+
+function peticionDeUrl(url) {
   const parametro = (nombre) => url.searchParams.get(nombre) ?? '';
   return {
     pregunta: parametro('pregunta') || preguntas[0].id,

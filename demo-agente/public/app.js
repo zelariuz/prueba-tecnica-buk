@@ -153,18 +153,29 @@ function sincronizarRango() {
 }
 
 // El textarea muestra el texto ya sustituido de la pregunta elegida mientras
-// nadie lo edite a mano: es lo que se le va a mandar al agente.
-let textoEditado = false;
-$('texto').addEventListener('input', () => (textoEditado = true));
+// esté "enganchado" (casilla explícita, marcada por defecto). Editar el texto a
+// mano lo desengancha; volver a marcar la casilla lo reescribe.
+function enganchado() {
+  return $('enganche').checked;
+}
+$('texto').addEventListener('input', () => {
+  if (enganchado()) $('enganche').checked = false;
+});
+$('enganche').addEventListener('change', () => {
+  if (enganchado()) sincronizarTexto();
+});
 
 // El texto solo existe para el agente: aparece debajo de la casilla al marcarla.
 function mostrarTextoSegunAgente() {
-  $('campo-texto').hidden = !$('agente').checked;
+  const oculto = !$('agente').checked;
+  $('campo-texto').hidden = oculto;
+  $('casilla-enganche').hidden = oculto;
+  $('nota-enganche').hidden = oculto;
 }
 $('agente').addEventListener('change', mostrarTextoSegunAgente);
 
 function sincronizarTexto() {
-  if (textoEditado) return;
+  if (!enganchado()) return;
   const pregunta = preguntaElegida();
   if (pregunta) $('texto').value = prepararTexto(pregunta.texto, leerFormulario());
 }
@@ -276,8 +287,9 @@ function aplicarURL(parametros) {
   const texto = parametros.get('texto') ?? '';
   if (texto) {
     $('texto').value = texto;
-    textoEditado = true;
+    $('enganche').checked = false;
   } else {
+    $('enganche').checked = true;
     sincronizarTexto();
   }
 }
@@ -289,7 +301,7 @@ function parametrosDe(peticion) {
     hasta: peticion.hasta,
   });
   if (peticion.departamento) parametros.set('departamento', peticion.departamento);
-  if (textoEditado && peticion.texto) parametros.set('texto', peticion.texto);
+  if (!enganchado() && peticion.texto) parametros.set('texto', peticion.texto);
   if (peticion.usarAgente) parametros.set('agente', '1');
   return parametros;
 }
@@ -312,7 +324,14 @@ async function ejecutar() {
   rastro.replaceChildren();
 
   try {
-    const respuesta = await fetch(`/api/rastro?${parametros}`, { signal: controlador.signal });
+    // POST: el texto va en el cuerpo, sin el tope de largo de una URL. El link
+    // de la página (arriba) sigue llevando el estado del formulario.
+    const respuesta = await fetch('/api/rastro', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(peticion),
+      signal: controlador.signal,
+    });
     if (!respuesta.ok) throw new Error(`el mini back respondió ${respuesta.status}`);
     await leerLineas(respuesta.body, (linea) => manejarLinea(JSON.parse(linea)));
   } catch (error) {
