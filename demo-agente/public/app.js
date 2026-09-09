@@ -479,7 +479,16 @@ const PALABRAS_SQL =
 function panelSql(sql, params = []) {
   const caja = document.createElement('div');
   caja.className = 'cuerpo ancho';
-  caja.append(texto('span', 'SQL emitido por la capa (los $n son parámetros, nunca texto interpolado)', 'etiqueta'));
+  caja.append(texto('span', 'SQL emitido por la capa', 'etiqueta'));
+  caja.append(
+    texto(
+      'p',
+      'Se ve solo aquí: este dry-run usa el token interno para mostrarlo en la demo. ' +
+        'El consumidor agente nunca lo recibe: su dry-run devuelve solo params y plan, y la ' +
+        'consulta real devuelve filas. Los $n son parámetros, nunca texto interpolado.',
+      'nota',
+    ),
+  );
   const pre = document.createElement('pre');
   pre.className = 'sql';
   const partes = sql.split(/(\$\d+)/);
