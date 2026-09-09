@@ -1,6 +1,11 @@
 // Arranque de la demo: lee la configuración, comprueba que la capa esté arriba
-// —si no, muere diciendo qué levantar— y escucha.
+// —si no, muere diciendo qué levantar—, asegura la sesión del agente y escucha.
+// Si Claude Code no está, la demo arranca igual sin él.
+import { fileURLToPath } from 'node:url';
+
+import { crearAgente, crearClaude, crearEstadoEnDisco, versionDeClaudeCode } from './src/agente.js';
 import { crearCapa, pedirCatalogo } from './src/capa.js';
+import { asegurarSesion, NOMBRE_POR_DEFECTO } from './src/sesion.js';
 import { crearServidor } from './src/servidor.js';
 
 const url = process.env.CAPA_URL ?? 'http://localhost:3000';
@@ -9,6 +14,10 @@ const tokens = {
   interno: process.env.TOKEN_INTERNO ?? 'demo-interno-empresa-a',
 };
 const puerto = Number(process.env.PUERTO ?? 3100);
+const nombre = process.env.SESION_NOMBRE ?? NOMBRE_POR_DEFECTO;
+const modelo = process.env.MODELO ?? 'claude-sonnet-5';
+const timeoutMs = Number(process.env.AGENTE_TIMEOUT_MS ?? 60000);
+const rutaSesion = fileURLToPath(new URL('.sesion.json', import.meta.url));
 
 let catalogo;
 try {
@@ -21,7 +30,40 @@ try {
   process.exit(1);
 }
 
-crearServidor({ capa: crearCapa({ url, tokens }) }).listen(puerto, () => {
+// El agente es opcional: si algo de Claude Code falla, el motivo viaja a la
+// página y la casilla "usar agente" queda apagada.
+const { version: claudeCode, motivo } = await versionDeClaudeCode();
+let agente = null;
+let sesion = null;
+let agenteMotivo = motivo;
+if (claudeCode) {
+  try {
+    const claude = crearClaude({ timeoutMs });
+    const estado = crearEstadoEnDisco(rutaSesion);
+    const asegurada = await asegurarSesion({ claude, catalogo, estado, nombre, modelo });
+    sesion = { ...asegurada, nombre, creadaEn: estado.leer()?.creadaEn };
+    agente = crearAgente({ claude, uuid: sesion.id, nombre, modelo });
+    console.log(
+      `Sesión ${nombre} ${asegurada.creada ? 'creada' : 'reutilizada'} (${asegurada.motivo}) — ${
+        asegurada.id
+      }, catálogo ${catalogo.version}.`,
+    );
+  } catch (error) {
+    agenteMotivo = `no se pudo asegurar la sesión ${nombre} (${error.message})`;
+    console.error(`Aviso: ${agenteMotivo}. La demo sigue por el camino sin agente.`);
+  }
+}
+if (!agente) console.error(`Aviso: sin agente — ${agenteMotivo}.`);
+
+crearServidor({
+  capa: crearCapa({ url, tokens }),
+  agente,
+  agenteMotivo,
+  sesion,
+  catalogo,
+  claudeCode,
+  modelo,
+}).listen(puerto, () => {
   console.log(
     `Demo agente en http://localhost:${puerto}/ — capa en ${url}, catálogo versión ${catalogo.version}.`,
   );

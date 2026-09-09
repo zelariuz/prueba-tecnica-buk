@@ -5,13 +5,31 @@ import { createServer } from 'node:http';
 
 import { ejecutar } from './ejecutar.js';
 import { preguntaPorId, preguntas, prepararTexto } from './preguntas.js';
-import { render } from './render.js';
+import { render, renderSesion } from './render.js';
 
-export function crearServidor({ capa, reloj = () => performance.now() }) {
+export function crearServidor({
+  capa,
+  agente = null,
+  agenteMotivo = null,
+  sesion = null,
+  catalogo = null,
+  claudeCode = null,
+  modelo = null,
+  reloj = () => performance.now(),
+}) {
   return createServer(async (peticionHttp, respuesta) => {
     const url = new URL(peticionHttp.url, 'http://demo.local');
+
+    if (url.pathname === '/agente/sesion') {
+      responder(
+        respuesta,
+        200,
+        renderSesion({ sesion, catalogo, modelo, claudeCode, agenteMotivo }),
+      );
+      return;
+    }
     if (url.pathname !== '/') {
-      responder(respuesta, 404, 'No hay nada acá. La demo vive en /.');
+      responder(respuesta, 404, 'No hay nada acá. La demo vive en / y en /agente/sesion.');
       return;
     }
 
@@ -19,18 +37,31 @@ export function crearServidor({ capa, reloj = () => performance.now() }) {
     const pregunta = preguntaPorId(peticion.pregunta);
     const texto = pregunta ? peticion.texto || prepararTexto(pregunta.texto, peticion) : '';
 
+    // Sin agente disponible, `agente=1` en la URL no rompe la demo: se ignora
+    // y la página dice por qué. El camino sin agente siempre está.
+    const nota = peticion.agente && !agente ? `Claude Code no está disponible: ${agenteMotivo}` : null;
+    const conAgente = peticion.agente && Boolean(agente);
+    const pagina = {
+      peticion,
+      pregunta,
+      texto,
+      nota,
+      agenteDisponible: Boolean(agente),
+      agenteMotivo,
+    };
+
     // Sin `pregunta` en la URL, la página es solo el formulario con la primera
     // preparada elegida: entrar a la demo no dispara una consulta sola.
     if (!url.searchParams.has('pregunta')) {
-      responder(respuesta, 200, render({ peticion, pregunta: preguntas[0] }));
+      responder(respuesta, 200, render({ ...pagina, pregunta: preguntas[0] }));
       return;
     }
 
     try {
-      const rastro = await ejecutar(peticion, { agente: null, capa, reloj });
-      responder(respuesta, 200, render({ rastro, peticion, pregunta, texto }));
+      const rastro = await ejecutar({ ...peticion, agente: conAgente }, { agente, capa, reloj });
+      responder(respuesta, 200, render({ ...pagina, rastro }));
     } catch (error) {
-      responder(respuesta, 200, render({ peticion, error: error.message }));
+      responder(respuesta, 200, render({ ...pagina, error: error.message }));
     }
   });
 }
