@@ -189,6 +189,15 @@ equivalente en Cube, se indica para facilitar la lectura al equipo.
 - **Hit ratio**: proporción de respuestas servidas desde la caché sobre las que
   la consultaron. Sale de `cache.hits` y `cache.misses` de la telemetría; un
   engine sin caché no reporta ninguno de los dos.
+- **Borde (raíz de composición)**: el punto más externo del proceso, donde la
+  aplicación se arma y toca el mundo: lee variables de entorno, crea los pools
+  y el cliente de Redis, introspecta, registra las definiciones en el catálogo
+  y le inyecta todo al engine; hacia afuera expone HTTP. En el repo son
+  `src/server.js` (servicio), `src/demo.js` (demo) y el `before` de cada test.
+  Todo lo de adentro —catálogo, planificador, engine, dialecto, caché— recibe
+  lo que necesita y nunca lee configuración ni abre conexiones por su cuenta:
+  por eso se prueba sin red y por eso el engine no tiene estado. Un módulo de
+  fuentes (evolución) sería parte del borde.
 - **Fuente**: la base contra la que se ejecuta, con nombre propio: `{ dialecto,
   pool }`. **Cada entidad pertenece a una fuente** —la declara con `source`, y
   sin declararla es `postgres`— y una fuente tiene exactamente un dialecto. El
