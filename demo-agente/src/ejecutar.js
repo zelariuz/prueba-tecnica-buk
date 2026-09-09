@@ -38,9 +38,33 @@ export async function ejecutar(peticion, { agente, capa, reloj }) {
       { capa, reloj },
     ),
   );
+  const laConsulta = await saltoALaCapa(
+    { destino: 'capa semántica — consulta', ruta: RUTA_CONSULTA, token: 'agente', cuerpo: consulta },
+    { capa, reloj },
+  );
+  rastro.push(laConsulta);
+
+  // Un solo reintento, y solo con agente: la capa rechazó lo que él escribió,
+  // así que se le devuelve el error con su sugerencia y se repite el salto 3.
+  // Si eso también se rechaza, el rastro termina: nunca hay un tercer intento.
+  if (!peticion.agente || laConsulta.estado !== 'rechazo') return rastro;
+
+  const correccion = await saltoAlAgente(
+    promptDeCorreccion(laConsulta.recibido),
+    { agente, reloj },
+    'agente — corrección',
+  );
+  rastro.push(correccion.salto);
+  if (!correccion.consulta) return rastro;
+
   rastro.push(
     await saltoALaCapa(
-      { destino: 'capa semántica — consulta', ruta: RUTA_CONSULTA, token: 'agente', cuerpo: consulta },
+      {
+        destino: 'capa semántica — consulta (corregida)',
+        ruta: RUTA_CONSULTA,
+        token: 'agente',
+        cuerpo: correccion.consulta,
+      },
       { capa, reloj },
     ),
   );
@@ -59,7 +83,7 @@ async function saltoALaCapa({ destino, ruta, token, cuerpo }, { capa, reloj }) {
       ...salto,
       recibido: json,
       ms: Number.isFinite(ms) ? ms : reloj() - inicio,
-      estado: status >= 200 && status < 300 ? 'ok' : 'rechazo',
+      estado: estadoDelStatus(status),
     };
   } catch (error) {
     return { ...salto, recibido: { error: error.message }, ms: reloj() - inicio, estado: 'fallo' };
@@ -78,9 +102,9 @@ function promptDelClic(pregunta, peticion) {
 // El salto al agente devuelve el salto para el rastro y, si el texto era el
 // JSON de una consulta, esa consulta. `noPuedo` y el texto que no parsea
 // cortan el rastro: no hay consulta que mandarle a la capa.
-async function saltoAlAgente(enviado, { agente, reloj }) {
+async function saltoAlAgente(enviado, { agente, reloj }, destino = 'agente') {
   const inicio = reloj();
-  const salto = { destino: 'agente', via: agente?.via ?? 'claude -p --resume', token: null, enviado };
+  const salto = { destino, via: agente?.via ?? 'claude -p --resume', token: null, enviado };
   let respuesta;
   try {
     respuesta = await agente(enviado);
@@ -101,6 +125,26 @@ async function saltoAlAgente(enviado, { agente, reloj }) {
   if (!escrito) return { salto: { ...completo, estado: 'fallo' }, consulta: null };
   if (escrito.noPuedo) return { salto: { ...completo, estado: 'rechazo' }, consulta: null };
   return { salto: { ...completo, estado: 'ok' }, consulta: escrito };
+}
+
+// El rechazo (4xx) es el consumidor pidiendo mal: hay JSON que corregir. El
+// 5xx es la capa que no está bien, y ahí no hay nada que el agente pueda
+// arreglar — por eso cuenta como fallo, igual que no contestar.
+function estadoDelStatus(status) {
+  if (status >= 200 && status < 300) return 'ok';
+  return status >= 400 && status < 500 ? 'rechazo' : 'fallo';
+}
+
+// El prompt de corrección: el error tal cual lo publica la capa. La sugerencia
+// es la que hace posible el reintento, y por eso se manda entera.
+function promptDeCorreccion(error) {
+  return `La capa rechazó tu consulta.
+
+code: ${error?.code ?? '(sin código)'}
+member: ${error?.member ?? '(no lo dice)'}
+suggestion: ${error?.suggestion ?? '(no la dice)'}
+
+Devuelve el JSON corregido, o {"noPuedo": "motivo breve"} si el catálogo no alcanza.`;
 }
 
 // El contrato dice "solo JSON", pero un modelo puede envolverlo en un bloque de

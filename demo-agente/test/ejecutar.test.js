@@ -348,3 +348,127 @@ test('una respuesta a medias que igual parece JSON no vale si el adaptador repor
   assert.equal(rastro[0].estado, 'fallo');
   assert.equal(capa.llamadas.length, 0);
 });
+
+// ---------------------------------------------------------------------------
+// El reintento: la capa rechaza el JSON del agente, el salto 3b le devuelve el
+// error con su `suggestion` y la consulta se repite una sola vez.
+const consultaCorregida = { ...consultaDelAgente, measures: ['reviews.completion_rate'] };
+
+test('un rechazo de la consulta manda el error al agente y repite el salto de la consulta', async () => {
+  const capa = capaFalsa([respuestaOk, errorUnknownMember, respuestaOk]);
+  const agente = agenteFalso([
+    JSON.stringify(consultaDelAgente),
+    JSON.stringify(consultaCorregida),
+  ]);
+
+  const rastro = await ejecutar(peticion({ agente: true }), { agente, capa, reloj: () => 0 });
+
+  assert.deepEqual(
+    rastro.map((salto) => [salto.destino, salto.estado]),
+    [
+      ['agente', 'ok'],
+      ['capa semántica — dry-run (params, plan y SQL)', 'ok'],
+      ['capa semántica — consulta', 'rechazo'],
+      ['agente — corrección', 'ok'],
+      ['capa semántica — consulta (corregida)', 'ok'],
+    ],
+  );
+  assert.deepEqual(rastro[4].enviado, consultaCorregida);
+});
+
+test('el salto de corrección le manda al agente el código, el miembro y la sugerencia', async () => {
+  const capa = capaFalsa([respuestaOk, errorUnknownMember, respuestaOk]);
+  const agente = agenteFalso([
+    JSON.stringify(consultaDelAgente),
+    JSON.stringify(consultaCorregida),
+  ]);
+
+  await ejecutar(peticion({ agente: true }), { agente, capa, reloj: () => 0 });
+
+  assert.match(agente.prompts[1], /UNKNOWN_MEMBER/);
+  assert.match(agente.prompts[1], /employees\.salary_avg/);
+  assert.match(agente.prompts[1], /No existe la medida employees\.salary_avg\./);
+});
+
+// Decisión: el reintento repite el salto 3 y solo ese. El dry-run ya mostró el
+// plan y el SQL de lo que el agente escribió primero; repetirlo alargaría el
+// rastro sin agregar nada nuevo a la demo.
+test('el reintento no repite el dry-run: la capa recibe tres llamadas, no cuatro', async () => {
+  const capa = capaFalsa([respuestaOk, errorUnknownMember, respuestaOk]);
+  const agente = agenteFalso([
+    JSON.stringify(consultaDelAgente),
+    JSON.stringify(consultaCorregida),
+  ]);
+
+  await ejecutar(peticion({ agente: true }), { agente, capa, reloj: () => 0 });
+
+  assert.equal(capa.llamadas.length, 3);
+  assert.deepEqual(
+    capa.llamadas.map((llamada) => llamada.ruta),
+    ['/analytics/query?dryRun=true', '/analytics/query', '/analytics/query'],
+  );
+});
+
+test('un segundo rechazo termina el rastro: nunca hay un tercer intento', async () => {
+  const capa = capaFalsa([respuestaOk, errorUnknownMember]);
+  const agente = agenteFalso([
+    JSON.stringify(consultaDelAgente),
+    JSON.stringify(consultaCorregida),
+  ]);
+
+  const rastro = await ejecutar(peticion({ agente: true }), { agente, capa, reloj: () => 0 });
+
+  assert.equal(rastro.length, 5);
+  assert.equal(rastro[4].estado, 'rechazo');
+  assert.equal(agente.prompts.length, 2);
+  assert.equal(capa.llamadas.length, 3);
+});
+
+test('si la corrección del agente es un noPuedo, el rastro termina ahí sin volver a la capa', async () => {
+  const capa = capaFalsa([respuestaOk, errorUnknownMember, respuestaOk]);
+  const agente = agenteFalso([
+    JSON.stringify(consultaDelAgente),
+    '{"noPuedo": "el catálogo no publica sueldos"}',
+  ]);
+
+  const rastro = await ejecutar(peticion({ agente: true }), { agente, capa, reloj: () => 0 });
+
+  assert.equal(rastro.length, 4);
+  assert.equal(rastro[3].estado, 'rechazo');
+  assert.equal(capa.llamadas.length, 2);
+});
+
+test('sin agente un rechazo de la capa no dispara ninguna corrección', async () => {
+  const capa = capaFalsa([errorUnknownMember]);
+
+  const rastro = await ejecutar(peticion({ pregunta: 'sueldo-promedio-por-departamento' }), {
+    agente: null,
+    capa,
+    reloj: () => 0,
+  });
+
+  assert.equal(rastro.length, 2);
+});
+
+// La clase de error importa: 4xx es el consumidor pidiendo mal (y por eso hay
+// corrección posible); 5xx es la capa caída, y ahí no hay JSON que corregir.
+test('un 5xx de la capa es un salto fallido, no un rechazo', async () => {
+  const capa = capaFalsa([{ status: 503, json: { code: 'UPSTREAM_UNAVAILABLE' }, ms: 4 }]);
+
+  const rastro = await ejecutar(peticion(), { agente: null, capa, reloj: () => 0 });
+
+  assert.deepEqual(
+    rastro.map((salto) => salto.estado),
+    ['fallo', 'fallo'],
+  );
+});
+
+test('un 5xx de la consulta tampoco dispara la corrección del agente', async () => {
+  const capa = capaFalsa([respuestaOk, { status: 500, json: { code: 'INTERNAL' }, ms: 4 }]);
+  const agente = agenteFalso([JSON.stringify(consultaDelAgente)]);
+
+  const rastro = await ejecutar(peticion({ agente: true }), { agente, capa, reloj: () => 0 });
+
+  assert.equal(rastro.length, 3);
+  assert.equal(agente.prompts.length, 1);
+});
