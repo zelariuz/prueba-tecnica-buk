@@ -186,7 +186,7 @@ export function createEngine({
       telemetria.registrarOk({ consumer: ctx?.consumer });
       registro.servedFrom = nivelDe(guardado);
       registro.rows = guardado.rows.length;
-      registro.warnings = guardado.warnings.length;
+      registro.warnings = guardado.warnings?.length ?? 0;
       return {
         rows: guardado.rows,
         meta: {
