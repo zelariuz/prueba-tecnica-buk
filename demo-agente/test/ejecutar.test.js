@@ -188,3 +188,163 @@ test('una pregunta que no existe falla con un mensaje que nombra las preparadas'
   );
   assert.equal(capa.llamadas.length, 0);
 });
+
+// ---------------------------------------------------------------------------
+// Camino con agente. El agente es una función `prompt -> { texto, ms?, meta? }`
+// inyectada: acá es un doble que devuelve textos fijos, así que los tests no
+// necesitan Claude Code ni red.
+function agenteFalso(textos) {
+  const prompts = [];
+  const cola = [...textos];
+  const agente = async (prompt) => {
+    prompts.push(prompt);
+    return { texto: cola.length > 1 ? cola.shift() : cola[0], ms: 2100 };
+  };
+  agente.prompts = prompts;
+  agente.via = 'claude -p --resume agente-buk';
+  return agente;
+}
+
+const consultaDelAgente = {
+  measures: ['reviews.avg_score'],
+  dimensions: ['departments.name'],
+  timeDimensions: [
+    { dimension: 'reviews.period', granularity: 'quarter', dateRange: ['2025-01-01', '2025-12-31'] },
+  ],
+};
+
+test('el camino con agente son tres saltos: el agente primero, después el dry-run y la consulta', async () => {
+  const capa = capaFalsa([respuestaOk]);
+  const agente = agenteFalso([JSON.stringify(consultaDelAgente)]);
+
+  const rastro = await ejecutar(peticion({ agente: true }), { agente, capa, reloj: () => 0 });
+
+  assert.deepEqual(
+    rastro.map((salto) => [salto.destino, salto.estado]),
+    [
+      ['agente', 'ok'],
+      ['capa semántica — dry-run (params, plan y SQL)', 'ok'],
+      ['capa semántica — consulta', 'ok'],
+    ],
+  );
+});
+
+test('el JSON que escribió el agente es el que viaja a la capa, no el preparado', async () => {
+  const capa = capaFalsa([respuestaOk]);
+  const agente = agenteFalso([JSON.stringify(consultaDelAgente)]);
+
+  const rastro = await ejecutar(peticion({ agente: true }), { agente, capa, reloj: () => 0 });
+
+  assert.deepEqual(rastro[1].enviado, consultaDelAgente);
+  assert.deepEqual(rastro[2].enviado, consultaDelAgente);
+});
+
+test('el prompt del clic lleva el texto de la pregunta y la frase fija de filtros', async () => {
+  const capa = capaFalsa([respuestaOk]);
+  const agente = agenteFalso([JSON.stringify(consultaDelAgente)]);
+
+  await ejecutar(peticion({ agente: true }), { agente, capa, reloj: () => 0 });
+
+  assert.match(agente.prompts[0], /Score promedio y evaluaciones completadas por departamento/);
+  assert.match(
+    agente.prompts[0],
+    /Filtros: desde 2025-01-01, hasta 2025-12-31, departamento Ingeniería\./,
+  );
+});
+
+test('el texto editado en el formulario reemplaza al de la pregunta preparada', async () => {
+  const capa = capaFalsa([respuestaOk]);
+  const agente = agenteFalso([JSON.stringify(consultaDelAgente)]);
+
+  await ejecutar(peticion({ agente: true, texto: 'Solo Ventas, por favor.' }), {
+    agente,
+    capa,
+    reloj: () => 0,
+  });
+
+  assert.match(agente.prompts[0], /^Solo Ventas, por favor\./);
+  assert.match(agente.prompts[0], /Filtros: desde 2025-01-01/);
+});
+
+test('sin departamento la frase de filtros no lo nombra', async () => {
+  const capa = capaFalsa([respuestaOk]);
+  const agente = agenteFalso([JSON.stringify(consultaDelAgente)]);
+
+  await ejecutar(peticion({ agente: true, departamento: '' }), { agente, capa, reloj: () => 0 });
+
+  assert.match(agente.prompts[0], /Filtros: desde 2025-01-01, hasta 2025-12-31\./);
+});
+
+test('un noPuedo del agente es el único salto del rastro y la capa no se llama', async () => {
+  const capa = capaFalsa([respuestaOk]);
+  const agente = agenteFalso(['{"noPuedo": "el catálogo no publica sueldos"}']);
+
+  const rastro = await ejecutar(peticion({ agente: true }), { agente, capa, reloj: () => 0 });
+
+  assert.equal(rastro.length, 1);
+  assert.equal(rastro[0].estado, 'rechazo');
+  assert.equal(capa.llamadas.length, 0);
+});
+
+test('un JSON malformado del agente es un salto fallido con el texto crudo y la capa no se llama', async () => {
+  const capa = capaFalsa([respuestaOk]);
+  const agente = agenteFalso(['Claro, acá va la consulta: {measures: reviews.avg_score']);
+
+  const rastro = await ejecutar(peticion({ agente: true }), { agente, capa, reloj: () => 0 });
+
+  assert.equal(rastro.length, 1);
+  assert.equal(rastro[0].estado, 'fallo');
+  assert.equal(rastro[0].recibido, 'Claro, acá va la consulta: {measures: reviews.avg_score');
+  assert.equal(capa.llamadas.length, 0);
+});
+
+test('un JSON envuelto en un bloque de código se acepta igual', async () => {
+  const capa = capaFalsa([respuestaOk]);
+  const agente = agenteFalso(['```json\n' + JSON.stringify(consultaDelAgente) + '\n```']);
+
+  const rastro = await ejecutar(peticion({ agente: true }), { agente, capa, reloj: () => 0 });
+
+  assert.equal(rastro.length, 3);
+  assert.deepEqual(rastro[2].enviado, consultaDelAgente);
+});
+
+test('el salto del agente muestra el nombre del comando y ningún token', async () => {
+  const capa = capaFalsa([respuestaOk]);
+  const agente = agenteFalso([JSON.stringify(consultaDelAgente)]);
+
+  const rastro = await ejecutar(peticion({ agente: true }), { agente, capa, reloj: () => 0 });
+
+  assert.equal(rastro[0].via, 'claude -p --resume agente-buk');
+  assert.equal(rastro[0].token, null);
+  assert.equal(rastro[0].ms, 2100);
+});
+
+test('un agente que no responde a tiempo es un salto fallido con el motivo', async () => {
+  const capa = capaFalsa([respuestaOk]);
+  const agente = async () => ({ texto: '', fallo: 'timeout' });
+
+  const rastro = await ejecutar(peticion({ agente: true }), {
+    agente,
+    capa,
+    reloj: relojFalso([1000, 1060]),
+  });
+
+  assert.deepEqual(
+    rastro.map((salto) => [salto.estado, salto.ms]),
+    [['fallo', 60]],
+  );
+  assert.match(rastro[0].recibido, /timeout/);
+});
+
+// El adaptador mata el proceso al vencer el tope: lo que alcanzó a escribir no
+// es una respuesta, aunque parezca JSON. Un `fallo` manda sobre el texto.
+test('una respuesta a medias que igual parece JSON no vale si el adaptador reportó fallo', async () => {
+  const capa = capaFalsa([respuestaOk]);
+  const agente = async () => ({ texto: JSON.stringify(consultaDelAgente), fallo: 'timeout' });
+
+  const rastro = await ejecutar(peticion({ agente: true }), { agente, capa, reloj: () => 0 });
+
+  assert.equal(rastro.length, 1);
+  assert.equal(rastro[0].estado, 'fallo');
+  assert.equal(capa.llamadas.length, 0);
+});
