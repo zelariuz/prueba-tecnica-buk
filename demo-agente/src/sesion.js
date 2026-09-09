@@ -67,6 +67,11 @@ export function huellaDelCatalogo(catalogo) {
 // Serialización canónica: mismas claves, mismo texto, sin importar en qué orden
 // las serializó la capa. `undefined` no existe en el JSON que llega por HTTP;
 // si apareciera, se escribe como null antes que romper la huella.
+//
+// DUPLICACIÓN DELIBERADA de `src/canonical.js` de la capa: la demo es un
+// consumidor y no importa nada de `src/`, así que lleva su propia copia. Si
+// aquel algoritmo cambia, este no tiene por qué seguirlo (la huella sólo se
+// compara consigo misma), pero conviene saber que existe el gemelo.
 function canonico(valor) {
   if (Array.isArray(valor)) return `[${valor.map(canonico).join(',')}]`;
   if (valor !== null && typeof valor === 'object') {

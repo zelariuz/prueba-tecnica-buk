@@ -162,8 +162,10 @@ la consulta tipo, el agente daba otro número en la pregunta del caso.
 - [x] Registro de QA con las 7 preguntas × 2 caminos, todas OK o con su
       hallazgo anotado: `demo-agente/docs/qa.md` (14 corridas, más una segunda
       pasada por combinación para ver la caché).
-- [ ] `revisa-codigo` sin hallazgos duros abiertos. **No corrido en esta
-      sesión**; queda pendiente sobre el diff completo de la demo.
+- [x] `revisa-codigo` sin hallazgos duros abiertos. Corrido por fase (09-09,
+      Fable con dos revisores Sonnet): fases 1 y 2 sin duros; fase 3 un duro
+      (duplicación deliberada de la serialización canónica, ahora comentada)
+      y juicios menores anotados en `prueba-tecnica/discusiones/28`.
 - [x] `npm test` de la raíz sigue igual; `cd demo-agente && npm test` en
       verde. **Precisión del 09-09**: la raíz pasó de 114 a **115 sin
       variables** (1 skipped) y de 179 a **180 con Docker**, por el test nuevo
