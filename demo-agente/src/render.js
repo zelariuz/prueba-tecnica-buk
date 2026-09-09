@@ -170,7 +170,7 @@ traducir esto con este catálogo" y corta el rastro sin tocar la capa; el de la
 capa es "este JSON está mal" y abre el salto de corrección. Un 5xx no es rechazo
 sino <code>fallo</code>: ahí no hay nada que corregir.</p>
 <p class="nota">El contrato pide JSON pelado, pero si el agente lo envuelve en un
-bloque <code>```</code> la demo se lo tolera —leniencia deliberada— y sigue. Lo
+bloque <code>\`\`\`</code> la demo se lo tolera —leniencia deliberada— y sigue. Lo
 que no se tolera es la prosa: un texto que no parsea queda como salto
 <code>fallo</code> con lo crudo a la vista.</p>
 <h2>System prompt de la llamada</h2>
