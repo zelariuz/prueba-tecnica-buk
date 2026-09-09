@@ -841,6 +841,11 @@ cómo va todo, el evento dice qué acaba de pasar.
   agente sale como `rechazo` igual que un 4xx de la capa —el `destino` del salto
   dice de quién viene—; un 5xx es `fallo`, porque ahí no hay JSON que corregir.
   Un JSON envuelto en un bloque de código se tolera a propósito; la prosa no.
+- **La página llega por trozos, sin JavaScript** (09-09): el servidor responde
+  `chunked` —escribe el formulario y un "Cargando… salto N en curso", y cada
+  salto apenas `ejecutar` avisa por el observador opcional `alSalto(salto,
+  indice)`—; cada aviso se apaga con un `<style>` por id escrito detrás de su
+  salto. Antes el navegador quedaba en blanco los 3-6 s del salto al agente.
 - **Regla de operación**: nunca abrir esa sesión de forma interactiva mientras
   el mini back la usa. Es el mismo uuid.
 

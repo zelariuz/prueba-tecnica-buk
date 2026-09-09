@@ -65,6 +65,12 @@ Un texto que no es JSON queda como salto `fallo` con lo crudo a la vista: para
 diagnosticar en vivo, no un 500. Un `claude` que no contesta antes de
 `AGENTE_TIMEOUT_MS` se mata y también queda como `fallo`.
 
+La página **llega por trozos y sin JavaScript** (`Transfer-Encoding: chunked`):
+el formulario y un "Cargando… salto N en curso" aparecen de inmediato, y cada
+salto se dibuja apenas termina —el salto al agente tarda 3-6 s y antes dejaba el
+navegador en blanco todo ese rato—. El aviso se apaga solo: cuando su salto
+llega, detrás va un `<style>` que lo oculta por id.
+
 Cada combinación del formulario es una URL. Recargarla repite la consulta y
 `meta.servedFrom` pasa de `live` a `cache-l1`.
 
@@ -160,7 +166,10 @@ cd demo-agente && npm test
 Sin Postgres, sin Docker, sin Claude Code y sin variables de entorno. Entran
 por los dos seams de comportamiento, con dobles inyectados:
 
-- `ejecutar(peticion, { agente, capa, reloj })` → el rastro de saltos.
+- `ejecutar(peticion, { agente, capa, reloj, alSalto })` → el rastro de saltos.
+  `alSalto(salto, indice)` es opcional y es lo que permite dibujar la página por
+  trozos: se llama en el momento en que cada salto queda listo. Observar no
+  cambia lo observado, y un observador que lanza no corta el rastro.
 - `asegurarSesion({ claude, catalogo, estado })` → crear, conservar o recrear
   la sesión, y `promptDeCreacion(catalogo)` y `huellaDelCatalogo(catalogo)` como
   funciones puras.
@@ -184,6 +193,7 @@ src/protocolo.js    las palabras que se cruzan con el agente: prompt del clic,
 src/preguntas.js    busca la preparada y sustituye :desde, :hasta, :departamento
 src/agente.js       efectos de Claude Code: spawn, flags, .sesion.json, versión
 src/capa.js         efectos de la capa: fetch, token por nombre, milisegundos
-src/servidor.js     URL → petición, rastro → HTML
-src/render.js       la página y /agente/sesion
+src/servidor.js     URL → petición, rastro → HTML escrito por trozos
+src/render.js       las piezas de la página (inicio, salto, aviso, cierre) y
+                    /agente/sesion
 ```
