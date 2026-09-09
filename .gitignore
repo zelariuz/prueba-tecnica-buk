@@ -1,3 +1,5 @@
 node_modules/
 .env
-demo-agente/.env
+
+# Sesión nombrada de Claude Code que crea la demo: uuid y versión del catálogo.
+demo-agente/.sesion.json
