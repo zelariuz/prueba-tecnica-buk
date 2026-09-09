@@ -65,11 +65,24 @@ Un texto que no es JSON queda como salto `fallo` con lo crudo a la vista: para
 diagnosticar en vivo, no un 500. Un `claude` que no contesta antes de
 `AGENTE_TIMEOUT_MS` se mata y también queda como `fallo`.
 
-La página **llega por trozos y sin JavaScript** (`Transfer-Encoding: chunked`):
-el formulario y un "Cargando… salto N en curso" aparecen de inmediato, y cada
-salto se dibuja apenas termina —el salto al agente tarda 3-6 s y antes dejaba el
-navegador en blanco todo ese rato—. El aviso se apaga solo: cuando su salto
-llega, detrás va un `<style>` que lo oculta por id.
+El front es **HTML, CSS y JavaScript puro** en `public/` —sin frameworks, sin
+librerías y sin paso de build—; el mini back lo sirve como estático y, aparte,
+publica tres endpoints:
+
+| Endpoint | Qué devuelve |
+| --- | --- |
+| `GET /api/preguntas` | las 7 preparadas con su texto, sus filtros y su JSON |
+| `GET /api/sesion` | la sesión del agente y los dos prompts completos |
+| `GET /api/rastro?…` | el rastro como **NDJSON en streaming** |
+
+`/api/rastro` responde `application/x-ndjson` con `Transfer-Encoding: chunked` y
+una línea por evento: `inicio` (la petición como la entendió el back y cuántos
+saltos se prevén) sale en milisegundos, después un `salto` **apenas queda
+listo** —el observador `alSalto` del seam es quien las escribe— y al final
+`fin` con el total. Una pregunta que no existe sale como `error` y cierra. El
+navegador lee esas líneas con `fetch` + `ReadableStream` y pinta cada salto
+cuando llega, con una tarjeta "en curso…" para el que sigue: el salto al agente
+tarda 3-6 s y antes dejaba la página sin nada que mostrar todo ese rato.
 
 Cada combinación del formulario es una URL. Recargarla repite la consulta y
 `meta.servedFrom` pasa de `live` a `cache-l1`.
@@ -97,9 +110,11 @@ consulta tipo no la cambia. Como el prompt de creación lleva el catálogo enter
 guiarse por la versión dejaría al agente hablando de un catálogo que ya no es el
 que la capa publica.
 
-`GET /agente/sesion` muestra el prompt de creación completo, el system prompt
-de la llamada, el nombre, el uuid, la versión y la huella del catálogo, el
-modelo, la versión de Claude Code y la fecha de creación. Además explica cómo
+El enlace "lo que sabe esa sesión" abre un **modal** (`<dialog>` nativo, con
+scroll) con el prompt de creación completo, el system prompt de la llamada, el
+nombre, el modelo y la huella; todo sale de `GET /api/sesion`. La misma
+información, como página aparte para copiar el link, está en
+`GET /agente/sesion`. El README explica cómo
 se lee un rechazo: un `{"noPuedo": …}` del agente sale como `estado: rechazo`,
 igual que un 4xx de la capa, y el **destino** del salto dice de quién viene —el
 del agente corta el rastro sin tocar la capa; el de la capa abre la corrección—;
@@ -174,8 +189,8 @@ por los dos seams de comportamiento, con dobles inyectados:
   la sesión, y `promptDeCreacion(catalogo)` y `huellaDelCatalogo(catalogo)` como
   funciones puras.
 
-El HTML, el `spawn` de `claude`, el adaptador `fetch` y el arranque no tienen
-tests: son efectos, y se verifican mirando la página.
+El front estático, el `spawn` de `claude`, el adaptador `fetch` y el arranque no
+tienen tests: son efectos, y se verifican mirando la página.
 
 Lo que sí se verificó a mano, contra la capa real y Claude Code real, está en
 **[`docs/qa.md`](docs/qa.md)**: las 7 preguntas por los dos caminos, con las
@@ -193,7 +208,10 @@ src/protocolo.js    las palabras que se cruzan con el agente: prompt del clic,
 src/preguntas.js    busca la preparada y sustituye :desde, :hasta, :departamento
 src/agente.js       efectos de Claude Code: spawn, flags, .sesion.json, versión
 src/capa.js         efectos de la capa: fetch, token por nombre, milisegundos
-src/servidor.js     URL → petición, rastro → HTML escrito por trozos
-src/render.js       las piezas de la página (inicio, salto, aviso, cierre) y
-                    /agente/sesion
+src/servidor.js     estáticos de public/ y los tres endpoints; el rastro sale
+                    como NDJSON, una línea por salto
+public/index.html   la página: cabecera, formulario y la línea de tiempo
+public/app.js       el front: consume el NDJSON y pinta cada salto al llegar
+public/estilo.css   tokens de tema claro/oscuro, tarjetas, píldoras y raíles
+public/sesion.html  /agente/sesion como página aparte (lo mismo que el modal)
 ```
