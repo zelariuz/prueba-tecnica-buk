@@ -20,6 +20,12 @@ de un campo del contexto sería una vista que el consumidor puede pedirse solo
 lo fija—. Filtrar el diccionario por empresa o por rol es una evolución con su
 propia decisión: hoy el diccionario es común a todas las empresas.
 
+**La vista pública incluye el `query` de cada consulta tipo** (09-09): son
+ejemplos resueltos para el agente. Una plantilla declarativa sólo nombra
+miembros semánticos —por eso puede publicarse tal cual— y viaja con sus
+marcadores `:nombre` sin sustituir; sin ella, quien sólo lee el catálogo copia
+la forma pero no los detalles que deciden el resultado.
+
 ## Alternativas
 - Un solo `describe()` completo: más simple, expone el mapeo físico. Descartada.
 - No exponer catálogo: el agente y el constructor de gráficos no podrían

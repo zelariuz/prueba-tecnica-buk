@@ -263,7 +263,9 @@ con la sugerencia calculada por distancia de edición
 
 `describe(ctx)` es lo que ve un dashboard o un agente: nombres de negocio,
 tipos, descripciones, operadores **que el planificador emite**, granularidades y
-consultas tipo. Nunca
+consultas tipo —cada una con su `query`, la plantilla declarativa tal cual se
+registró, con los marcadores `:nombre` sin sustituir: son los ejemplos ya
+resueltos que necesita quien sólo lee el catálogo—. Nunca
 una tabla ni una columna (ADR 0008): `describe(ctx)` devuelve la vista pública
 aunque el contexto pida lo contrario. El mapeo físico sale por otro método,
 `describeInternal()`, que no recibe contexto de consumidor y vive del lado del

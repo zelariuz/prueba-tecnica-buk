@@ -478,10 +478,17 @@ export function createCatalog({ fuentes = FUENTES_POR_DEFECTO } = {}) {
         // consumidor nunca nombra una relación ni su columna de unión.
         relatedEntities: Object.values(def.relationships ?? {}).map((r) => r.target),
       })),
-      queries: [...consultasTipo.values()].map(({ name, description, params }) => ({
+      // La plantilla entera, con sus marcadores `:nombre` sin sustituir: es el
+      // único ejemplo ya resuelto que tiene quien sólo lee el catálogo, y
+      // copiarla es lo que evita que reinvente los detalles que deciden el
+      // resultado (ADR 0008, 09-09). No hay fuga: una plantilla declarativa
+      // sólo nombra miembros semánticos, igual que el resto de la vista.
+      // Copiada, para que publicarla no la deje editar desde afuera.
+      queries: [...consultasTipo.values()].map(({ name, description, params, query }) => ({
         name,
         description,
         params: [...params],
+        query: structuredClone(query),
       })),
     };
   }

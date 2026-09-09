@@ -587,6 +587,36 @@ test('una consulta tipo desconocida o sin sus parámetros no se entrega', () => 
   assert.equal(sinParametro.member, 'dateRange');
 });
 
+// La vista pública publica además la plantilla entera de cada consulta tipo
+// (09-09): son los únicos ejemplos ya resueltos que tiene quien sólo lee el
+// catálogo. Sin ellos se copia la forma pero no los detalles que deciden el
+// resultado —el `segments` del caso, por ejemplo—.
+test('la vista pública publica el query de cada consulta tipo, con los marcadores sin sustituir', () => {
+  const catalog = catalogoConConsultas();
+
+  const publicadas = catalog.describe({ companyId: 1 }).queries;
+
+  assert.equal(publicadas.length, consultasTipo.length);
+  for (const registrada of consultasTipo) {
+    const publicada = publicadas.find((c) => c.name === registrada.name);
+    assert.deepEqual(publicada.query, registrada.query, `la consulta tipo ${registrada.name}`);
+  }
+
+  // El marcador viaja tal cual: es una plantilla para copiar y rellenar, no una
+  // consulta ya resuelta con un rango que nadie pidió.
+  const delCaso = publicadas.find((c) => c.name === 'evaluaciones-por-departamento-y-trimestre');
+  assert.equal(delCaso.query.timeDimensions[0].dateRange, ':dateRange');
+  assert.deepEqual(delCaso.query.segments, ['reviews.completed']);
+
+  // Se publica una copia: quien recibe la vista no puede editar la plantilla
+  // registrada desde afuera.
+  delCaso.query.segments.push('inventado');
+  assert.deepEqual(
+    catalog.describe({ companyId: 1 }).queries.find((c) => c.name === delCaso.name).query.segments,
+    ['reviews.completed'],
+  );
+});
+
 // --- Hallazgo 2: `count_distinct`. El catálogo lo valida como una medida más
 // —columna obligatoria y existente— pero, a diferencia de `sum` y `avg`, NO
 // exige que la columna sea numérica: contar valores distintos tiene sentido
