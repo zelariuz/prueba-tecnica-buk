@@ -76,7 +76,7 @@ function formulario({ peticion, pregunta, texto, agenteDisponible, agenteMotivo 
 // La casilla se apaga sola si Claude Code no está: la demo no promete algo que
 // no puede hacer, y el motivo queda a la vista.
 function casillaDelAgente({ peticion, agenteDisponible, agenteMotivo }) {
-  const marcada = peticion?.agente ? ' checked' : '';
+  const marcada = peticion?.usarAgente ? ' checked' : '';
   if (agenteDisponible) {
     return `<label>
       <input type="checkbox" name="agente" value="1"${marcada} style="width:auto"> Usar agente

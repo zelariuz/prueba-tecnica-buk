@@ -217,7 +217,7 @@ test('el camino con agente son tres saltos: el agente primero, después el dry-r
   const capa = capaFalsa([respuestaOk]);
   const agente = agenteFalso([JSON.stringify(consultaDelAgente)]);
 
-  const rastro = await ejecutar(peticion({ agente: true }), { agente, capa, reloj: () => 0 });
+  const rastro = await ejecutar(peticion({ usarAgente: true }), { agente, capa, reloj: () => 0 });
 
   assert.deepEqual(
     rastro.map((salto) => [salto.destino, salto.estado]),
@@ -233,7 +233,7 @@ test('el JSON que escribió el agente es el que viaja a la capa, no el preparado
   const capa = capaFalsa([respuestaOk]);
   const agente = agenteFalso([JSON.stringify(consultaDelAgente)]);
 
-  const rastro = await ejecutar(peticion({ agente: true }), { agente, capa, reloj: () => 0 });
+  const rastro = await ejecutar(peticion({ usarAgente: true }), { agente, capa, reloj: () => 0 });
 
   assert.deepEqual(rastro[1].enviado, consultaDelAgente);
   assert.deepEqual(rastro[2].enviado, consultaDelAgente);
@@ -243,7 +243,7 @@ test('el prompt del clic lleva el texto de la pregunta y la frase fija de filtro
   const capa = capaFalsa([respuestaOk]);
   const agente = agenteFalso([JSON.stringify(consultaDelAgente)]);
 
-  await ejecutar(peticion({ agente: true }), { agente, capa, reloj: () => 0 });
+  await ejecutar(peticion({ usarAgente: true }), { agente, capa, reloj: () => 0 });
 
   assert.match(agente.prompts[0], /Score promedio y evaluaciones completadas por departamento/);
   assert.match(
@@ -256,7 +256,7 @@ test('el texto editado en el formulario reemplaza al de la pregunta preparada', 
   const capa = capaFalsa([respuestaOk]);
   const agente = agenteFalso([JSON.stringify(consultaDelAgente)]);
 
-  await ejecutar(peticion({ agente: true, texto: 'Solo Ventas, por favor.' }), {
+  await ejecutar(peticion({ usarAgente: true, texto: 'Solo Ventas, por favor.' }), {
     agente,
     capa,
     reloj: () => 0,
@@ -270,7 +270,7 @@ test('sin departamento la frase de filtros no lo nombra', async () => {
   const capa = capaFalsa([respuestaOk]);
   const agente = agenteFalso([JSON.stringify(consultaDelAgente)]);
 
-  await ejecutar(peticion({ agente: true, departamento: '' }), { agente, capa, reloj: () => 0 });
+  await ejecutar(peticion({ usarAgente: true, departamento: '' }), { agente, capa, reloj: () => 0 });
 
   assert.match(agente.prompts[0], /Filtros: desde 2025-01-01, hasta 2025-12-31\./);
 });
@@ -279,7 +279,7 @@ test('un noPuedo del agente es el único salto del rastro y la capa no se llama'
   const capa = capaFalsa([respuestaOk]);
   const agente = agenteFalso(['{"noPuedo": "el catálogo no publica sueldos"}']);
 
-  const rastro = await ejecutar(peticion({ agente: true }), { agente, capa, reloj: () => 0 });
+  const rastro = await ejecutar(peticion({ usarAgente: true }), { agente, capa, reloj: () => 0 });
 
   assert.equal(rastro.length, 1);
   assert.equal(rastro[0].estado, 'rechazo');
@@ -290,7 +290,7 @@ test('un JSON malformado del agente es un salto fallido con el texto crudo y la 
   const capa = capaFalsa([respuestaOk]);
   const agente = agenteFalso(['Claro, acá va la consulta: {measures: reviews.avg_score']);
 
-  const rastro = await ejecutar(peticion({ agente: true }), { agente, capa, reloj: () => 0 });
+  const rastro = await ejecutar(peticion({ usarAgente: true }), { agente, capa, reloj: () => 0 });
 
   assert.equal(rastro.length, 1);
   assert.equal(rastro[0].estado, 'fallo');
@@ -302,7 +302,7 @@ test('un JSON envuelto en un bloque de código se acepta igual', async () => {
   const capa = capaFalsa([respuestaOk]);
   const agente = agenteFalso(['```json\n' + JSON.stringify(consultaDelAgente) + '\n```']);
 
-  const rastro = await ejecutar(peticion({ agente: true }), { agente, capa, reloj: () => 0 });
+  const rastro = await ejecutar(peticion({ usarAgente: true }), { agente, capa, reloj: () => 0 });
 
   assert.equal(rastro.length, 3);
   assert.deepEqual(rastro[2].enviado, consultaDelAgente);
@@ -312,7 +312,7 @@ test('el salto del agente muestra el nombre del comando y ningún token', async 
   const capa = capaFalsa([respuestaOk]);
   const agente = agenteFalso([JSON.stringify(consultaDelAgente)]);
 
-  const rastro = await ejecutar(peticion({ agente: true }), { agente, capa, reloj: () => 0 });
+  const rastro = await ejecutar(peticion({ usarAgente: true }), { agente, capa, reloj: () => 0 });
 
   assert.equal(rastro[0].via, 'claude -p --resume agente-buk');
   assert.equal(rastro[0].token, null);
@@ -323,7 +323,7 @@ test('un agente que no responde a tiempo es un salto fallido con el motivo', asy
   const capa = capaFalsa([respuestaOk]);
   const agente = async () => ({ texto: '', fallo: 'timeout' });
 
-  const rastro = await ejecutar(peticion({ agente: true }), {
+  const rastro = await ejecutar(peticion({ usarAgente: true }), {
     agente,
     capa,
     reloj: relojFalso([1000, 1060]),
@@ -342,7 +342,7 @@ test('una respuesta a medias que igual parece JSON no vale si el adaptador repor
   const capa = capaFalsa([respuestaOk]);
   const agente = async () => ({ texto: JSON.stringify(consultaDelAgente), fallo: 'timeout' });
 
-  const rastro = await ejecutar(peticion({ agente: true }), { agente, capa, reloj: () => 0 });
+  const rastro = await ejecutar(peticion({ usarAgente: true }), { agente, capa, reloj: () => 0 });
 
   assert.equal(rastro.length, 1);
   assert.equal(rastro[0].estado, 'fallo');
@@ -361,7 +361,7 @@ test('un rechazo de la consulta manda el error al agente y repite el salto de la
     JSON.stringify(consultaCorregida),
   ]);
 
-  const rastro = await ejecutar(peticion({ agente: true }), { agente, capa, reloj: () => 0 });
+  const rastro = await ejecutar(peticion({ usarAgente: true }), { agente, capa, reloj: () => 0 });
 
   assert.deepEqual(
     rastro.map((salto) => [salto.destino, salto.estado]),
@@ -383,7 +383,7 @@ test('el salto de corrección le manda al agente el código, el miembro y la sug
     JSON.stringify(consultaCorregida),
   ]);
 
-  await ejecutar(peticion({ agente: true }), { agente, capa, reloj: () => 0 });
+  await ejecutar(peticion({ usarAgente: true }), { agente, capa, reloj: () => 0 });
 
   assert.match(agente.prompts[1], /UNKNOWN_MEMBER/);
   assert.match(agente.prompts[1], /employees\.salary_avg/);
@@ -400,7 +400,7 @@ test('el reintento no repite el dry-run: la capa recibe tres llamadas, no cuatro
     JSON.stringify(consultaCorregida),
   ]);
 
-  await ejecutar(peticion({ agente: true }), { agente, capa, reloj: () => 0 });
+  await ejecutar(peticion({ usarAgente: true }), { agente, capa, reloj: () => 0 });
 
   assert.equal(capa.llamadas.length, 3);
   assert.deepEqual(
@@ -416,7 +416,7 @@ test('un segundo rechazo termina el rastro: nunca hay un tercer intento', async 
     JSON.stringify(consultaCorregida),
   ]);
 
-  const rastro = await ejecutar(peticion({ agente: true }), { agente, capa, reloj: () => 0 });
+  const rastro = await ejecutar(peticion({ usarAgente: true }), { agente, capa, reloj: () => 0 });
 
   assert.equal(rastro.length, 5);
   assert.equal(rastro[4].estado, 'rechazo');
@@ -431,7 +431,7 @@ test('si la corrección del agente es un noPuedo, el rastro termina ahí sin vol
     '{"noPuedo": "el catálogo no publica sueldos"}',
   ]);
 
-  const rastro = await ejecutar(peticion({ agente: true }), { agente, capa, reloj: () => 0 });
+  const rastro = await ejecutar(peticion({ usarAgente: true }), { agente, capa, reloj: () => 0 });
 
   assert.equal(rastro.length, 4);
   assert.equal(rastro[3].estado, 'rechazo');
@@ -467,7 +467,7 @@ test('un 5xx de la consulta tampoco dispara la corrección del agente', async ()
   const capa = capaFalsa([respuestaOk, { status: 500, json: { code: 'INTERNAL' }, ms: 4 }]);
   const agente = agenteFalso([JSON.stringify(consultaDelAgente)]);
 
-  const rastro = await ejecutar(peticion({ agente: true }), { agente, capa, reloj: () => 0 });
+  const rastro = await ejecutar(peticion({ usarAgente: true }), { agente, capa, reloj: () => 0 });
 
   assert.equal(rastro.length, 3);
   assert.equal(agente.prompts.length, 1);

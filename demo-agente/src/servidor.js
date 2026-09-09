@@ -39,8 +39,10 @@ export function crearServidor({
 
     // Sin agente disponible, `agente=1` en la URL no rompe la demo: se ignora
     // y la página dice por qué. El camino sin agente siempre está.
-    const nota = peticion.agente && !agente ? `Claude Code no está disponible: ${agenteMotivo}` : null;
-    const conAgente = peticion.agente && Boolean(agente);
+    const nota = peticion.usarAgente && !agente
+      ? `Claude Code no está disponible: ${agenteMotivo}`
+      : null;
+    const conAgente = peticion.usarAgente && Boolean(agente);
     const pagina = {
       peticion,
       pregunta,
@@ -58,7 +60,7 @@ export function crearServidor({
     }
 
     try {
-      const rastro = await ejecutar({ ...peticion, agente: conAgente }, { agente, capa, reloj });
+      const rastro = await ejecutar({ ...peticion, usarAgente: conAgente }, { agente, capa, reloj });
       responder(respuesta, 200, render({ ...pagina, rastro }));
     } catch (error) {
       responder(respuesta, 200, render({ ...pagina, error: error.message }));
@@ -74,7 +76,9 @@ function peticionDe(url) {
     desde: parametro('desde'),
     hasta: parametro('hasta'),
     departamento: parametro('departamento'),
-    agente: parametro('agente') === '1',
+    // `usarAgente` y no `agente`: el booleano de la URL no es el colaborador
+    // `agente` que ejecuta, y llamarlos igual confundía a los dos.
+    usarAgente: parametro('agente') === '1',
   };
 }
 
