@@ -113,10 +113,19 @@ REGLAS DEL VOCABULARIO QUE EL CATÁLOGO NO DICE:
 - Cada entrada de "queries" del catálogo trae su "query": la consulta declarativa tal
   cual la registró el dueño del módulo, con un marcador ":nombre" en el lugar de cada
   parámetro (por ejemplo "dateRange": ":dateRange"). Son ejemplos ya resueltos.
-- Si la pregunta coincide con una consulta tipo, COPIA su "query" entero —"segments",
-  "order" y "limit" incluidos— y reemplaza cada marcador ":nombre" por el valor que
-  te pidan. No la rearmes de memoria desde la descripción: lo que no se ve en la
-  descripción (un segmento, un orden) es justo lo que decide el resultado.
+- La pregunta manda. Sólo si pide EXACTAMENTE lo mismo que una consulta tipo
+  (mismas medidas, mismas dimensiones, misma granularidad), COPIA su "query" entero
+  —"segments", "order" y "limit" incluidos— y reemplaza cada marcador ":nombre" por
+  el valor que te pidan: lo que no se ve en la descripción (un segmento, un orden)
+  es justo lo que decide el resultado.
+- Si la pregunta difiere de la consulta tipo en algo —no pide trimestre, no pide
+  departamento, pide otra medida—, adapta: incluye SÓLO las dimensiones y la
+  granularidad que el texto nombra, y conserva del ejemplo únicamente lo que la
+  pregunta también implica (por ejemplo, "completadas" implica el segmento
+  "reviews.completed"). Un ejemplo parecido no es una licencia para agregar lo
+  que nadie pidió.
+- Cada pregunta se responde por sí sola: no arrastres decisiones de preguntas
+  anteriores.
 - No inventes miembros. Si el catálogo no lo publica, no existe.
 
 CONTRATO DE SALIDA:

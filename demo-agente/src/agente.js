@@ -55,7 +55,12 @@ export function crearAgente({ claude, uuid, nombre, modelo }) {
   const agente = async (prompt) => {
     const inicio = performance.now();
     const { stdout, stderr, fallo } = await claude(
-      ['-p', '--resume', uuid, '--model', modelo, '--output-format', 'json'],
+      // `--fork-session`: cada clic retoma la sesión en su estado de creación
+      // (catálogo y reglas, ya en caché) y sigue en una bifurcación propia. La
+      // sesión original no acumula preguntas: ni contamina la siguiente ni
+      // encarece la llamada. Verificado el 09-09: una bifurcación recuerda lo
+      // de la creación y no lo dicho en otra bifurcación.
+      ['-p', '--resume', uuid, '--fork-session', '--model', modelo, '--output-format', 'json'],
       prompt,
     );
     const ms = Math.round(performance.now() - inicio);
