@@ -346,7 +346,6 @@ function manejarLinea(evento) {
     estado.peticion = evento.peticion;
     estado.saltosPrevistos = evento.saltosPrevistos;
     if (evento.nota) mostrarAviso(`${evento.nota} — se ejecutó el camino sin agente.`);
-    rastro.append(tarjetaDelCatalogo());
     mostrarEnCurso(1);
     return;
   }
@@ -627,6 +626,9 @@ function pintarResumen(totalMs) {
   }
   resumen.replaceChildren(caja);
   if (comparacion) resumen.append(bloqueComparacion(comparacion));
+  // Pedido del usuario: la nota del catálogo va justo después del veredicto
+  // del agente, no encabezando el rastro.
+  resumen.append(tarjetaDelCatalogo());
 }
 
 // Con agente, los dos JSON quedan lado a lado: el veredicto dice si son el
