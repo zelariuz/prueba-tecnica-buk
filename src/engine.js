@@ -30,14 +30,66 @@ export function createEngine({
   // mide a una entrada de caché son el mismo tiempo, y tienen que salir de la
   // misma fuente. Además es lo que permite probar la expiración sin esperarla.
   reloj = Date.now,
+  // `observar` es la costura del log en vivo (CONTEXT.md, "Observador"): una
+  // función que recibe un evento por llamada a `run` o a `plan`. Es opcional y
+  // por defecto no hace nada — la telemetría son contadores agregados y esto es
+  // lo otro: una línea por consulta, que el servicio escribe en stdout y la
+  // demo no—. `observarSql` decide si esa línea lleva el SQL: por defecto no,
+  // porque nombra las tablas y las columnas físicas que la vista pública
+  // esconde (ADR 0008); se enciende en desarrollo con LOG_SQL=true.
+  observar,
+  observarSql = false,
 }) {
   const fuentesDelEngine = fuentes ?? { [dialect.name]: { dialecto: dialect, pool } };
   const planificar = crearPlanificador({ catalog, fuentes: fuentesDelEngine, presupuestos });
 
-  // Dry-run: el plan sin tocar la base (historia 25).
+  // Dry-run: el plan sin tocar la base (historia 25). También se observa: el
+  // dry-run es una consulta que alguien pidió, y no verla en el log sería no
+  // ver justo la que se estaba escribiendo.
   function plan(query, ctx) {
-    const { sql, params, logico } = planificar(query, ctx);
-    return { sql, params, plan: logico };
+    const comienzo = performance.now();
+    const registro = {};
+    try {
+      const { sql, params, logico } = planificar(query, ctx);
+      registro.logico = logico;
+      registro.sql = sql;
+      return { sql, params, plan: logico };
+    } catch (error) {
+      registro.error = error;
+      registro.gate = error?.gate;
+      throw error;
+    } finally {
+      emitir('plan', ctx, registro, comienzo);
+    }
+  }
+
+  // Una llamada, un evento: al final, haya terminado bien o mal. Va en el
+  // `finally` y no en cada salida para que no haya un camino que se olvide de
+  // emitir; el `registro` es lo que la llamada fue aprendiendo por el camino.
+  async function run(query, ctx) {
+    const comienzo = performance.now();
+    const registro = {};
+    try {
+      return await correr(query, ctx, registro);
+    } catch (error) {
+      registro.error = error;
+      throw error;
+    } finally {
+      emitir('run', ctx, registro, comienzo);
+    }
+  }
+
+  // Nada falla por observar, la misma regla que la caché: el engine no sabe qué
+  // función le pasaron, y una consulta ya respondida no puede morir porque a
+  // alguien le falló el log. El fallo no se cuenta en ninguna parte —quien no
+  // logra observar tampoco se enteraría del contador—.
+  function emitir(kind, ctx, registro, comienzo) {
+    if (!observar) return;
+    try {
+      observar(eventoDe({ kind, ctx, registro, ms: performance.now() - comienzo, observarSql }));
+    } catch {
+      // Silencio a propósito.
+    }
   }
 
   // Todo se ejecuta dentro de una transacción: el cliente se libera siempre, y
@@ -86,7 +138,7 @@ export function createEngine({
     }
   }
 
-  async function run(query, ctx) {
+  async function correr(query, ctx, registro) {
     // El dry-run no cuenta en la telemetría: no responde a nadie ni toca la
     // base. Lo que se mide es lo que se sirvió.
     let plan;
@@ -94,9 +146,16 @@ export function createEngine({
       plan = planificar(query, ctx);
     } catch (error) {
       telemetria.registrarError({ consumer: ctx?.consumer, code: error?.code, gate: error?.gate });
+      // `gate` es no enumerable en el error (planner.js), así que el evento se
+      // lo copia en vez de esperar que salga solo al serializar.
+      registro.gate = error?.gate;
       throw error;
     }
     const { sql, params, medidas, presupuesto, advertencias, fuente } = plan;
+    registro.logico = plan.logico;
+    // El SQL del plan, sin la marca de comentario: el `queryId` que la marca
+    // repite ya viaja como campo propio del evento.
+    registro.sql = sql;
 
     // La identidad de la consulta nace de lo que realmente se va a
     // ejecutar: el SQL sin su marca de comentario, sus parámetros, la empresa y
@@ -108,6 +167,7 @@ export function createEngine({
     // catálogo invalida todo al cambiar una definición.
     const catalogVersion = catalog.version();
     const queryId = identificarConsulta({ sql, params, companyId: ctx.companyId, catalogVersion });
+    registro.queryId = queryId;
 
     // La llave con la que la caché guarda es el `queryId` con su procedencia
     // escrita al lado: `{versión del catálogo}:{empresa}:{queryId}`. El hash ya
@@ -124,6 +184,9 @@ export function createEngine({
       // Servida igual que cualquier otra, sólo que sin tiempo de base: `dbMs`
       // ausente es lo que distingue en la telemetría a la que no la consultó.
       telemetria.registrarOk({ consumer: ctx?.consumer });
+      registro.servedFrom = nivelDe(guardado);
+      registro.rows = guardado.rows.length;
+      registro.warnings = guardado.warnings.length;
       return {
         rows: guardado.rows,
         meta: {
@@ -146,11 +209,17 @@ export function createEngine({
       filas = await ejecutar(marcado(sql, queryId, ctx), params, presupuesto, fuente);
     } catch (error) {
       telemetria.registrarError({ consumer: ctx?.consumer, code: error?.code, gate: 'ejecutar' });
+      registro.gate = 'ejecutar';
       throw error;
     }
-    telemetria.registrarOk({ consumer: ctx?.consumer, dbMs: performance.now() - comienzo });
+    const dbMs = performance.now() - comienzo;
+    telemetria.registrarOk({ consumer: ctx?.consumer, dbMs });
 
     const rows = aNumeros(filas, medidas);
+    registro.servedFrom = 'live';
+    registro.rows = rows.length;
+    registro.dbMs = dbMs;
+    registro.warnings = advertencias.length;
 
     // Puerta · Guardar en caché. Sólo lo que se ejecutó en vivo: un resultado
     // servido desde la caché no se vuelve a guardar, así que su TTL cuenta
@@ -220,6 +289,61 @@ export function createEngine({
   }
 
   return { plan, run, telemetry: telemetria.snapshot };
+}
+
+// El evento que ve el observador: qué se pidió, qué se planificó, de dónde
+// salió la respuesta o por qué se rechazó, y cuánto tardó. Un objeto plano y
+// pequeño, pensado para caber en una línea de log.
+//
+// Los campos que no aplican no viajan en `undefined`: no están. Así la línea de
+// un hit de caché no dice `dbMs: undefined` —que se leería como "tardó nada en
+// la base"— sino que simplemente no habla de la base, que es lo que pasó.
+function eventoDe({ kind, ctx, registro, ms, observarSql }) {
+  const { error, logico } = registro;
+  return {
+    kind,
+    ...(registro.queryId === undefined ? {} : { queryId: registro.queryId }),
+    ...(ctx?.companyId === undefined ? {} : { companyId: ctx.companyId }),
+    ...(ctx?.consumer === undefined ? {} : { consumer: ctx.consumer }),
+    result: error ? 'error' : 'ok',
+    ...(error === undefined ? {} : camposDelError(error, registro)),
+    ...(registro.servedFrom === undefined ? {} : { servedFrom: registro.servedFrom }),
+    ...(registro.rows === undefined ? {} : { rows: registro.rows }),
+    ...(registro.dbMs === undefined ? {} : { dbMs: registro.dbMs }),
+    ...(registro.warnings === undefined ? {} : { warnings: registro.warnings }),
+    // Si el rechazo ocurrió antes de planificar no hay plan que describir, y el
+    // evento no lo inventa.
+    ...(logico === undefined ? {} : { plan: resumenDelPlan(logico) }),
+    // El SQL sólo si quien armó el engine lo pidió: nombra tablas físicas.
+    ...(observarSql && registro.sql !== undefined ? { sql: registro.sql } : {}),
+    ms,
+  };
+}
+
+// Un error del consumidor tiene código y a veces miembro; `gate` dice en qué
+// puerta cortó, que es lo que separa un rechazo de vocabulario de uno de
+// presupuesto. Lo que no es un error estructurado no tiene código y el evento
+// no se lo inventa: queda `result: 'error'` con el `gate` que lo ubica.
+function camposDelError(error, registro) {
+  return {
+    ...(error.code === undefined ? {} : { code: error.code }),
+    ...(error.member === undefined ? {} : { member: error.member }),
+    ...(registro.gate === undefined ? {} : { gate: registro.gate }),
+  };
+}
+
+// El plan lógico resumido, sin una sola palabra del esquema físico: entidad de
+// hechos, camino de joins por el **nombre de la relación** y los miembros
+// pedidos. El plan completo trae además presupuesto, filtros y derivadas; en
+// una línea de log lo que se quiere ver es qué se consultó y por dónde se llegó
+// (ADR 0008: los nombres físicos no salen del servidor).
+function resumenDelPlan(logico) {
+  return {
+    entity: logico.entity,
+    joins: logico.joins.map(({ from, to, via }) => ({ from, to, via })),
+    measures: logico.measures,
+    dimensions: logico.dimensions,
+  };
 }
 
 // El SQL que sale a la base va marcado con la consulta y el consumidor que lo
