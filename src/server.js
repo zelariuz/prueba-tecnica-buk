@@ -46,7 +46,26 @@ const caches = crearCacheDelServicio({ redisUrl: REDIS_URL, telemetria });
 if (!REDIS_URL) {
   console.warn('[caché] sin REDIS_URL: sólo L1 en memoria, cada instancia con la suya.');
 }
-const engine = createEngine({ catalog, pool, telemetria, cache: caches.cache });
+// Una línea JSON por consulta en stdout: es lo que hace que `docker compose
+// logs -f api` muestre en vivo qué se planificó, si la respuesta salió de la
+// caché o de la base y por qué se rechazó. La telemetría son contadores
+// agregados y responde "cómo va todo"; esto responde "qué acaba de pasar".
+// Una sola línea por evento, sin saltos, para que cada consulta sea un registro
+// y `grep` alcance. La demo no lo enciende: su salida es narrativa.
+function escribirLinea(evento) {
+  console.log(JSON.stringify({ t: new Date().toISOString(), ...evento }));
+}
+
+const engine = createEngine({
+  catalog,
+  pool,
+  telemetria,
+  cache: caches.cache,
+  observar: escribirLinea,
+  // El SQL nombra las tablas y columnas físicas que la vista pública esconde
+  // (ADR 0008): al log sólo va si alguien lo pide a propósito, en desarrollo.
+  observarSql: process.env.LOG_SQL === 'true',
+});
 const servidor = crearServidor({ engine, catalog, tokens, telemetria });
 
 servidor.listen(Number(PORT), HOST, () => {

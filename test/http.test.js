@@ -45,6 +45,10 @@ describe('capa HTTP', { ...conBase, timeout: 10_000 }, () => {
   let pool;
   let servidor;
   let base;
+  // El observador doble: acumula el evento que el engine emite por consulta. En
+  // producción esa función es la que escribe la línea JSON en stdout
+  // (`src/server.js`); aquí sólo se guarda para poder mirarla.
+  const eventos = [];
 
   before(async () => {
     pool = new pg.Pool({ connectionString: DATABASE_URL });
@@ -52,7 +56,12 @@ describe('capa HTTP', { ...conBase, timeout: 10_000 }, () => {
     for (const definicion of [reviews, employees, departments]) catalog.register(definicion);
     // Como en producción (`src/server.js`): el servicio arma su engine con la
     // caché L1 del proceso.
-    const engine = createEngine({ catalog, pool, cache: crearMemoryStore() });
+    const engine = createEngine({
+      catalog,
+      pool,
+      cache: crearMemoryStore(),
+      observar: (evento) => eventos.push(evento),
+    });
     servidor = crearServidor({ engine, catalog, tokens });
     await new Promise((listo) => servidor.listen(0, '127.0.0.1', listo));
     base = `http://127.0.0.1:${servidor.address().port}`;
@@ -61,6 +70,28 @@ describe('capa HTTP', { ...conBase, timeout: 10_000 }, () => {
   after(async () => {
     await new Promise((listo) => servidor.close(listo));
     await pool.end();
+  });
+
+  it('una consulta por HTTP emite un evento con la empresa y el consumidor del token', async () => {
+    const antes = eventos.length;
+
+    const respuesta = await fetch(`${base}/analytics/query`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${TOKEN_A}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ measures: ['reviews.count'], dimensions: ['departments.name'] }),
+    });
+
+    assert.equal(respuesta.status, 200);
+    const nuevos = eventos.slice(antes);
+    assert.equal(nuevos.length, 1, 'un evento por consulta');
+    const [evento] = nuevos;
+    assert.equal(evento.kind, 'run');
+    assert.equal(evento.result, 'ok');
+    // El contexto de sesión sale del token y de ninguna otra parte (ADR 0002):
+    // es lo que hace que la línea del log diga de quién era la consulta.
+    assert.equal(evento.companyId, 1);
+    assert.equal(evento.consumer, 'dashboard');
+    assert.equal(evento.plan.entity, 'reviews');
   });
 
   it('responde 200 con las filas del seed a una consulta válida', async () => {
