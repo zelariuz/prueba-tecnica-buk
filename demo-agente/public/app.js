@@ -313,6 +313,7 @@ function manejarLinea(evento) {
     estado.peticion = evento.peticion;
     estado.saltosPrevistos = evento.saltosPrevistos;
     if (evento.nota) mostrarAviso(`${evento.nota} — se ejecutó el camino sin agente.`);
+    rastro.append(tarjetaDelCatalogo());
     mostrarEnCurso(1);
     return;
   }
@@ -366,6 +367,37 @@ function mostrarEnCurso(numero) {
     : `Salto ${numero} en curso…`;
   fila.append(tarjeta);
   rastro.append(fila);
+}
+
+// Antes del salto 1 no hay un salto: el GET del catálogo lo hizo el mini back
+// al arrancar, una sola vez, y lo pegó en el prompt de creación de la sesión.
+// Se muestra para que el flujo del consumidor se lea completo: token → catálogo
+// → JSON → dry-run → consulta. No se repite por clic.
+function tarjetaDelCatalogo() {
+  const sesion = estado.sesion ?? {};
+  const fila = document.createElement('div');
+  fila.className = 'salto capa previo';
+  const tarjeta = document.createElement('div');
+  tarjeta.className = 'tarjeta';
+  const titulo = document.createElement('div');
+  titulo.className = 'titulo-salto';
+  titulo.append(texto('span', 'Antes de todo', 'numero'), texto('span', 'GET /analytics/catalog', 'destino'));
+  tarjeta.append(titulo);
+  tarjeta.append(
+    texto(
+      'p',
+      'Lo inició el mini back al arrancar, una sola vez, con el token agente: pidió el catálogo ' +
+        'público a la capa y lo pegó entero en el prompt de creación de la sesión del agente. ' +
+        'Por eso no aparece como salto en cada clic: el agente ya lo tiene en memoria.' +
+        (sesion.creadaEn ? ` Sesión creada el ${sesion.creadaEn}` : '') +
+        (sesion.versionCatalogo ? ` · catálogo ${sesion.versionCatalogo}` : '') +
+        (sesion.huella ? ` · huella ${sesion.huella}` : '') +
+        '. Si el catálogo cambia, la huella cambia y el mini back crea una sesión nueva al arrancar.',
+      'nota',
+    ),
+  );
+  fila.append(tarjeta);
+  return fila;
 }
 
 function quitarEnCurso() {

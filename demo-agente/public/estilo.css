@@ -577,6 +577,14 @@ summary {
 
 /* ---------- salto en curso ---------- */
 
+.previo .tarjeta {
+  background: var(--superficie-2);
+}
+
+.previo .titulo-salto {
+  font-size: 15px;
+}
+
 .en-curso .tarjeta {
   border-style: dashed;
   color: var(--apagado);
