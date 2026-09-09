@@ -45,3 +45,40 @@ test('el camino sin agente son dos saltos: dry-run con token interno y consulta 
     ],
   );
 });
+
+test('los marcadores :desde, :hasta y :departamento se sustituyen en la consulta enviada', async () => {
+  const capa = capaFalsa([respuestaOk]);
+
+  const rastro = await ejecutar(peticion(), { agente: null, capa, reloj: () => 0 });
+
+  const enviado = rastro[1].enviado;
+  assert.deepEqual(enviado.timeDimensions[0].dateRange, ['2025-01-01', '2025-12-31']);
+  assert.deepEqual(enviado.filters, [
+    { member: 'departments.name', operator: 'equals', values: ['Ingeniería'] },
+  ]);
+});
+
+test('un departamento vacío saca el filtro de la consulta en vez de mandarlo vacío', async () => {
+  const capa = capaFalsa([respuestaOk]);
+
+  const rastro = await ejecutar(peticion({ departamento: '' }), {
+    agente: null,
+    capa,
+    reloj: () => 0,
+  });
+
+  assert.equal('filters' in rastro[1].enviado, false);
+});
+
+test('un departamento vacío deja intactos los demás filtros de la consulta', async () => {
+  const capa = capaFalsa([respuestaOk]);
+
+  const rastro = await ejecutar(peticion({ departamento: '' }), {
+    agente: null,
+    capa,
+    reloj: () => 0,
+  });
+
+  assert.deepEqual(rastro[1].enviado.segments, ['reviews.completed']);
+  assert.deepEqual(rastro[1].enviado.timeDimensions[0].dateRange, ['2025-01-01', '2025-12-31']);
+});

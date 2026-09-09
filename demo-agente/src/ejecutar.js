@@ -1,14 +1,14 @@
 // El seam de la demo: dada la petición ya parseada y los colaboradores
 // inyectados (agente, capa y reloj), devuelve el rastro de saltos. No sabe de
 // HTTP ni de HTML: eso vive en los adaptadores.
-import { preguntaPorId } from './preguntas.js';
+import { preguntaPorId, prepararConsulta } from './preguntas.js';
 
 const RUTA_CONSULTA = '/analytics/query';
 const RUTA_DRY_RUN = '/analytics/query?dryRun=true';
 
 export async function ejecutar(peticion, { agente, capa, reloj }) {
   const pregunta = preguntaPorId(peticion.pregunta);
-  const consulta = pregunta.consulta;
+  const consulta = prepararConsulta(pregunta, peticion);
 
   const rastro = [];
   rastro.push(
