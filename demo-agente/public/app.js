@@ -208,6 +208,32 @@ function pintarSesion(sesion) {
   }
 }
 
+// El catálogo se pide a la capa en el momento (por el mini back, con el token
+// agente) y se compara con el que aprendió la sesión.
+$('ver-catalogo').addEventListener('click', async () => {
+  const estadoTexto = $('catalogo-estado');
+  const pre = $('modal-catalogo');
+  if (!pre.hidden) {
+    pre.hidden = true;
+    estadoTexto.textContent = '';
+    return;
+  }
+  estadoTexto.textContent = 'pidiendo…';
+  try {
+    const respuesta = await fetch('/api/catalogo');
+    const datos = await respuesta.json();
+    if (!respuesta.ok) throw new Error(datos.error ?? `HTTP ${respuesta.status}`);
+    pre.textContent = JSON.stringify(datos.catalogo, null, 2);
+    pre.hidden = false;
+    const igual = datos.huellaDeLaSesion && datos.huella === datos.huellaDeLaSesion;
+    estadoTexto.textContent = `${datos.origen} · huella ${datos.huella ?? '?'} · ${
+      igual ? 'es el mismo que aprendió la sesión' : 'DISTINTO al que aprendió la sesión: reiniciar el mini back'
+    }`;
+  } catch (error) {
+    estadoTexto.textContent = `No se pudo: ${error.message}`;
+  }
+});
+
 function abrirModal() {
   const sesion = estado.sesion;
   if (!sesion) return;

@@ -11,7 +11,7 @@ import { readFile } from 'node:fs/promises';
 
 import { ejecutar } from './ejecutar.js';
 import { preguntaPorId, preguntas, prepararTexto } from './preguntas.js';
-import { promptDeCreacion, PROMPT_DE_SISTEMA } from './sesion.js';
+import { huellaDelCatalogo, promptDeCreacion, PROMPT_DE_SISTEMA } from './sesion.js';
 
 const PUBLICO = new URL('../public/', import.meta.url);
 
@@ -34,6 +34,9 @@ export function crearServidor({
   agenteMotivo = null,
   sesion = null,
   catalogo = null,
+  // Pide el catálogo a la capa AHORA (para compararlo con el que aprendió la
+  // sesión). Opcional: sin él la ruta /api/catalogo devuelve el del arranque.
+  pedirCatalogoEnVivo = null,
   claudeCode = null,
   modelo = null,
   reloj = () => performance.now(),
@@ -43,6 +46,20 @@ export function crearServidor({
 
     if (url.pathname === '/api/preguntas') {
       responderJson(respuesta, 200, preguntas);
+      return;
+    }
+    if (url.pathname === '/api/catalogo') {
+      try {
+        const enVivo = pedirCatalogoEnVivo ? await pedirCatalogoEnVivo() : catalogo;
+        responderJson(respuesta, 200, {
+          origen: pedirCatalogoEnVivo ? 'GET /analytics/catalog ahora, token agente' : 'el del arranque',
+          huella: enVivo ? huellaDelCatalogo(enVivo) : null,
+          huellaDeLaSesion: sesion?.huella ?? null,
+          catalogo: enVivo,
+        });
+      } catch (error) {
+        responderJson(respuesta, 502, { error: `la capa no respondió el catálogo: ${error.message}` });
+      }
       return;
     }
     if (url.pathname === '/api/sesion') {

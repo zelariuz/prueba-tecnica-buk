@@ -57,6 +57,7 @@ if (!agente) console.error(`Aviso: sin agente — ${agenteMotivo}.`);
 
 crearServidor({
   capa: crearCapa({ url, tokens }),
+  pedirCatalogoEnVivo: () => pedirCatalogo({ url, tokens }),
   agente,
   agenteMotivo,
   sesion,
