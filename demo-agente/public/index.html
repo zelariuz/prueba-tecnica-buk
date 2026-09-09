@@ -38,12 +38,6 @@
               </span>
             </label>
 
-            <label class="campo">
-              <span class="etiqueta">Texto en lenguaje natural</span>
-              <textarea id="texto" name="texto"></textarea>
-              <span class="nota">Es lo que se le manda al agente. Editable.</span>
-            </label>
-
             <div class="fila">
               <label class="campo">
                 <span class="etiqueta">Desde</span>
@@ -71,6 +65,11 @@
                 esta pregunta, sin ningún modelo de por medio.
                 <button type="button" class="enlace" id="ver-prompt">lo que sabe esa sesión</button>
               </p>
+              <label class="campo" id="campo-texto" hidden>
+                <span class="etiqueta">Texto en lenguaje natural</span>
+                <textarea id="texto" name="texto"></textarea>
+                <span class="nota">Es lo que se le manda al agente, con los filtros de arriba. Editable.</span>
+              </label>
             </div>
 
             <button type="submit" class="ejecutar" id="ejecutar">Ejecutar</button>

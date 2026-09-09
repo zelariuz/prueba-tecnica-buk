@@ -157,6 +157,12 @@ function sincronizarRango() {
 let textoEditado = false;
 $('texto').addEventListener('input', () => (textoEditado = true));
 
+// El texto solo existe para el agente: aparece debajo de la casilla al marcarla.
+function mostrarTextoSegunAgente() {
+  $('campo-texto').hidden = !$('agente').checked;
+}
+$('agente').addEventListener('change', mostrarTextoSegunAgente);
+
 function sincronizarTexto() {
   if (textoEditado) return;
   const pregunta = preguntaElegida();
@@ -240,6 +246,7 @@ function aplicarURL(parametros) {
   if (!fechasEditadas) sincronizarRango();
   $('departamento').value = parametros.get('departamento') ?? '';
   $('agente').checked = parametros.get('agente') === '1' && !$('agente').disabled;
+  mostrarTextoSegunAgente();
   const texto = parametros.get('texto') ?? '';
   if (texto) {
     $('texto').value = texto;
