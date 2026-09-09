@@ -629,7 +629,7 @@ tiene.
   cuentan en `cacheErrors` por nivel. La caché no conoce la telemetría (recibe un
   callback), y como ninguna consulta falla por un nivel caído, sin ese contador
   un Redis muerto sería invisible hasta que alguien mirara la latencia.
-- **La llave lleva la empresa en el texto**: `capa:{versión del catálogo}:{empresa}:{queryId}`.
+- **La llave lleva la empresa en el texto**: `capa:{versión del catálogo}:{empresa}:{fuente}.{huella}:{queryId}`.
   El aislamiento no depende de ese texto —depende del hash, que ya lleva las dos
   cosas adentro—, pero en una caché compartida lo que no se ve no se puede
   auditar: con la empresa escrita, comprobar que ninguna entrada quedó sin dueño
@@ -792,6 +792,23 @@ cómo va todo, el evento dice qué acaba de pasar.
 
 ## Estado
 
+Identidad de la fuente en la llave de caché (09-09, discusión 26 P12-P16): la
+llave pasó de `{versión}:{empresa}:{queryId}` a
+`{versión}:{empresa}:{fuente}.{huella}:{queryId}`. Motivo: el `queryId`
+identifica la consulta y no la base; dos despliegues con una fuente llamada
+igual sobre bases distintas daban la misma llave. La huella (8 hex) sale de
+`resolverIdentidad` en `src/engine.js`, por prioridad: `id` configurado en
+`fuentes` → `dialecto.identificador(pool)` (Postgres: `system_identifier` de
+`pg_control_system()`, que las réplicas físicas comparten; SQLite: el archivo)
+→ host/puerto/base del pool sin credencial → nombre. `engine.identidadDeFuente`
+la expone con su origen. `CACHE_PREFIX` separa ambientes en Redis
+(`src/cache/index.js`, `server.js`, `demo.js`). Tests: 4 de identidad y 1 de
+aislamiento entre bases en `cache.test.js`, la forma de la llave en
+`redis.test.js`, archivo vs memoria en `sqlite.test.js`. Verificado: **179 tests
+en verde** con `DATABASE_URL` y `REDIS_URL` (contra Docker, el rol `capa` sí
+puede ejecutar `pg_control_system()`: origen `motor`), 114 sin nada (1 se
+salta). Snapshots de SQL sin cambios.
+
 Log por consulta terminado (08-09): el engine emite un evento por `run` y por
 `plan` por la costura `observar`, y el servicio `api` lo escribe como una línea
 JSON en stdout. Verificado contra Docker: `docker compose logs api` muestra la
@@ -836,7 +853,7 @@ Docker: dos POST iguales dan `live` y `cache-l1`; tras `docker compose restart
 api` (que vacía la L1) el mismo POST vuelve `cache-l2` con el `asOf` de la
 ejecución original; con `docker compose stop redis` una consulta nueva se sirve
 `live` con HTTP 200 en 230 ms y la repetida en 2 ms desde L1. Las llaves reales
-son `capa:{versión}:{empresa}:{queryId}`. `npm run demo` levanta una segunda
+son `capa:{versión}:{empresa}:{fuente}.{huella}:{queryId}`. `npm run demo` levanta una segunda
 instancia del engine que responde `cache-l2` y cierra con hits por nivel y
 errores de caché. Fuera de alcance, documentado como evolución: invalidación por
 escritura de los módulos, single-flight, pre-agregaciones y Parquet/S3.

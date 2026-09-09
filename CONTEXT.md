@@ -150,11 +150,17 @@ equivalente en Cube, se indica para facilitar la lectura al equipo.
   cambiar la consulta: sobre todo el **límite efectivo**, que lo pone el
   presupuesto de la clase de consumidor y viaja en los parámetros. La llave con
   la que se guarda escribe al lado la procedencia que el hash ya lleva adentro:
-  `{versión del catálogo}:{empresa}:{queryId}`, y en Redis con el prefijo del
-  servicio: `capa:{versión}:{empresa}:{queryId}`. El aislamiento no depende de
-  ese texto —depende del hash—, pero en una caché compartida lo que no se ve no
-  se puede auditar: con la empresa escrita, comprobar que ninguna entrada quedó
-  sin dueño es un `SCAN`.
+  `{versión del catálogo}:{empresa}:{fuente}.{huella}:{queryId}`, y en Redis
+  con el prefijo del servicio: `capa:{versión}:{empresa}:{fuente}.{huella}:{queryId}`.
+  El aislamiento no depende de ese texto —depende del hash—, pero en una caché
+  compartida lo que no se ve no se puede auditar: con la empresa escrita,
+  comprobar que ninguna entrada quedó sin dueño es un `SCAN`.
+- **Huella de la fuente**: 8 hex que identifican la base detrás del nombre de
+  una Fuente, porque el `queryId` identifica la consulta y no la base. Sale por
+  prioridad del `id` configurado, de lo que el motor sabe de sí mismo (en
+  Postgres el `system_identifier`, que las réplicas físicas comparten), de la
+  conexión del pool sin credencial, o del nombre. Réplica de lectura = misma
+  Fuente y misma huella; copia con retraso u otro motor = otra Fuente.
 - **`servedFrom`**: de dónde salió la respuesta: `live` (se ejecutó contra la
   base), `cache-l1` (estaba guardada en memoria de este proceso) o `cache-l2`
   (estaba en la caché compartida: la calculó otra instancia, o este mismo

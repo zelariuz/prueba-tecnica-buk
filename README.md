@@ -536,11 +536,23 @@ Dos puertas nuevas en el pipeline: **buscar en caché** después de planificar
 caché** después de ejecutar en vivo.
 
 - **La llave es el `queryId`**, no un valor aparte, con su procedencia escrita al
-  lado: `capa:{versión del catálogo}:{empresa}:{queryId}`. La empresa dentro del
-  hash hace imposible que una entrada de A sirva a B; la versión del catálogo
-  invalida todo al cambiar una definición, sin recorrer nada. Que además esté en
-  el **texto** de la llave es lo que permite auditar una caché compartida con un
-  `SCAN` en vez de confiar en el hash.
+  lado: `capa:{versión del catálogo}:{empresa}:{fuente}.{huella}:{queryId}`. La
+  empresa dentro del hash hace imposible que una entrada de A sirva a B; la
+  versión del catálogo invalida todo al cambiar una definición, sin recorrer
+  nada. Que además esté en el **texto** de la llave es lo que permite auditar
+  una caché compartida con un `SCAN` en vez de confiar en el hash.
+- **La fuente va con su huella** porque el `queryId` identifica la consulta, no
+  la base: dos despliegues con una fuente que se llama igual (`postgres`) sobre
+  bases distintas producen el mismo `queryId`, y si compartieran un Redis
+  compartirían entradas. La huella son 8 hex de la identidad de la fuente, por
+  prioridad: el `id` que configure quien despliega en el mapa `fuentes`; lo que
+  el motor sabe de sí mismo (en Postgres, el `system_identifier` de
+  `pg_control_system()`, que las réplicas físicas heredan: réplicas del mismo
+  primario, misma huella); la conexión del pool (host, puerto y base, nunca la
+  credencial); y por último el nombre. Se resuelve una vez por fuente y
+  `engine.identidadDeFuente(nombre)` dice cuál origen ganó. Para separar
+  ambientes que comparten un Redis existe además **`CACHE_PREFIX`** (por
+  defecto `capa`).
 - **`meta.servedFrom`** dice de dónde salió la respuesta:
 
   | valor | significa |
@@ -582,7 +594,8 @@ traduce eso a `servedFrom` y no sabe cuántos niveles hay.
 ms como techo por operación— degrada la respuesta a `cache-l1` o `live` y se
 cuenta en `telemetry().cacheErrors` por nivel; ninguna consulta falla por la
 caché. `REDIS_URL` es opcional: sin ella el servicio arranca con sólo L1 y lo
-dice en el log.
+dice en el log. `CACHE_PREFIX` (opcional, por defecto `capa`) es el prefijo de
+las llaves en Redis: uno por ambiente cuando varios comparten el mismo Redis.
 
 Verlo en marcha:
 
