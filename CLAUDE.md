@@ -747,7 +747,59 @@ refactor que no cabía antes de la entrega), `many_to_one` verificado contra el
 `unique` del snapshot (12) y el pool lleno que se reporta como
 `SOURCE_UNAVAILABLE` (13).
 
+## Log por consulta (08-09)
+
+Un evento por consulta que el servicio escribe como línea JSON en stdout
+(discusiones 09 y 17 del diseño: `docker compose logs api` no mostraba nada por
+consulta). Complementa a la telemetría, no la reemplaza: los contadores dicen
+cómo va todo, el evento dice qué acaba de pasar.
+
+- **La costura es `createEngine({ observar, observarSql })`**
+  (`src/engine.js:40`). `observar` es opcional y por defecto no hace nada; se
+  llama **exactamente una vez** por `engine.run` (`src/engine.js:69`) y por
+  `engine.plan` (`src/engine.js:49`), desde un `finally`, para que no exista un
+  camino de salida que se olvide de emitir. Lo que la llamada va aprendiendo se
+  acumula en un `registro` que las puertas rellenan.
+- **Nada falla por observar** (`src/engine.js:86`, `emitir`): el `try/catch`
+  está por la misma razón que el de la caché —el engine no sabe qué función le
+  pasaron y una consulta ya respondida no puede morir por el log—. El fallo no
+  se cuenta en ninguna parte: quien no logra observar tampoco se enteraría del
+  contador.
+- **El evento no lleva nombres físicos** (`src/engine.js:301`, `eventoDe`; el
+  plan resumido en `resumenDelPlan`): entidad, joins por el **nombre de la
+  relación**, medidas y dimensiones, la misma regla que la vista pública y el
+  dry-run (ADR 0008). El `sql` entra sólo con `observarSql: true`.
+- **Lo que no aplica no viaja**: un hit de caché no dice `dbMs: undefined` —que
+  se leería como "tardó nada en la base"— sino que no habla de la base. Un
+  rechazo antes de planificar no trae `queryId` ni `plan`, porque no llegaron a
+  existir. `gate` se copia a mano: en el error es una propiedad **no
+  enumerable** (`src/planner.js:132`).
+- **El servicio lo cablea** con `escribirLinea` (`src/server.js:55`):
+  `JSON.stringify({ t: new Date().toISOString(), ...evento })`, una línea sin
+  saltos para `docker compose logs -f api`. `observarSql:
+  process.env.LOG_SQL === 'true'`; en `docker-compose.yml` la variable está
+  **comentada** como ejemplo. La demo no lo enciende: su salida es narrativa.
+- **Tests**: `test/observador.test.js` (6, por los seams `engine.run` y
+  `engine.plan` con un observador doble) y uno en `test/http.test.js:75` que
+  comprueba que la consulta por HTTP emite el evento con la empresa y el
+  consumidor del token. Que `src/server.js` cablea el observador no se prueba:
+  se verificó corriendo el servicio y leyendo `docker compose logs api`.
+- **README**, sección "Ver qué se hace, en vivo": las tres líneas reales (live,
+  cache-l1 y rechazo), `LOG_SQL=true` y la receta de Postgres para ver el SQL
+  por la marca `/* queryId consumer */` —con **dos `-c`**, porque psql mete
+  varias sentencias de un mismo `-c` en una transacción y `ALTER SYSTEM` no
+  corre dentro de una—.
+
 ## Estado
+
+Log por consulta terminado (08-09): el engine emite un evento por `run` y por
+`plan` por la costura `observar`, y el servicio `api` lo escribe como una línea
+JSON en stdout. Verificado contra Docker: `docker compose logs api` muestra la
+línea `live` con `dbMs`, la repetida con `servedFrom: "cache-l1"` y sin `dbMs`,
+y el rechazo con `code`, `member` y `gate` y sin `queryId`; con `LOG_SQL=true`
+la línea agrega el `sql`. **172 tests en verde** con `DATABASE_URL` y
+`REDIS_URL`, **110 sin ninguna variable** (1 se salta), los tres snapshots de
+SQL sin cambios.
 
 Correcciones del abogado del diablo terminadas (08-09): los diez hallazgos
 bloqueantes de la lista de arriba están corregidos con test, un commit cada uno.

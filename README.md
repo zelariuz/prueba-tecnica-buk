@@ -380,6 +380,100 @@ así que corren siempre:
 node --test test/sqlite.test.js
 ```
 
+## Ver qué se hace, en vivo
+
+La telemetría son contadores agregados: responden *cómo va todo*. Esto responde
+*qué acaba de pasar*. El engine emite **un evento por consulta** —una llamada a
+`run` o a `plan`, terminara bien o mal— por una costura inyectable,
+`createEngine({ observar })` (`src/engine.js`). El servicio `api` la cablea con
+una función que escribe **una línea JSON por consulta en stdout**
+(`src/server.js`), así que `docker compose logs -f api` muestra en vivo qué se
+planificó, si la respuesta salió de la caché o de la base y por qué se rechazó.
+
+```bash
+docker compose up -d --build api
+docker compose logs -f --no-log-prefix api
+```
+
+Una consulta servida en vivo (línea real, cortada aquí sólo para que quepa):
+
+```json
+{"t":"2026-09-09T00:21:54.552Z","kind":"run","queryId":"3a5a574285fabfe9","companyId":1,
+ "consumer":"dashboard","result":"ok","servedFrom":"live","rows":2,"dbMs":3.79,"warnings":0,
+ "plan":{"entity":"reviews","joins":[{"from":"reviews","to":"employees","via":"employee"},
+ {"from":"employees","to":"departments","via":"department"}],
+ "measures":["reviews.avg_score"],"dimensions":["departments.name"]},"ms":52.16}
+```
+
+La misma consulta repetida, servida desde la caché — `servedFrom` cambia y
+**`dbMs` no está**, porque no hubo base que consultar:
+
+```json
+{"t":"2026-09-09T00:22:06.303Z","kind":"run","queryId":"3a5a574285fabfe9","companyId":1,
+ "consumer":"dashboard","result":"ok","servedFrom":"cache-l1","rows":2,"warnings":0,
+ "plan":{…},"ms":0.83}
+```
+
+Y una rechazada, con la **puerta** que cortó y sin `queryId` —el rechazo ocurrió
+antes de que la consulta llegara a tener identidad ni plan—:
+
+```json
+{"t":"2026-09-09T00:22:06.316Z","kind":"run","companyId":1,"consumer":"dashboard",
+ "result":"error","code":"UNKNOWN_MEMBER","member":"reviews.avg_scor",
+ "gate":"resolverMiembros","ms":1.72}
+```
+
+Los campos: `kind` (`run` o `plan`, y el dry-run se registra igual), `queryId`,
+`companyId` y `consumer` del contexto de sesión, `result`; en un `ok` de `run`,
+`servedFrom` (`live` | `cache-l1` | `cache-l2`), `rows`, `dbMs` **sólo si tocó la
+base** y `warnings`; en un error, `code`, `member` y `gate`; el `plan` resumido y
+`ms`. Lo que no aplica no viaja como `undefined`: no está.
+
+**El evento no lleva nombres físicos.** El `plan` es el plan lógico resumido
+—entidad, camino de joins por el *nombre de la relación*, medidas y
+dimensiones—, la misma regla que la vista pública del catálogo y el dry-run (ADR
+0008): un log se lee en una consola compartida. El SQL entra sólo si se pide a
+propósito, con **`LOG_SQL=true`**, que en `docker-compose.yml` está escrito como
+ejemplo pero **comentado**: descomentar esa línea y `docker compose up -d
+--build api` agrega el campo `sql` a cada evento. Es para desarrollo.
+
+Nada falla por observar: un observador que lanza no rompe la consulta, la misma
+regla que la caché.
+
+### El SQL de verdad, desde Postgres
+
+Para ver el SQL tal como llegó al motor —con sus parámetros y su tiempo real—
+la fuente es Postgres, no el servicio. La marca `/* queryId consumer */` que el
+engine le pone al SQL es lo que permite reconocer cada consulta ahí:
+
+```bash
+# Dos `-c` y no uno: psql mete varias sentencias de un mismo `-c` en una
+# transacción, y `ALTER SYSTEM` no corre dentro de una.
+docker compose exec db psql -U capa -d capa_semantica \
+  -c "ALTER SYSTEM SET log_min_duration_statement = 0;" -c "SELECT pg_reload_conf();"
+docker compose logs -f --no-log-prefix db | grep -A12 "/\* "
+```
+
+Sale el SQL con su marca, su duración y sus parámetros:
+
+```
+LOG:  duration: 0.138 ms  execute <unnamed>: /* c2688196684ac270 agent */
+	WITH reviews AS (
+	  SELECT period
+	  FROM performance_reviews
+	  WHERE company_id = $1
+	    AND period >= $2
+	    AND period <= $3
+	)
+	 SELECT TO_CHAR(DATE_TRUNC('month', reviews.period), 'YYYY-MM-DD') AS "reviews.period", …
+DETAIL:  parameters: $1 = '1', $2 = '2025-01-01', $3 = '2025-12-31', $4 = '1000'
+```
+
+Lo que se sirve **desde la caché no aparece ahí**: nunca tocó la base. Esa es
+justamente la diferencia que el log del servicio sí muestra, con `servedFrom`.
+Para dejarlo como estaba: `ALTER SYSTEM RESET log_min_duration_statement;` y
+otro `SELECT pg_reload_conf();`.
+
 ## Telemetría
 
 El engine cuenta lo que pasó por él y lo expone con `engine.telemetry()`

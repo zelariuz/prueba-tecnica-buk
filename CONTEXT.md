@@ -242,6 +242,21 @@ equivalente en Cube, se indica para facilitar la lectura al equipo.
   sin ese contador sería invisible. Una respuesta servida desde la
   caché cuenta como servida pero no suma al tiempo de base. Es reinicializable;
   exportarla está fuera de alcance.
+- **Observador**: la costura del **log en vivo** (`createEngine({ observar })`).
+  Una función opcional que el engine llama **una vez por consulta** —una llamada
+  a `run` o a `plan`, terminara bien o mal— con un **evento**: un objeto plano
+  con `kind` (`run`/`plan`), `queryId` si se llegó a calcular, `companyId` y
+  `consumer`, `result`, en un `ok` de `run` el `servedFrom`, las filas, el
+  tiempo de base **sólo si tocó la base** y cuántas advertencias, en un error el
+  código, el miembro y la **puerta** que rechazó, el **plan lógico resumido**
+  (entidad, joins por nombre de relación, medidas y dimensiones) y la duración
+  total. Es lo complementario de la telemetría: los contadores dicen cómo va
+  todo, el evento dice qué acaba de pasar. El evento **no lleva nombres
+  físicos** —el SQL sólo si el engine se armó con `observarSql: true`, apagado
+  por defecto— y **nada falla por observar**: un observador que lanza no rompe
+  la consulta, la misma regla que la caché. El servicio HTTP lo cablea con una
+  función que escribe una línea JSON por consulta en stdout (`src/server.js`);
+  la demo no, porque su salida es narrativa.
 - **Identidad de la consulta (`queryId`)**: hash del SQL que se va a ejecutar
   (sin su marca de comentario), sus parámetros, la empresa y la versión del
   catálogo. La serialización es canónica, así que reordenar las claves del JSON
