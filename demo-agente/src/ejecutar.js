@@ -15,7 +15,7 @@ const DRY_RUN = 'dry-run (params, plan y SQL)';
 const CONSULTA = 'consulta';
 const CONSULTA_CORREGIDA = 'consulta (corregida)';
 
-export async function ejecutar(peticion, { agente, capa, reloj }) {
+export async function ejecutar(peticion, { agente, capa, reloj, alSalto = null }) {
   const pregunta = preguntaPorId(peticion.pregunta);
   if (!pregunta) {
     throw new Error(
@@ -26,20 +26,21 @@ export async function ejecutar(peticion, { agente, capa, reloj }) {
   }
   const aLaCapa = saltosALaCapa({ capa, reloj });
   const rastro = [];
+  const agregar = anotarEn(rastro, alSalto);
 
   // Con agente, el JSON que sigue al resto del rastro lo escribe él; sin
   // agente, sale del preparado. De ahí para abajo, el camino es el mismo.
   let consulta = prepararConsulta(pregunta, peticion);
   if (peticion.usarAgente) {
     const primero = await saltoAlAgente(promptDelClic(pregunta, peticion), { agente, reloj });
-    rastro.push(primero.salto);
+    agregar(primero.salto);
     if (!primero.consulta) return rastro;
     consulta = primero.consulta;
   }
 
-  rastro.push(await aLaCapa(consulta, DRY_RUN));
+  agregar(await aLaCapa(consulta, DRY_RUN));
   const laConsulta = await aLaCapa(consulta, CONSULTA);
-  rastro.push(laConsulta);
+  agregar(laConsulta);
 
   // Un solo reintento, y solo con agente: la capa rechazó lo que él escribió,
   // así que se le devuelve el error con su sugerencia y se repite el salto 3.
@@ -51,11 +52,29 @@ export async function ejecutar(peticion, { agente, capa, reloj }) {
     { agente, reloj },
     'agente — corrección',
   );
-  rastro.push(correccion.salto);
+  agregar(correccion.salto);
   if (!correccion.consulta) return rastro;
 
-  rastro.push(await aLaCapa(correccion.consulta, CONSULTA_CORREGIDA));
+  agregar(await aLaCapa(correccion.consulta, CONSULTA_CORREGIDA));
   return rastro;
+}
+
+// Cada salto entra al rastro por acá, y por acá se avisa. El observador es
+// opcional: la página lo usa para dibujar el salto apenas está listo —el rastro
+// completo llega segundos después—, y los tests entran sin él.
+function anotarEn(rastro, alSalto) {
+  return function agregar(salto) {
+    rastro.push(salto);
+    if (!alSalto) return;
+    // El `try` está por lo mismo que el del log de la capa: quien ejecuta no
+    // sabe qué función le pasaron, y una consulta ya hecha no puede morir
+    // porque el que miraba se cayó.
+    try {
+      alSalto(salto, rastro.length - 1);
+    } catch {
+      // nada falla por observar
+    }
+  };
 }
 
 // Los tres saltos a la capa son el mismo salto con otro nombre: qué se manda y

@@ -472,3 +472,72 @@ test('un 5xx de la consulta tampoco dispara la corrección del agente', async ()
   assert.equal(rastro.length, 3);
   assert.equal(agente.prompts.length, 1);
 });
+
+// ---------------------------------------------------------------------------
+// El observador `alSalto`: la página lo usa para escribir cada salto apenas
+// está listo, en vez de esperar al rastro entero. Es opcional y no cambia el
+// rastro que se devuelve.
+test('alSalto se llama una vez por salto, en orden y con el mismo objeto que termina en el rastro', async () => {
+  const capa = capaFalsa([respuestaOk, errorUnknownMember, respuestaOk]);
+  const agente = agenteFalso([
+    JSON.stringify(consultaDelAgente),
+    JSON.stringify(consultaCorregida),
+  ]);
+  const vistos = [];
+
+  const rastro = await ejecutar(peticion({ usarAgente: true }), {
+    agente,
+    capa,
+    reloj: () => 0,
+    alSalto: (salto, indice) => vistos.push([salto, indice]),
+  });
+
+  assert.equal(vistos.length, rastro.length);
+  assert.deepEqual(
+    vistos.map(([, indice]) => indice),
+    [0, 1, 2, 3, 4],
+  );
+  // Mismo objeto, no una copia: lo que se dibujó apenas terminó es lo mismo
+  // que después aparece en el rastro.
+  vistos.forEach(([salto, indice]) => assert.equal(salto, rastro[indice]));
+});
+
+// Misma regla que el observador de la capa: nada falla por observar. Si la
+// página revienta al dibujar un salto, el rastro sigue saliendo entero.
+test('un alSalto que lanza no corta el rastro', async () => {
+  const capa = capaFalsa([respuestaOk, errorUnknownMember, respuestaOk]);
+  const agente = agenteFalso([
+    JSON.stringify(consultaDelAgente),
+    JSON.stringify(consultaCorregida),
+  ]);
+
+  const rastro = await ejecutar(peticion({ usarAgente: true }), {
+    agente,
+    capa,
+    reloj: () => 0,
+    alSalto: () => {
+      throw new Error('el socket se cerró');
+    },
+  });
+
+  assert.equal(rastro.length, 5);
+  assert.equal(capa.llamadas.length, 3);
+});
+
+// Observar no cambia lo observado: el rastro es el mismo con y sin observador,
+// que es lo que permite que la página progresiva y los tests miren lo mismo.
+test('sin alSalto el rastro es exactamente el mismo que con alSalto', async () => {
+  const corrida = (extra) =>
+    ejecutar(peticion({ usarAgente: true }), {
+      agente: agenteFalso([JSON.stringify(consultaDelAgente), JSON.stringify(consultaCorregida)]),
+      capa: capaFalsa([respuestaOk, errorUnknownMember, respuestaOk]),
+      reloj: () => 0,
+      ...extra,
+    });
+
+  const sinObservador = await corrida({});
+  const conObservador = await corrida({ alSalto: () => {} });
+
+  assert.deepEqual(sinObservador, conObservador);
+  assert.equal(sinObservador.length, 5);
+});
