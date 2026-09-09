@@ -1,0 +1,270 @@
+[
+  {
+    "id": "evaluaciones-por-departamento",
+    "titulo": "Evaluaciones por departamento y trimestre",
+    "texto": "Score promedio y evaluaciones completadas por departamento y trimestre, entre :desde y :hasta, para :departamento.",
+    "filtros": [
+      "desde",
+      "hasta",
+      "departamento"
+    ],
+    "consulta": {
+      "measures": [
+        "reviews.avg_score",
+        "reviews.completed_count"
+      ],
+      "dimensions": [
+        "departments.name"
+      ],
+      "segments": [
+        "reviews.completed"
+      ],
+      "timeDimensions": [
+        {
+          "dimension": "reviews.period",
+          "granularity": "quarter",
+          "dateRange": [
+            ":desde",
+            ":hasta"
+          ]
+        }
+      ],
+      "filters": [
+        {
+          "member": "departments.name",
+          "operator": "equals",
+          "values": [
+            ":departamento"
+          ]
+        }
+      ],
+      "order": {
+        "reviews.period": "asc"
+      },
+      "limit": 500
+    }
+  },
+  {
+    "id": "completitud-por-departamento",
+    "titulo": "Completitud de evaluaciones por departamento",
+    "texto": "Porcentaje de evaluaciones completadas por departamento, entre :desde y :hasta, para :departamento.",
+    "filtros": [
+      "desde",
+      "hasta",
+      "departamento"
+    ],
+    "consulta": {
+      "measures": [
+        "reviews.completion_rate"
+      ],
+      "dimensions": [
+        "departments.name"
+      ],
+      "timeDimensions": [
+        {
+          "dimension": "reviews.period",
+          "granularity": "year",
+          "dateRange": [
+            ":desde",
+            ":hasta"
+          ]
+        }
+      ],
+      "filters": [
+        {
+          "member": "departments.name",
+          "operator": "equals",
+          "values": [
+            ":departamento"
+          ]
+        }
+      ],
+      "order": {
+        "departments.name": "asc"
+      },
+      "limit": 500
+    }
+  },
+  {
+    "id": "asistencia-por-departamento",
+    "titulo": "Tasa de asistencia por departamento y mes",
+    "texto": "Tasa de asistencia por departamento y mes, entre :desde y :hasta, para :departamento.",
+    "filtros": [
+      "desde",
+      "hasta",
+      "departamento"
+    ],
+    "consulta": {
+      "measures": [
+        "attendance.attendance_rate"
+      ],
+      "dimensions": [
+        "departments.name"
+      ],
+      "timeDimensions": [
+        {
+          "dimension": "attendance.date",
+          "granularity": "month",
+          "dateRange": [
+            ":desde",
+            ":hasta"
+          ]
+        }
+      ],
+      "filters": [
+        {
+          "member": "departments.name",
+          "operator": "equals",
+          "values": [
+            ":departamento"
+          ]
+        }
+      ],
+      "order": {
+        "departments.name": "asc"
+      },
+      "limit": 500
+    }
+  },
+  {
+    "id": "empleados-que-completaron",
+    "titulo": "Empleados que completaron su evaluación por trimestre",
+    "texto": "Cuántos empleados distintos completaron al menos una evaluación en cada trimestre, entre :desde y :hasta, para :departamento.",
+    "filtros": [
+      "desde",
+      "hasta",
+      "departamento"
+    ],
+    "consulta": {
+      "measures": [
+        "reviews.completed_employees"
+      ],
+      "timeDimensions": [
+        {
+          "dimension": "reviews.period",
+          "granularity": "quarter",
+          "dateRange": [
+            ":desde",
+            ":hasta"
+          ]
+        }
+      ],
+      "filters": [
+        {
+          "member": "departments.name",
+          "operator": "equals",
+          "values": [
+            ":departamento"
+          ]
+        }
+      ],
+      "order": {
+        "reviews.period": "asc"
+      },
+      "limit": 500
+    }
+  },
+  {
+    "id": "conteo-por-estado",
+    "titulo": "Conteo de evaluaciones por estado",
+    "texto": "Cuántas evaluaciones hay en cada estado (pending, completed, calibrated), entre :desde y :hasta, para :departamento.",
+    "filtros": [
+      "desde",
+      "hasta",
+      "departamento"
+    ],
+    "nota": "La consulta tipo del catálogo no lleva rango. Aquí sí: el token de clase `agente` lo exige (MISSING_TIME_RANGE), así que la demo agrega la dimensión temporal de la entidad, `reviews.period`, con granularidad anual.",
+    "consulta": {
+      "measures": [
+        "reviews.count"
+      ],
+      "dimensions": [
+        "reviews.status"
+      ],
+      "timeDimensions": [
+        {
+          "dimension": "reviews.period",
+          "granularity": "year",
+          "dateRange": [
+            ":desde",
+            ":hasta"
+          ]
+        }
+      ],
+      "filters": [
+        {
+          "member": "departments.name",
+          "operator": "equals",
+          "values": [
+            ":departamento"
+          ]
+        }
+      ],
+      "order": {
+        "reviews.count": "desc"
+      },
+      "limit": 500
+    }
+  },
+  {
+    "id": "headcount-por-departamento",
+    "titulo": "Headcount por departamento (solo con token de otra clase)",
+    "texto": "Cantidad de empleados por departamento, total y activos, para :departamento.",
+    "filtros": [
+      "departamento"
+    ],
+    "nota": "La entidad `employees` no tiene dimensión temporal y no hay camino de joins hacia una (NO_JOIN_PATH), así que no existe rango que ponerle. El dry-run interno pasa —esa clase no exige rango— y la consulta con token de clase `agente` termina en MISSING_TIME_RANGE. Es la pregunta que solo responde con un token de otra clase (por ejemplo `dashboard`).",
+    "consulta": {
+      "measures": [
+        "employees.headcount",
+        "employees.active_headcount"
+      ],
+      "dimensions": [
+        "departments.name"
+      ],
+      "filters": [
+        {
+          "member": "departments.name",
+          "operator": "equals",
+          "values": [
+            ":departamento"
+          ]
+        }
+      ],
+      "order": {
+        "employees.headcount": "desc"
+      }
+    }
+  },
+  {
+    "id": "sueldo-promedio-por-departamento",
+    "titulo": "Sueldo promedio por departamento (la trampa)",
+    "texto": "Sueldo promedio por departamento, entre :desde y :hasta, para :departamento.",
+    "filtros": [
+      "desde",
+      "hasta",
+      "departamento"
+    ],
+    "nota": "Trampa a propósito: `employees.salary_avg` no está en el catálogo. La capa responde UNKNOWN_MEMBER con su sugerencia en vez de inventar una columna. Sin agente el JSON preparado la manda tal cual para que se vea el rechazo.",
+    "consulta": {
+      "measures": [
+        "employees.salary_avg"
+      ],
+      "dimensions": [
+        "departments.name"
+      ],
+      "filters": [
+        {
+          "member": "departments.name",
+          "operator": "equals",
+          "values": [
+            ":departamento"
+          ]
+        }
+      ],
+      "order": {
+        "departments.name": "asc"
+      }
+    }
+  }
+]

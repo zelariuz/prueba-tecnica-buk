@@ -1,0 +1,12 @@
+{
+  "name": "demo-agente",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Demo web del rastro de llamadas a la capa semántica: pregunta preparada, dry-run interno y consulta con token de clase agente.",
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "test": "node --test",
+    "start": "node --env-file-if-exists=.env index.js"
+  }
+}
