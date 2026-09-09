@@ -648,3 +648,21 @@ Errores de caché por nivel: {}
 El seed vive en 2025, así que "los últimos tres meses" de la tercera pregunta
 son los últimos tres meses **de los datos** (junio a agosto de 2025), no los del
 calendario de hoy.
+
+## Autoría y uso de IA
+
+Autor: **Bastián Hermosilla N.** Construido con Claude Code (Claude Fable 5.1)
+como asistente de diseño, código y tests; las decisiones de diseño, el corte de
+alcance, la revisión y la defensa son del autor. El enunciado permite el uso de
+IA explícitamente; se declara aquí porque la forma de trabajo es parte de la
+solución.
+
+Cómo se hizo, en orden: interrogatorio de diseño con una pregunta por turno y
+una decisión por respuesta (registrado en el glosario `CONTEXT.md` y en los
+ADRs de `docs/adr/`); PRD con diagrama de flujo y plan en fases verticales;
+construcción fase por fase con TDD estricto (test primero, un agente por fase);
+revisión cruzada entre fases (estándares del repo y fidelidad al plan); un pase
+adversarial completo antes del cierre, con sus hallazgos corregidos uno por
+commit; QA registrado en `docs/qa.md`. Cada decisión no obvia tiene un ADR con
+sus alternativas descartadas, y cada garantía del enunciado tiene un test que
+ejecuta contra Postgres real.
