@@ -27,6 +27,17 @@
         <section class="panel">
           <form class="controles" id="controles">
             <label class="campo">
+              <span class="etiqueta">Token del consumidor (define la empresa)</span>
+              <select id="token" name="token"></select>
+              <span class="nota">
+                La capa deriva la empresa del token: el JSON nunca lleva
+                <code>companyId</code> (<code>FORBIDDEN_FIELD</code>). El dry-run usa el token
+                interno de la misma empresa para mostrar el SQL.
+              </span>
+              <span class="nota" id="nota-token" hidden></span>
+            </label>
+
+            <label class="campo">
               <span class="etiqueta">Pregunta preparada</span>
               <select id="pregunta" name="pregunta"></select>
               <span class="nota">

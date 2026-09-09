@@ -37,6 +37,36 @@ cd demo-agente && npm start                    # http://localhost:3100/
 
 Si la capa no responde, el arranque muere diciendo exactamente qué levantar.
 
+## Elegir la empresa es elegir el token
+
+Arriba del formulario hay un **selector de token del consumidor**, y no un
+selector de empresa, porque en la capa la empresa **viaja en el token**: la
+consulta nunca lleva `companyId` (si lo lleva, `FORBIDDEN_FIELD`). Se ofrecen
+dos:
+
+| Token | Empresa | Para qué |
+| --- | --- | --- |
+| `demo-agente-empresa-a` | Empresa A | El seed chico: seis empleados, números calculados a mano en `docker/init/02-seed.sql` y verificables contra la página |
+| `demo-agente-empresa-c` | Empresa C | El seed de volumen: 1.750 empleados y **1.062.283 filas de asistencia**. Sirve para ver tiempos, caché, el tope de 1.000 filas de la clase `agente` y la advertencia de índice; **sus números no están calculados a mano** |
+
+Elegir uno elige el par completo: el token de clase `agente` hace la consulta y
+el token **interno de la misma empresa** hace el dry-run, que es el único que ve
+el SQL. El chip de cada salto muestra el nombre del token usado —está publicado
+en el `docker-compose.yml` del repo—; el **valor** que va en `Authorization`
+sale del `.env` del mini back y nunca baja al navegador. El link de la página
+lleva el token elegido (`?token=demo-agente-empresa-c&pregunta=…`), y un token
+que el mini back no conoce se rechaza con 400.
+
+Cada empresa trae sus **rangos precargados**: la A abre la asistencia en junio a
+agosto de 2025 (los meses que tiene el seed chico) y todo lo demás en 2025
+entero; la C abre todo en 2025 entero, asistencia incluida, porque tiene los dos
+años completos.
+
+La **sesión del agente es una sola** para las dos: el catálogo público no depende
+del consumidor (ADR 0008), así que cambiar de token cambia la empresa de los
+datos, no lo que el agente sabe. La tarjeta "Antes de todo" lo dice cuando el
+token elegido no es el de la empresa A.
+
 ## Qué muestra
 
 Los saltos se numeran en la página según el rastro real: sin agente son dos
@@ -48,11 +78,13 @@ Los saltos se numeran en la página según el rastro real: sin agente son dos
   texto crudo, que debe ser solo el JSON de la consulta o
   `{"noPuedo": "motivo"}`. Debajo, el costo, los milisegundos de API, los
   tokens leídos de caché y el id de sesión.
-- **Salto 2 — dry-run** — `POST /analytics/query?dryRun=true` con el token `interno`:
-  `params`, `plan` y `sql`. El SQL solo lo recibe una sesión interna; el
-  agente nunca lo ve.
-- **Salto 3 — consulta** — `POST /analytics/query` con el token `agente`: `rows` y
-  `meta` (`servedFrom`, `asOf`, `queryId`, `warnings`).
+- **Salto 2 — dry-run** — `POST /analytics/query?dryRun=true` con el token
+  **interno de la empresa elegida** (`demo-interno-empresa-a` o
+  `demo-interno-empresa-c`): `params`, `plan` y `sql`. El SQL solo lo recibe una
+  sesión interna; el agente nunca lo ve.
+- **Salto 3 — consulta** — `POST /analytics/query` con el token de clase
+  **`agente` de la misma empresa**: `rows` y `meta` (`servedFrom`, `asOf`,
+  `queryId`, `warnings`).
 - **Salto 3b — corrección** (solo con agente, y solo una vez) — si la consulta se rechaza
   con 4xx, se le devuelven al agente `code`, `member` y `suggestion` y se
   repite **solo** la consulta: el dry-run ya mostró el plan y el SQL de lo que
@@ -67,11 +99,12 @@ diagnosticar en vivo, no un 500. Un `claude` que no contesta antes de
 
 El front es **HTML, CSS y JavaScript puro** en `public/` —sin frameworks, sin
 librerías y sin paso de build—; el mini back lo sirve como estático y, aparte,
-publica tres endpoints:
+publica cuatro endpoints:
 
 | Endpoint | Qué devuelve |
 | --- | --- |
 | `GET /api/preguntas` | las 7 preparadas con su texto, sus filtros y su JSON |
+| `GET /api/consumidores` | los tokens de demo elegibles: nombre, etiqueta y rangos precargados. Ningún valor de token — el mini back es el único que los conoce |
 | `GET /api/sesion` | la sesión del agente y los dos prompts completos |
 | `GET /api/rastro?…` | el rastro como **NDJSON en streaming** |
 
@@ -79,7 +112,8 @@ publica tres endpoints:
 una línea por evento: `inicio` (la petición como la entendió el back y cuántos
 saltos se prevén) sale en milisegundos, después un `salto` **apenas queda
 listo** —el observador `alSalto` del seam es quien las escribe— y al final
-`fin` con el total. Una pregunta que no existe sale como `error` y cierra. El
+`fin` con el total. Una pregunta que no existe sale como `error` y cierra; un
+token de demo que no existe se rechaza antes, con 400. El
 navegador lee esas líneas con `fetch` + `ReadableStream` y pinta cada salto
 cuando llega, con una tarjeta "en curso…" para el que sigue: el salto al agente
 tarda 3-6 s y antes dejaba la página sin nada que mostrar todo ese rato.
@@ -206,9 +240,11 @@ src/sesion.js       el seam: crear/conservar/recrear la sesión, prompt y huella
 src/protocolo.js    las palabras que se cruzan con el agente: prompt del clic,
                     prompt de corrección y lectura del JSON que devuelve
 src/preguntas.js    busca la preparada y sustituye :desde, :hasta, :departamento
+src/consumidores.js los pares de tokens de demo (uno por empresa), sus etiquetas
+                    y los rangos precargados; y el mapa nombre → valor del .env
 src/agente.js       efectos de Claude Code: spawn, flags, .sesion.json, versión
 src/capa.js         efectos de la capa: fetch, token por nombre, milisegundos
-src/servidor.js     estáticos de public/ y los tres endpoints; el rastro sale
+src/servidor.js     estáticos de public/ y los cuatro endpoints; el rastro sale
                     como NDJSON, una línea por salto
 public/index.html   la página: cabecera, formulario y la línea de tiempo
 public/app.js       el front: consume el NDJSON y pinta cada salto al llegar

@@ -9,6 +9,12 @@
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 
+import {
+  consumidoresPublicos,
+  consumidorPorId,
+  CONSUMIDOR_POR_DEFECTO,
+  CONSUMIDORES,
+} from './consumidores.js';
 import { ejecutar } from './ejecutar.js';
 import { preguntaPorId, preguntas, prepararTexto } from './preguntas.js';
 import { huellaDelCatalogo, promptDeCreacion, PROMPT_DE_SISTEMA } from './sesion.js';
@@ -48,6 +54,13 @@ export function crearServidor({
       responderJson(respuesta, 200, preguntas);
       return;
     }
+    // Los tokens de demo que la página ofrece elegir: nombre, etiqueta y rangos
+    // precargados. Ningún valor de token baja acá — el mini back es el único
+    // que los conoce.
+    if (url.pathname === '/api/consumidores') {
+      responderJson(respuesta, 200, consumidoresPublicos());
+      return;
+    }
     if (url.pathname === '/api/catalogo') {
       try {
         const enVivo = pedirCatalogoEnVivo ? await pedirCatalogoEnVivo() : catalogo;
@@ -74,6 +87,14 @@ export function crearServidor({
         claudeCode,
         agenteDisponible: Boolean(agente),
         agenteMotivo,
+        // Una sola sesión para las tres empresas, y no una por empresa: el
+        // catálogo público no depende del consumidor, así que tampoco de su
+        // empresa. La página lo dice en la tarjeta "Antes de todo".
+        catalogoUnicoParaTodasLasEmpresas: true,
+        motivoCatalogoUnico:
+          'El catálogo público es el mismo para todas las empresas (ADR 0008: la vista pública ' +
+          'no depende del contexto del consumidor), así que la sesión del agente es una sola: ' +
+          'cambiar de token cambia la empresa de los datos, no lo que el agente sabe.',
         promptDeSistema: PROMPT_DE_SISTEMA,
         promptDeCreacion: catalogo ? promptDeCreacion(catalogo) : null,
       });
@@ -206,6 +227,7 @@ function peticionDeCuerpo(texto) {
   const campo = (nombre) => (typeof datos[nombre] === 'string' ? datos[nombre] : '');
   return {
     pregunta: campo('pregunta') || preguntas[0].id,
+    token: tokenConocido(campo('token')),
     texto: campo('texto'),
     desde: campo('desde'),
     hasta: campo('hasta'),
@@ -214,10 +236,22 @@ function peticionDeCuerpo(texto) {
   };
 }
 
+// El token elegido es el nombre de un token de demo conocido, y nada más: uno
+// que no está en la lista es una petición mal hecha (400), no un token que el
+// mini back vaya a mandarle a la capa para ver qué pasa.
+function tokenConocido(valor) {
+  if (!valor) return CONSUMIDOR_POR_DEFECTO.id;
+  if (consumidorPorId(valor)) return valor;
+  throw new Error(
+    `no existe el token de demo "${valor}"; los conocidos son ${CONSUMIDORES.map((uno) => uno.id).join(', ')}`,
+  );
+}
+
 function peticionDeUrl(url) {
   const parametro = (nombre) => url.searchParams.get(nombre) ?? '';
   return {
     pregunta: parametro('pregunta') || preguntas[0].id,
+    token: tokenConocido(parametro('token')),
     texto: parametro('texto'),
     desde: parametro('desde'),
     hasta: parametro('hasta'),

@@ -2,6 +2,7 @@
 // inyectados (agente, capa y reloj), devuelve el rastro de saltos. No sabe de
 // HTTP ni de HTML: eso vive en los adaptadores. Las palabras que se cruzan con
 // el agente están en `protocolo.js`.
+import { consumidorPorId, CONSUMIDORES } from './consumidores.js';
 import { preguntas, preguntaPorId, prepararConsulta } from './preguntas.js';
 import { comoJson, promptDeCorreccion, promptDelClic } from './protocolo.js';
 
@@ -10,7 +11,9 @@ const RUTA_DRY_RUN = '/analytics/query?dryRun=true';
 
 // Los nombres de los tres saltos a la capa. El dry-run es el único con token
 // interno —es el único que puede ver el SQL—; los otros dos van con el token de
-// clase `agente`, que es el que la demo quiere mostrar trabajando.
+// clase `agente`, que es el que la demo quiere mostrar trabajando. Cuál par de
+// tokens se usa lo decide `peticion.token`: ahí va el nombre del token de clase
+// agente, y con él sale también el interno de la MISMA empresa.
 const DRY_RUN = 'dry-run (params, plan y SQL)';
 const CONSULTA = 'consulta';
 const CONSULTA_CORREGIDA = 'consulta (corregida)';
@@ -24,7 +27,15 @@ export async function ejecutar(peticion, { agente, capa, reloj, alSalto = null }
         .join(', ')}.`,
     );
   }
-  const aLaCapa = saltosALaCapa({ capa, reloj });
+  const consumidor = consumidorPorId(peticion.token);
+  if (!consumidor) {
+    throw new Error(
+      `No existe el token de demo "${peticion.token}". Conocidos: ${CONSUMIDORES.map(
+        (uno) => uno.id,
+      ).join(', ')}.`,
+    );
+  }
+  const aLaCapa = saltosALaCapa({ capa, reloj, consumidor });
   const rastro = [];
   const agregar = anotarEn(rastro, alSalto);
 
@@ -84,14 +95,14 @@ function anotarEn(rastro, alSalto) {
 // Un salto siempre sale: la capa que rechaza es `rechazo` con su error en
 // `recibido`, y la capa que ni contesta es `fallo` con el motivo. La demo no
 // tira 500 ni se queda a medias — el rastro es el producto.
-function saltosALaCapa({ capa, reloj }) {
+function saltosALaCapa({ capa, reloj, consumidor }) {
   return async function aLaCapa(consulta, sufijo) {
     const esDryRun = sufijo === DRY_RUN;
     const inicio = reloj();
     const salto = {
       destino: `capa semántica — ${sufijo}`,
       via: `POST ${esDryRun ? RUTA_DRY_RUN : RUTA_CONSULTA}`,
-      token: esDryRun ? 'interno' : 'agente',
+      token: esDryRun ? consumidor.interno : consumidor.agente,
       enviado: consulta,
     };
     try {

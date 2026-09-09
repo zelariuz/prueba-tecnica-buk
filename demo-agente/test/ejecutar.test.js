@@ -37,13 +37,63 @@ test('el camino sin agente son dos saltos: dry-run con token interno y consulta 
 
   const rastro = await ejecutar(peticion(), { agente: null, capa, reloj: () => 0 });
 
+  // Sin token en la petición, el par por defecto: el de la empresa A.
   assert.deepEqual(
     rastro.map((salto) => [salto.via, salto.token, salto.estado]),
     [
-      ['POST /analytics/query?dryRun=true', 'interno', 'ok'],
-      ['POST /analytics/query', 'agente', 'ok'],
+      ['POST /analytics/query?dryRun=true', 'demo-interno-empresa-a', 'ok'],
+      ['POST /analytics/query', 'demo-agente-empresa-a', 'ok'],
     ],
   );
+});
+
+// La empresa no viaja en la consulta: viaja en el token (ADR 0002). Elegir la
+// empresa C es elegir su token de clase agente, y de ahí sale también el
+// interno de la MISMA empresa — mezclarlos mostraría el SQL de una empresa
+// junto a las filas de otra.
+test('con el token de la empresa C los dos saltos van con los tokens de la C', async () => {
+  const capa = capaFalsa([respuestaOk]);
+
+  const rastro = await ejecutar(peticion({ token: 'demo-agente-empresa-c' }), {
+    agente: null,
+    capa,
+    reloj: () => 0,
+  });
+
+  assert.deepEqual(
+    rastro.map((salto) => salto.token),
+    ['demo-interno-empresa-c', 'demo-agente-empresa-c'],
+  );
+  // Y el adaptador recibe ese mismo nombre: es él quien lo cambia por el valor.
+  assert.deepEqual(
+    capa.llamadas.map((llamada) => llamada.token),
+    ['demo-interno-empresa-c', 'demo-agente-empresa-c'],
+  );
+});
+
+test('la consulta no lleva la empresa: cambiar de token no cambia el JSON enviado', async () => {
+  const capaA = capaFalsa([respuestaOk]);
+  const capaC = capaFalsa([respuestaOk]);
+
+  const enA = await ejecutar(peticion(), { agente: null, capa: capaA, reloj: () => 0 });
+  const enC = await ejecutar(peticion({ token: 'demo-agente-empresa-c' }), {
+    agente: null,
+    capa: capaC,
+    reloj: () => 0,
+  });
+
+  assert.deepEqual(enC[1].enviado, enA[1].enviado);
+  assert.equal('companyId' in enC[1].enviado, false);
+});
+
+test('un token de demo que no existe corta el rastro con un error que lista los conocidos', async () => {
+  const capa = capaFalsa([respuestaOk]);
+
+  await assert.rejects(
+    () => ejecutar(peticion({ token: 'demo-agente-empresa-z' }), { agente: null, capa, reloj: () => 0 }),
+    /demo-agente-empresa-z.*demo-agente-empresa-a, demo-agente-empresa-c/s,
+  );
+  assert.equal(capa.llamadas.length, 0);
 });
 
 test('los marcadores :desde, :hasta y :departamento se sustituyen en la consulta enviada', async () => {

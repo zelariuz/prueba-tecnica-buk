@@ -10,6 +10,7 @@ const $ = (id) => document.getElementById(id);
 
 const estado = {
   preguntas: [],
+  consumidores: [],
   sesion: null,
   controlador: null,
   peticion: null,
@@ -86,9 +87,15 @@ arrancar();
 
 async function arrancar() {
   try {
-    const [preguntas, sesion] = await Promise.all([pedir('/api/preguntas'), pedir('/api/sesion')]);
+    const [preguntas, consumidores, sesion] = await Promise.all([
+      pedir('/api/preguntas'),
+      pedir('/api/consumidores'),
+      pedir('/api/sesion'),
+    ]);
     estado.preguntas = preguntas;
+    estado.consumidores = consumidores;
     estado.sesion = sesion;
+    llenarConsumidores(consumidores);
     llenarSelector(preguntas);
     pintarSesion(sesion);
   } catch (error) {
@@ -101,8 +108,13 @@ async function arrancar() {
     aplicarURL(parametros);
     ejecutar();
   } else {
-    // Estado inicial: la pregunta de asistencia, el trimestre del seed y sin
-    // agente. Entrar a la demo no dispara una consulta sola.
+    // Estado inicial: la pregunta de asistencia, el rango precargado de la
+    // empresa del token y sin agente. Entrar a la demo no dispara una consulta
+    // sola, ni siquiera con `?token=` en el link.
+    if (parametros.has('token')) {
+      $('token').value = parametros.get('token');
+      pintarNotaDelToken();
+    }
     $('pregunta').value = 'asistencia-por-departamento';
     sincronizarRango();
     sincronizarTexto();
@@ -113,6 +125,44 @@ async function pedir(ruta) {
   const respuesta = await fetch(ruta, { headers: { Accept: 'application/json' } });
   if (!respuesta.ok) throw new Error(`${ruta} respondió ${respuesta.status}`);
   return respuesta.json();
+}
+
+// El selector de token es el selector de empresa: la capa deriva la empresa del
+// token y la consulta no la lleva. Se muestra el NOMBRE del token de demo —está
+// publicado en el docker-compose del repo—; el valor que firma la petición vive
+// en el `.env` del mini back y nunca baja acá.
+function llenarConsumidores(consumidores) {
+  const selector = $('token');
+  selector.replaceChildren();
+  for (const consumidor of consumidores) {
+    const opcion = document.createElement('option');
+    opcion.value = consumidor.id;
+    opcion.textContent = consumidor.etiqueta;
+    selector.append(opcion);
+  }
+  selector.addEventListener('change', () => {
+    // Cambiar de empresa cambia los datos, así que el rango precargado vuelve a
+    // mandar: el de la A es el trimestre del seed chico, el de la C es un año.
+    fechasEditadas = false;
+    pintarNotaDelToken();
+    sincronizarRango();
+    sincronizarTexto();
+  });
+  pintarNotaDelToken();
+}
+
+function consumidorElegido() {
+  return (
+    estado.consumidores.find((consumidor) => consumidor.id === $('token').value) ??
+    estado.consumidores[0] ??
+    null
+  );
+}
+
+function pintarNotaDelToken() {
+  const nota = consumidorElegido()?.nota ?? null;
+  $('nota-token').textContent = nota ?? '';
+  $('nota-token').hidden = !nota;
 }
 
 function llenarSelector(preguntas) {
@@ -135,10 +185,11 @@ function llenarSelector(preguntas) {
 
 // El rango es obligatorio —la clase `agente` no ejecuta sin `dateRange`, y todos
 // los JSON preparados llevan los marcadores—, así que cada pregunta trae uno que
-// da filas con el seed. Se precarga al cambiar de pregunta y deja de tocarse en
-// cuanto el usuario escribe una fecha a mano.
-const RANGOS = new Map([['asistencia-por-departamento', ['2025-06-01', '2025-08-31']]]);
-const RANGO_POR_DEFECTO = ['2025-01-01', '2025-12-31'];
+// da filas con el seed de su empresa. Los precargados salen de
+// `/api/consumidores`: dependen de la empresa (la asistencia de la A son tres
+// meses; la de la C, el año entero). Se precarga al cambiar de pregunta o de
+// token y deja de tocarse en cuanto el usuario escribe una fecha a mano.
+const RANGO_DE_RESPALDO = ['2025-01-01', '2025-12-31'];
 
 let fechasEditadas = false;
 for (const campo of ['desde', 'hasta']) {
@@ -147,7 +198,9 @@ for (const campo of ['desde', 'hasta']) {
 
 function sincronizarRango() {
   if (fechasEditadas) return;
-  const [desde, hasta] = RANGOS.get($('pregunta').value) ?? RANGO_POR_DEFECTO;
+  const consumidor = consumidorElegido();
+  const [desde, hasta] =
+    consumidor?.rangos?.[$('pregunta').value] ?? consumidor?.rangoPorDefecto ?? RANGO_DE_RESPALDO;
   $('desde').value = desde;
   $('hasta').value = hasta;
 }
@@ -266,6 +319,7 @@ function abrirModal() {
 function leerFormulario() {
   return {
     pregunta: $('pregunta').value,
+    token: $('token').value,
     texto: $('texto').value,
     desde: $('desde').value,
     hasta: $('hasta').value,
@@ -275,7 +329,9 @@ function leerFormulario() {
 }
 
 function aplicarURL(parametros) {
-  $('pregunta').value = parametros.get('pregunta') ?? '';
+  if (parametros.has('token')) $('token').value = parametros.get('token');
+  pintarNotaDelToken();
+  if (parametros.has('pregunta')) $('pregunta').value = parametros.get('pregunta');
   // El rango del link manda sobre el precargado de la pregunta.
   if (parametros.has('desde') || parametros.has('hasta')) fechasEditadas = true;
   $('desde').value = parametros.get('desde') ?? '';
@@ -296,6 +352,9 @@ function aplicarURL(parametros) {
 
 function parametrosDe(peticion) {
   const parametros = new URLSearchParams({
+    // El token va primero y siempre: es lo que decide la empresa de los datos,
+    // y un link sin él se leería como si no importara.
+    token: peticion.token,
     pregunta: peticion.pregunta,
     desde: peticion.desde,
     hasta: peticion.hasta,
@@ -447,6 +506,13 @@ function tarjetaDelCatalogo() {
       'nota',
     ),
   );
+  // Con un token que no es el de la empresa por defecto salta la pregunta
+  // obvia: ¿no habría que crear otra sesión? No: el catálogo no depende del
+  // consumidor, así que la sesión es una sola. Lo dice el mini back.
+  const otraEmpresa = estado.peticion?.token && estado.peticion.token !== estado.consumidores[0]?.id;
+  if (otraEmpresa && sesion.motivoCatalogoUnico) {
+    tarjeta.append(texto('p', sesion.motivoCatalogoUnico, 'nota'));
+  }
   fila.append(tarjeta);
   return fila;
 }

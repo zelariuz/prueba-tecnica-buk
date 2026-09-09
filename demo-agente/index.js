@@ -5,14 +5,16 @@ import { fileURLToPath } from 'node:url';
 
 import { crearAgente, crearClaude, crearEstadoEnDisco, versionDeClaudeCode } from './src/agente.js';
 import { crearCapa, pedirCatalogo } from './src/capa.js';
+import { tokensDelEntorno } from './src/consumidores.js';
 import { asegurarSesion, NOMBRE_POR_DEFECTO } from './src/sesion.js';
 import { crearServidor } from './src/servidor.js';
 
 const url = process.env.CAPA_URL ?? 'http://localhost:3000';
-const tokens = {
-  agente: process.env.TOKEN_AGENTE ?? 'demo-agente-empresa-a',
-  interno: process.env.TOKEN_INTERNO ?? 'demo-interno-empresa-a',
-};
+// Un par de tokens por empresa, con el nombre del token como llave: la página
+// elige empresa eligiendo el nombre, y sólo acá abajo ese nombre se cambia por
+// el valor que va en `Authorization`. Sin `.env` la demo arranca igual, con los
+// tokens de demo del `docker-compose.yml`.
+const tokens = tokensDelEntorno(process.env);
 const puerto = Number(process.env.PUERTO ?? 3100);
 const nombre = process.env.SESION_NOMBRE ?? NOMBRE_POR_DEFECTO;
 const modelo = process.env.MODELO ?? 'claude-sonnet-5';

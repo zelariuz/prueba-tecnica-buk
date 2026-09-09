@@ -88,6 +88,16 @@ dos empresas) se aplican cuando el directorio de datos está vacío. Los conteos
 esperados están calculados a mano en el encabezado del seed; los tests los usan
 como literales.
 
+Un tercer archivo, `docker/init/03-seed-empresa-c.sql`, agrega la **empresa C**:
+1.750 empleados en 12 departamentos, 15.477 evaluaciones y **1.062.283 filas de
+asistencia** (2024 y 2025 día a día). Es la empresa de volumen y sólo eso: sirve
+para ver tiempos reales, la caché, el tope de 1.000 filas de la clase `agente` y
+la advertencia de índice sobre `attendance.date`, y **ningún test depende de
+ella** —los números verificables a mano siguen siendo los de las empresas 1 y 2—.
+Es determinista igual (`setseed(0.42)`) y con rangos de id propios. Con los tres
+archivos, el initdb del contenedor tarda **~8,8 s** (~8,6 s son la empresa C) y
+la base queda en **~104 MB**.
+
 ```bash
 docker compose up -d --force-recreate --renew-anon-volumes db   # vuelve a cero
 ```

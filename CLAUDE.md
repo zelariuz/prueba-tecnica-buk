@@ -118,6 +118,7 @@ test/
 docker/init/
   01-schema.sql            DDL del caso, copiado sin cambios
   02-seed.sql              seed determinista + conteos esperados en el encabezado
+  03-seed-empresa-c.sql    empresa C: 1,06 M de filas de asistencia, para volumen
 docs/
   adr/                     decisiones arquitectónicas numeradas
   semantica-de-filtros.md  qué filtra a qué y cuándo una razón queda en 100
@@ -858,6 +859,33 @@ cómo va todo, el evento dice qué acaba de pasar.
   El prompt de la sesión se ve en un modal `<dialog>` y también en
   `/agente/sesion`, que ahora es `public/sesion.html` alimentado por
   `/api/sesion`.
+- **Selector de TOKEN, no de empresa** (09-09): arriba del formulario, antes de
+  la pregunta preparada. En la capa la empresa viaja en el token (ADR 0002) y la
+  consulta nunca lleva `companyId` (`FORBIDDEN_FIELD`), así que el selector
+  ofrece `demo-agente-empresa-a` y `demo-agente-empresa-c` con su lectura al
+  lado. Elegir uno elige el PAR: el de clase `agente` para la consulta y el
+  interno de la **misma** empresa para el dry-run. Los datos viven en
+  `src/consumidores.js` (nombres, etiquetas, rangos precargados y qué variable
+  del `.env` trae cada valor) y bajan al front por `GET /api/consumidores`; el
+  nombre del token se muestra en el chip de cada salto y en la URL
+  (`?token=…`), y el **valor** sólo lo conoce el mini back. Token desconocido →
+  400. `ejecutar` no cambió de firma: la petición lleva `token` y de ahí salen
+  los dos nombres. `.env`: `TOKEN_AGENTE_A`, `TOKEN_INTERNO_A`, `TOKEN_AGENTE_C`,
+  `TOKEN_INTERNO_C`, y `TOKEN_AGENTE`/`TOKEN_INTERNO` sin sufijo siguen siendo
+  los de la A.
+- **Empresa C, la de volumen** (`docker/init/03-seed-empresa-c.sql`): 1.750
+  empleados en 12 departamentos, 15.477 evaluaciones y **1.062.283 filas de
+  asistencia** (2024-2025 día a día). Existe para ver tiempos reales, la caché,
+  el tope de 1.000 filas de la clase `agente` y la advertencia de índice de
+  `attendance.date`; **ningún test depende de ella** y sus conteos NO están
+  calculados a mano. El initdb de los tres archivos tarda **~8,8 s** (~8,6 s son
+  este) y deja la base en **~104 MB**. Como el snapshot de la fase 4 fija los
+  índices, este seed **no agrega ninguno**: la tabla grande se recorre entera, y
+  eso es justamente lo que la demo enseña.
+- **Una sola sesión para las dos empresas**: el catálogo público no depende del
+  consumidor (ADR 0008), así que no hay sesión por empresa. `/api/sesion` lo
+  dice (`catalogoUnicoParaTodasLasEmpresas`, `motivoCatalogoUnico`) y la tarjeta
+  "Antes de todo" lo muestra cuando el token elegido no es el de la A.
 - **Regla de operación**: nunca abrir esa sesión de forma interactiva mientras
   el mini back la usa. Es el mismo uuid.
 
