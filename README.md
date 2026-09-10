@@ -5,6 +5,11 @@ declara su **definición semántica**, el **catálogo** la registra y el **engin
 traduce una consulta declarativa a SQL, la ejecuta y devuelve filas con nombres
 semánticos. El aislamiento por empresa es del motor, no del consumidor.
 
+- **Mapa del repo y diagramas** (arquitectura, viaje de una consulta, caché en
+  vivo, flujo del consumidor, agentes y MCP, demo del agente con capturas):
+  [`docs/diagramas-y-demo.html`](docs/diagramas-y-demo.html), una sola página
+  con pestañas; descargar y abrir en el navegador. La pestaña "Mapa del repo"
+  es el plano de `src/` con sus cuatro operaciones HTTP.
 - Diseño y decisiones: `prds/prd-capa-semantica.md`, `docs/adr/`.
 - Plan de construcción por fases: `plans/plan-capa-semantica.md`.
 - Vocabulario: `CONTEXT.md`.
