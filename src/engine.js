@@ -115,6 +115,23 @@ export function createEngine({
     // se sabe en el `catch`: el `finally` lo lee de aquí para que la liberación
     // siga ocurriendo exactamente una vez, pase lo que pase.
     let fallo;
+    // Mientras el cliente está prestado nadie escucha sus 'error': el pool le
+    // saca su oyente al entregarlo y se lo devuelve al liberarlo. En ese hueco,
+    // una conexión que se muere —`pg_terminate_backend` desde otra sesión, el
+    // socket que se cae— emite un 'error' sin dueño, y un 'error' sin dueño en
+    // Node no es una consulta fallida: es el proceso entero que se cae. Con
+    // este oyente el corte es lo que tiene que ser —el fallo de ESTA consulta,
+    // que sale traducido, y una conexión que no vuelve al pool— y el servicio
+    // sigue atendiendo a los demás.
+    //
+    // Va con `?.` porque el contrato de cliente del engine son `query` y
+    // `release`, nada más (`dialect/sqlite-pool.js`): un motor sin sockets no
+    // tiene ningún 'error' que emitir, y exigirle que emita eventos sería
+    // hacerle pagar a SQLite el precio de una falla que sólo existe en la red.
+    function anotarFallo(error) {
+      fallo ??= error;
+    }
+    cliente.on?.('error', anotarFallo);
     try {
       await cliente.query('BEGIN');
       for (const sentencia of dialecto.sentenciasDeSesion?.(presupuesto) ?? []) {
@@ -124,6 +141,8 @@ export function createEngine({
       await cliente.query('COMMIT');
       return resultado.rows;
     } catch (error) {
+      // El error de la consulta manda sobre el que haya anotado el oyente: es
+      // el que se traduce y el que el consumidor va a leer.
       fallo = error;
       await cliente.query('ROLLBACK').catch(() => {});
       // Qué significa un código nativo del motor lo sabe el dialecto: el engine
@@ -131,6 +150,10 @@ export function createEngine({
       // reconoce vuelve tal cual.
       throw dialecto.traducirError(error, presupuesto);
     } finally {
+      // El oyente sale justo antes de soltar el cliente —el pool le pone el
+      // suyo de vuelta en `release`—, y entre una cosa y la otra no hay ningún
+      // `await`: no hay hueco por donde se cuele un 'error' sin dueño.
+      cliente.off?.('error', anotarFallo);
       // Con el error, el pool destruye la conexión en vez de devolverla a la
       // fila: si la sesión se murió a mitad de consulta —la mataron desde otra
       // conexión, se cayó el socket— reciclarla es servirle a la próxima

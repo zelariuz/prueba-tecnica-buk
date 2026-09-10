@@ -780,13 +780,12 @@ describe('la conexión que se murió a mitad de consulta', { ...conBase, timeout
 
   before(async () => {
     pool = new pg.Pool({ connectionString: DATABASE_URL, max: 1 });
-    // Al cliente al que le matan el backend, node-postgres le emite un 'error'
-    // —y mientras está prestado nadie lo escucha: el oyente del pool sólo
-    // vuelve cuando el cliente se libera—. Sin estos dos oyentes, el proceso de
-    // test se cae por un 'error' sin dueño antes de que el engine alcance a
-    // traducir nada.
+    // El oyente que el servicio le pone a sus conexiones ociosas (`server.js`):
+    // el pool reemite ahí el 'error' de un cliente que se murió esperando, y
+    // sin nadie escuchando se cae el proceso. Al cliente prestado —el que este
+    // test mata a mitad de consulta— no le hace falta parche: de ese se ocupa
+    // el engine, y que este test pase sin nada más es justamente la prueba.
     pool.on('error', () => {});
-    pool.on('acquire', (cliente) => cliente.on('error', () => {}));
     const catalog = createCatalog();
     for (const definicion of [reviews, employees, departments]) catalog.register(definicion);
     engine = createEngine({ catalog, pool });

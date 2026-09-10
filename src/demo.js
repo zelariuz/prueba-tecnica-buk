@@ -49,6 +49,11 @@ const PREGUNTAS = [
 ];
 
 const pool = new pg.Pool({ connectionString: DATABASE_URL, connectionTimeoutMillis: 2000 });
+// Lo mismo que el servicio: el 'error' de una conexión ociosa sin oyente tumba
+// el proceso, y una demo que se cae a la mitad no cuenta nada.
+pool.on('error', (error) => {
+  console.warn(`[pool] conexión ociosa caída: ${error.code ?? error.message}`);
+});
 const telemetria = crearTelemetria();
 // Lo que haya que cerrar al final: los clientes de Redis de las dos instancias.
 const caches = [];
