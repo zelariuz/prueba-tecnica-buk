@@ -29,8 +29,20 @@ export function promptDelClic(pregunta, peticion) {
 
 // El prompt de corrección: el error tal cual lo publica la capa. La sugerencia
 // es la que hace posible el reintento, y por eso se manda entera.
-export function promptDeCorreccion(error) {
-  return `La capa rechazó tu consulta.
+//
+// Viaja COMPLETO: pregunta original, el JSON que el agente escribió y el error.
+// Con `--fork-session` cada llamada arranca desde el estado de creación de la
+// sesión, así que la corrección no puede apoyarse en "lo que dijimos recién":
+// verificado el 09-09 (el agente respondió "no tengo la consulta ni la
+// pregunta original para corregirla").
+export function promptDeCorreccion(error, { pregunta = '', consulta = null } = {}) {
+  const contexto = [
+    pregunta ? `La pregunta original era:\n${pregunta}` : null,
+    consulta ? `Tu consulta fue:\n${JSON.stringify(consulta)}` : null,
+  ]
+    .filter(Boolean)
+    .join('\n\n');
+  return `${contexto ? `${contexto}\n\n` : ''}La capa rechazó tu consulta.
 
 code: ${error?.code ?? '(sin código)'}
 member: ${error?.member ?? '(no lo dice)'}

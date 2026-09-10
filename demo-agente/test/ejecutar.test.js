@@ -525,6 +525,13 @@ test('el salto de corrección le manda al agente el código, el miembro y la sug
   assert.match(agente.prompts[1], /UNKNOWN_MEMBER/);
   assert.match(agente.prompts[1], /employees\.salary_avg/);
   assert.match(agente.prompts[1], /No existe la medida employees\.salary_avg\./);
+  // Y el contexto completo: con `--fork-session` la corrección no puede contar
+  // con la memoria del salto 1 (09-09: "no tengo la consulta ni la pregunta").
+  assert.ok(agente.prompts[1].includes(agente.prompts[0]), 'lleva la pregunta original');
+  assert.ok(
+    agente.prompts[1].includes(JSON.stringify(consultaDelAgente)),
+    'lleva el JSON que el agente escribió',
+  );
 });
 
 // Decisión: el reintento repite el salto 3 y solo ese. El dry-run ya mostró el

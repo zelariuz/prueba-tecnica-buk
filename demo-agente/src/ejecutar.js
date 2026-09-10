@@ -59,7 +59,7 @@ export async function ejecutar(peticion, { agente, capa, reloj, alSalto = null }
   if (!peticion.usarAgente || laConsulta.estado !== 'rechazo') return rastro;
 
   const correccion = await saltoAlAgente(
-    promptDeCorreccion(laConsulta.recibido),
+    promptDeCorreccion(laConsulta.recibido, { pregunta: promptDelClic(pregunta, peticion), consulta }),
     { agente, reloj },
     'agente — corrección',
   );
