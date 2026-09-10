@@ -857,6 +857,16 @@ así que corren siempre:
 node --test test/sqlite.test.js
 ```
 
+## Diagramas y demo en una sola página
+
+[`docs/diagramas-y-demo.html`](docs/diagramas-y-demo.html) (≈10 MB, sin
+dependencias externas salvo Mermaid desde cdnjs para dos páginas) reúne en
+pestañas los diagramas de diseño, arquitectura y flujos, la tabla de riesgos y
+cambios, el registro de tests y la página de la demo del agente con capturas
+reales. GitHub no renderiza HTML: hay que descargarlo y abrirlo en el
+navegador. Se genera con `generar-artefacto-unico.py --repo` desde la carpeta
+de diagramas del proyecto, fuera de este repo.
+
 ## Autoría y uso de IA
 
 Autor: **Bastián Hermosilla N.** Construido con Claude Code (Claude Fable 5.1)
