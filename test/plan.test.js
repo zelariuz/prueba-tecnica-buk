@@ -356,12 +356,29 @@ const sinRango = {
   timeDimensions: [{ dimension: 'reviews.period', granularity: 'quarter' }],
 };
 
+// Desde el 09-09 ninguna clase de la tabla real exige rango (ADR 0009), pero el
+// mecanismo sigue vivo para quien inyecte su propia tabla con
+// `createEngine({ presupuestos })`. Por eso este test entra por esa costura: la
+// clase `estricta` no existe en `src/budgets.js` a propósito.
+const CLASE_ESTRICTA = {
+  timeoutMs: 5_000,
+  maxFilas: 1_000,
+  rangoObligatorio: true,
+  cacheTtlMs: 30_000,
+};
+
+function engineConClaseEstricta() {
+  const catalog = createCatalog();
+  for (const definicion of [reviews, employees, departments]) catalog.register(definicion);
+  return createEngine({ catalog, presupuestos: { estricta: CLASE_ESTRICTA } });
+}
+
 test('el consumidor con rango obligatorio no puede consultar sin dateRange', () => {
-  const engine = engineDePrueba();
+  const engine = engineConClaseEstricta();
 
   // Sin dimensión temporal siquiera.
   const sinTemporal = errorDe(() =>
-    engine.plan(conteoPorEstado, { companyId: EMPRESA, consumer: 'agent' }),
+    engine.plan(conteoPorEstado, { companyId: EMPRESA, consumer: 'estricta' }),
   );
   assert.equal(sinTemporal.code, 'MISSING_TIME_RANGE');
   assert.equal(sinTemporal.member, 'timeDimensions');
@@ -369,10 +386,26 @@ test('el consumidor con rango obligatorio no puede consultar sin dateRange', () 
 
   // Con dimensión temporal, pero sin acotar el rango.
   const conTemporal = errorDe(() =>
-    engine.plan(sinRango, { companyId: EMPRESA, consumer: 'agent' }),
+    engine.plan(sinRango, { companyId: EMPRESA, consumer: 'estricta' }),
   );
   assert.equal(conTemporal.code, 'MISSING_TIME_RANGE');
   assert.equal(conTemporal.member, 'reviews.period');
+});
+
+// La contracara de lo anterior, y el motivo del ADR 0009: con rango obligatorio
+// la clase `agent` no podía responder "cuántos empleados hay por departamento",
+// porque `employees` no publica dimensión temporal ni hay camino de joins hacia
+// una. Ahora sí planifica, con el tope de filas de su clase.
+test('la clase agent planifica una consulta sin timeDimensions', () => {
+  const engine = engineDePrueba();
+
+  const { sql, params } = engine.plan(
+    { measures: ['employees.headcount'], dimensions: ['departments.name'] },
+    { companyId: EMPRESA, consumer: 'agent' },
+  );
+
+  assert.match(sql, /GROUP BY departments\.name/);
+  assert.equal(params.at(-1), 1000, 'el LIMIT sigue siendo el tope de la clase agent');
 });
 
 test('la misma consulta sin rango la planifica un consumidor sin rango obligatorio', () => {

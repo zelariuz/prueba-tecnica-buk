@@ -11,9 +11,18 @@ import { SemanticError } from './errors.js';
 export const presupuestos = {
   dashboard: { timeoutMs: 5_000, maxFilas: 5_000, rangoObligatorio: false, cacheTtlMs: 60_000 },
   api: { timeoutMs: 15_000, maxFilas: 10_000, rangoObligatorio: false, cacheTtlMs: 30_000 },
-  // El agente de IA pide en lenguaje natural: se le exige rango temporal para
-  // que no produzca por accidente una consulta que recorre toda la historia.
-  agent: { timeoutMs: 10_000, maxFilas: 1_000, rangoObligatorio: true, cacheTtlMs: 30_000 },
+  // El agente pedía rango temporal obligatorio hasta el 09-09; ya no (ADR 0009).
+  // El guardarraíl era preventivo y costaba preguntas legítimas: "cuántos
+  // empleados hay" no tiene dimensión temporal que acotar, así que era
+  // irrespondible por esta clase. Medido el 09-09 sobre la empresa C (1.062.283
+  // filas de asistencia): un barrido completo sin rango tarda 300-640 ms, muy
+  // por debajo del timeout de 10 s, y el tope de 1.000 filas recorta la salida.
+  // Con tablas mucho mayores el sistema ya se defiende solo: `QUERY_TIMEOUT`
+  // con sugerencia de acotar el tiempo, que el agente corrige en su mismo bucle.
+  // El guardarraíl pasa de preventivo a reactivo; timeout y tope de filas
+  // quedan como los límites de la clase. `rangoObligatorio` sigue vivo: una
+  // clase inyectada por `createEngine({ presupuestos })` puede exigirlo.
+  agent: { timeoutMs: 10_000, maxFilas: 1_000, rangoObligatorio: false, cacheTtlMs: 30_000 },
 };
 
 // Sin clase de consumidor no hay presupuesto, y sin presupuesto no se ejecuta:

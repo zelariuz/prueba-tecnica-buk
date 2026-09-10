@@ -343,9 +343,18 @@ describe('guardarraíles del consumidor', conBase, () => {
     assert.deepEqual(porEstado(rows), { completed: 5, pending: 4, calibrated: 2 });
   });
 
-  it('el agente sin rango temporal no ejecuta; el dashboard con la misma consulta sí', async () => {
+  // Desde el 09-09 ninguna clase de la tabla real exige rango (ADR 0009), así
+  // que la clase con rango obligatorio entra por la costura `presupuestos`: el
+  // mecanismo sigue siendo del engine, no de una clase en particular.
+  it('el consumidor con rango obligatorio no ejecuta sin rango; otro con la misma consulta sí', async () => {
+    const estricto = createEngine({
+      catalog,
+      pool,
+      presupuestos: { estricta: { timeoutMs: 5_000, maxFilas: 1_000, rangoObligatorio: true } },
+    });
+
     const error = await errorAlEsperar(
-      engine.run(conteoPorEstado, { companyId: EMPRESA_A, consumer: 'agent' }),
+      estricto.run(conteoPorEstado, { companyId: EMPRESA_A, consumer: 'estricta' }),
     );
     assert.equal(error.code, 'MISSING_TIME_RANGE');
 
@@ -354,6 +363,24 @@ describe('guardarraíles del consumidor', conBase, () => {
       consumer: 'dashboard',
     });
     assert.deepEqual(porEstado(rows), { completed: 5, pending: 4, calibrated: 2 });
+  });
+
+  // El caso que el rango obligatorio dejaba fuera: `employees` no tiene
+  // dimensión temporal, así que con la regla vieja la clase `agent` no podía
+  // preguntar cuántos empleados hay. Ahora ejecuta.
+  it('la clase agent ejecuta una consulta sin dimensión temporal', async () => {
+    const { rows } = await engine.run(
+      { measures: ['employees.headcount'], dimensions: ['departments.name'] },
+      { companyId: EMPRESA_A, consumer: 'agent' },
+    );
+
+    // Literales del seed: Ingeniería 2, Ventas 2.
+    assert.deepEqual(
+      Object.fromEntries(
+        rows.map((fila) => [fila['departments.name'], fila['employees.headcount']]),
+      ),
+      { 'Ingeniería': 2, Ventas: 2 },
+    );
   });
 
   it('cien consultas alternando empresas sobre una sola conexión no cruzan datos', async () => {
@@ -846,6 +873,33 @@ describe('empleado activo', conBase, () => {
 
     // Literales del seed: Ingeniería tiene a 100 y 101, los dos activos;
     // Ventas tiene a 102 (activo) y 103 (inactivo).
+    assert.deepEqual(
+      [...rows].sort((a, b) => a['departments.name'].localeCompare(b['departments.name'])),
+      [
+        {
+          'departments.name': 'Ingeniería',
+          'employees.headcount': 2,
+          'employees.active_headcount': 2,
+        },
+        {
+          'departments.name': 'Ventas',
+          'employees.headcount': 2,
+          'employees.active_headcount': 1,
+        },
+      ],
+    );
+  });
+
+  // La consulta tipo no lleva rango y `employees` no tiene dimensión temporal:
+  // hasta el 09-09 la clase `agent` chocaba con MISSING_TIME_RANGE y la demo
+  // tenía que anotar la pregunta como "solo con token de otra clase" (ADR 0009).
+  it('la consulta tipo de headcount también la ejecuta la clase agent', async () => {
+    const { rows } = await engine.run(catalog.query('headcount-por-departamento'), {
+      companyId: EMPRESA_A,
+      consumer: 'agent',
+    });
+
+    // Los mismos literales del seed, ahora por el camino del agente.
     assert.deepEqual(
       [...rows].sort((a, b) => a['departments.name'].localeCompare(b['departments.name'])),
       [
