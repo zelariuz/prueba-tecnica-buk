@@ -20,7 +20,8 @@ TypeScript, Node 24, `node:test`, node-postgres.
 - `docs/adr/` — decisiones arquitectónicas (0001 tres piezas, 0002 contexto de
   sesión separado, 0003 CTE por entidad con empresa, 0004 derivadas ratio,
   0005 segmentos sin SQL, 0006 medidas de una sola entidad, 0007 vocabulario
-  Cube, 0008 catálogo en dos vistas, 0009 rango opcional para el agente).
+  Cube, 0008 catálogo en dos vistas, 0009 rango opcional para el agente,
+  0010 consultas sin medida).
 
 ## Estructura
 
@@ -112,6 +113,8 @@ test/
   snapshots/caso-obligatorio-sqlite.sql  el mismo caso, emitido por el dialecto
                              SQLite: mismas CTE, mismos $n, otra sintaxis
   snapshots/completion-rate.sql   SQL esperado de la derivada, con su etapa agregada
+  snapshots/valores-de-dimension.sql  SQL esperado de la consulta sin medidas:
+                             GROUP BY sin agregados (ADR 0010)
   fixtures/snapshot.json     foto del esquema generada desde la base del caso
   fixtures/caso-sqlite.sql   el mismo esquema y las mismas 16 evaluaciones,
                              escritos para SQLite
@@ -192,6 +195,12 @@ curl -s -H 'Authorization: Bearer demo-dashboard-empresa-a' \
 
 - El camino de joins sale de un BFS sobre relaciones `many_to_one` desde la
   entidad de hechos; el consumidor nunca nombra una relación.
+- La entidad de hechos se deduce de la primera medida (`medidas[0].entidad`):
+  de ella salen el `FROM`, la fuente y el dialecto.
+  **Ampliado el 09-09 (ver ADR 0010):** una consulta sin medidas la toma de su
+  primera dimensión, o de su primera dimensión temporal si no pide dimensiones.
+  Para una consulta con medidas no cambió nada: los tres snapshots de SQL siguen
+  iguales.
 - El rango de `timeDimensions` es cerrado en ambos extremos (`>= $2 AND <= $3`,
   como el `dateRange` de Cube) y vive dentro de la CTE de la entidad temporal.
 - Los valores literales de la consulta (rango, valores de segmento, `limit`)
@@ -729,6 +738,14 @@ no cambiaron.
    servidor —`exigirFuenteConfigurada` disparándose por una consulta sin
    medidas— y el `Error` pelado de `dialect/postgres.js` por la granularidad ya
    no es alcanzable desde una consulta.
+   **Cambiado el 09-09: `measures` dejó de ser obligatorio (ver ADR 0010).**
+   Puede estar ausente o vacío si la consulta pide al menos una `dimension` o
+   una `timeDimension` —es el `GROUP BY` sin agregados: los valores distintos de
+   esas dimensiones—; sin ninguna de las tres sigue siendo `INVALID_QUERY` con
+   `member` `measures`. La exigencia no era una decisión de diseño: era la forma
+   de no chocar con la deducción de la entidad de hechos desde `medidas[0]`, que
+   es lo que producía el 500 que este hallazgo convirtió en 400. El resto de la
+   puerta de forma queda igual.
 5. **Dry-run que regalaba el esquema físico** (`src/http/server.js:46-60`).
    `?dryRun=true` devolvía el `sql` —con las tablas y columnas reales— a
    cualquier token, mientras `/analytics/catalog` las esconde. Ahora devuelve

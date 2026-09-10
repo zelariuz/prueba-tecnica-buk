@@ -65,13 +65,14 @@ Convención de la columna Resultado: **OK (auto)** = verificado con tests, demo 
 | A7 | Fase B | Un origen que no responde da SOURCE_UNAVAILABLE 503 con Retry-After y no cuelga el pool | tests `run.test.js` (ECONNREFUSED, ETIMEDOUT, 08xxx, 57P01) y `http.test.js` (Retry-After: 5) | OK (auto) |
 | A8 | Disc. 25 | `sum` emite SUM; `count_distinct` existe; `completed_employees` responde la pregunta 2 del enunciado (3 evaluaciones, 2 empleados) | curl: completed_count 3, completed_employees 2 en 2025 empresa A | OK (auto) |
 | A9 | Disc. 25 | `equals`/`notEquals` con lista de largo ≠ 1 se rechazan | curl → 400 INVALID_OPERATOR con sugerencia hacia `in` | OK (auto) |
-| A10 | Disc. 25 | Consulta sin medidas, granularidad inválida, `order` mal escrito o `limit` inválido dan 400 INVALID_QUERY, nunca 500 | curl sin measures → 400; granularidad `quarterly` → 400 con la lista | OK (auto) |
+| A10 | Disc. 25 | Consulta sin medidas, granularidad inválida, `order` mal escrito o `limit` inválido dan 400 INVALID_QUERY, nunca 500. **Superado en parte el 09-09 por el ADR 0010:** sin medidas es válido si hay dimensiones; el 400 queda para la consulta que no pide nada. | curl `{}` → 400 INVALID_QUERY member measures; granularidad `quarterly` → 400 con la lista | OK (auto, re-verificado 09-09) |
 | A11 | Disc. 25 | El dry-run no expone el esquema físico a un token normal; el SQL solo sale con token interno | curl dry-run dashboard: claves params y plan, sin columnas físicas (corregido en el QA: joins por relación); token interno: con sql | OK (auto) |
 | A12 | Disc. 25 | `timestamp` sin zona se rechaza al registrar; `timestamptz` advierte | tests `catalog.test.js` con snapshot modificado | OK (auto) |
 | A13 | Disc. 25 | Existe el segmento `active` y `active_headcount`; la regla del enunciado escrita una vez | curl: Ingeniería 2/2, Ventas 2/1 | OK (auto) |
 | A14 | Disc. 25 | La vista pública publica solo operadores que el planificador emite | curl catálogo: operadores = equals, in, notEquals | OK (auto) |
 | A15 | Disc. 25 | Registrar dos veces la misma entidad con otra definición es INVALID_DEFINITION; con la misma, idempotente | tests `catalog.test.js` | OK (auto) |
 | A16 | QA 08-09 | El plan lógico del dry-run describe los joins por relación (`via`) y no por columnas | hallazgo del QA; corregido con test; curl posterior sin employee_id ni department_id | OK (auto) |
+| A17 | ADR 0010 | Una consulta sin medidas devuelve los valores distintos de sus dimensiones: `GROUP BY` sin agregados, con el filtro de empresa en la CTE y el LIMIT de la clase; sin medidas ni dimensiones sigue siendo 400 | snapshot `valores-de-dimension.sql`; tests `plan/run/cache/sqlite/http`; curl `{"dimensions":["departments.name"]}` con `demo-agente-empresa-a` → 200 Ingeniería y Ventas | OK (auto) |
 
 ## Revisión manual de Bastián
 

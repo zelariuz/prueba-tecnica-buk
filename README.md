@@ -187,6 +187,45 @@ extremos (`>= $2 AND <= $3`, como el `dateRange` de Cube) y viaja dentro de la
 CTE de las evaluaciones; el trimestre vuelve como texto ISO (`2025-01-01`) para
 que no dependa de la zona horaria del proceso.
 
+### Una consulta sin medidas: los valores distintos de una dimensión
+
+`measures` puede omitirse si la consulta pide al menos una dimensión o una
+dimensión temporal (ADR 0010). Una consulta así es un `GROUP BY` por esas
+dimensiones sin ningún agregado: los **valores distintos** que tienen en la
+empresa del contexto. Es lo que responde "cuáles departamentos hay".
+
+```js
+await engine.run(
+  { dimensions: ['departments.name'], order: { 'departments.name': 'asc' } },
+  { companyId: 1, consumer: 'dashboard' },
+);
+// → [{ 'departments.name': 'Ingeniería' }, { 'departments.name': 'Ventas' }]
+```
+
+```sql
+WITH departments AS (
+  SELECT name
+  FROM departments
+  WHERE company_id = $1
+)
+SELECT departments.name AS "departments.name"
+FROM departments
+GROUP BY departments.name
+ORDER BY "departments.name" ASC
+LIMIT $2
+```
+
+Sigue sin haber forma de pedir filas crudas: el `GROUP BY` colapsa las filas de
+la tabla en una por combinación de valores, el filtro de empresa sigue dentro de
+la CTE y el `LIMIT` de la clase de consumidor sigue siendo obligatorio. La
+entidad de la que sale el `FROM` es la de la **primera** dimensión pedida (o la
+de la primera dimensión temporal si no hay dimensiones), y al resto se llega por
+las relaciones declaradas: `["employees.active", "departments.name"]` sale de
+`employees` y llega a `departments`, mientras que el mismo par al revés corta
+con `NO_JOIN_PATH`, porque `departments` no declara relaciones. El SQL está en
+`test/snapshots/valores-de-dimension.sql`. Una consulta sin medidas **y** sin
+dimensiones sigue siendo `INVALID_QUERY`.
+
 ## Medidas derivadas: razones sobre agregados
 
 `completion_rate` no se declara como una fórmula: se declara como la razón entre

@@ -47,8 +47,11 @@ equivalente en Cube, se indica para facilitar la lectura al equipo.
 - **Relación**: arista tipada entre entidades (`reviews.employee → employees`,
   `many_to_one`). El engine resuelve los JOIN recorriendo relaciones; el
   consumidor nunca las nombra. Equivalente Cube: `join`.
-- **Entidad de hechos**: la entidad de la que salen las medidas de una
-  consulta. En v1 hay exactamente una por consulta.
+- **Entidad de hechos**: la entidad de la que sale el `FROM` de una consulta —y
+  con él su fuente y su dialecto— y desde la que arranca el camino de joins. En
+  v1 hay exactamente una por consulta: la de sus medidas, que tienen que ser
+  todas de la misma. Una consulta **sin medidas** (ADR 0010) la toma de su
+  primera dimensión, o de su primera dimensión temporal si no pide dimensiones.
 
 ## Catálogo
 
