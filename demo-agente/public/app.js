@@ -230,8 +230,18 @@ function mostrarTextoSegunAgente() {
   $('campo-texto').hidden = oculto;
   $('casilla-enganche').hidden = oculto;
   $('nota-enganche').hidden = oculto;
+  sincronizarRedaccion();
 }
 $('agente').addEventListener('change', mostrarTextoSegunAgente);
+
+// "Redactar" es una opción DE "usar agente": sin agente no hay a quién pedirle
+// la frase. Se deshabilita en vez de esconderse —que se vea que existe— y su
+// marca se conserva: volver a marcar el agente la deja como estaba.
+function sincronizarRedaccion() {
+  const apagada = !$('agente').checked || $('agente').disabled;
+  $('redactar').disabled = apagada;
+  $('casilla-redactar').classList.toggle('apagada', apagada);
+}
 
 function sincronizarTexto() {
   if (!enganchado()) return;
@@ -333,6 +343,8 @@ function leerFormulario() {
     hasta: $('hasta').value,
     departamento: $('departamento').value,
     usarAgente: $('agente').checked,
+    // Sólo viaja marcada si el agente está marcado: es un salto suyo.
+    redactar: $('agente').checked && $('redactar').checked,
   };
 }
 
@@ -347,6 +359,7 @@ function aplicarURL(parametros) {
   if (!fechasEditadas) sincronizarRango();
   $('departamento').value = parametros.get('departamento') ?? '';
   $('agente').checked = parametros.get('agente') === '1' && !$('agente').disabled;
+  $('redactar').checked = parametros.get('redactar') === '1';
   mostrarTextoSegunAgente();
   const texto = parametros.get('texto') ?? '';
   if (texto) {
@@ -370,6 +383,7 @@ function parametrosDe(peticion) {
   if (peticion.departamento) parametros.set('departamento', peticion.departamento);
   if (!enganchado() && peticion.texto) parametros.set('texto', peticion.texto);
   if (peticion.usarAgente) parametros.set('agente', '1');
+  if (peticion.redactar) parametros.set('redactar', '1');
   return parametros;
 }
 
@@ -470,11 +484,14 @@ function actorDe(destino) {
   return String(destino).startsWith('agente') ? 'agente' : 'capa';
 }
 
-// Con agente el salto 1 es suyo; los demás previstos son de la capa. Pasado el
-// número previsto no se adivina: el reintento agrega saltos que nadie prometió.
+// Con agente el salto 1 es suyo y, si además redacta, también el último
+// previsto; los del medio son de la capa. Pasado el número previsto no se
+// adivina: el reintento agrega saltos que nadie prometió.
 function actorPrevisto(numero) {
   if (numero > estado.saltosPrevistos) return null;
-  return numero === 1 && estado.peticion?.usarAgente ? 'agente' : 'capa';
+  if (!estado.peticion?.usarAgente) return 'capa';
+  if (numero === 1) return 'agente';
+  return estado.peticion.redactar && numero === estado.saltosPrevistos ? 'agente' : 'capa';
 }
 
 function mostrarEnCurso(numero) {
@@ -721,7 +738,12 @@ function pintarResumen(totalMs) {
       ),
     );
   }
-  resumen.replaceChildren(caja);
+  resumen.replaceChildren();
+  // Arriba de todo: lo que el agente escribió. Es la respuesta en palabras, y
+  // el resto del resumen es cómo se consiguió.
+  const redactado = respuestaRedactada();
+  if (redactado) resumen.append(texto('p', `Respuesta del agente: ${redactado}`, 'respuesta-agente'));
+  resumen.append(caja);
   if (comparacion) resumen.append(bloqueComparacion(comparacion));
   // Pedido del usuario: la nota del catálogo va justo después del veredicto
   // del agente, no encabezando el rastro.
@@ -745,6 +767,15 @@ function dato(clave, valor) {
   const caja = document.createElement('span');
   caja.append(texto('span', clave, 'clave'), texto('span', valor));
   return caja;
+}
+
+// El texto del salto de redacción, si lo hubo y salió bien. Un salto fallido no
+// aporta frase: su tarjeta ya dice qué pasó.
+function respuestaRedactada() {
+  const salto = [...estado.saltos]
+    .reverse()
+    .find((uno) => uno.destino === 'agente — redacción' && uno.estado === 'ok');
+  return typeof salto?.recibido === 'string' ? salto.recibido.trim() : null;
 }
 
 function ultimaConsulta() {

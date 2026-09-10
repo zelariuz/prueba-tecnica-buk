@@ -270,6 +270,14 @@ textarea {
   color: var(--apagado);
 }
 
+/* Las dos casillas del agente van en línea y se envuelven en pantallas
+   angostas: "redactar" es una opción DE "usar agente", no un paso aparte. */
+.fila-casillas {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 1.5rem;
+}
+
 .enlace {
   background: none;
   border: none;
@@ -354,6 +362,19 @@ form.controles {
   font-size: 12px;
   letter-spacing: 0.04em;
   margin-right: 0.35rem;
+}
+
+/* La frase que escribió el agente: primero en el resumen, en prosa y no en
+   mono — es lo único de la página que se lee como una respuesta. */
+.respuesta-agente {
+  margin: 0 0 1rem;
+  padding: 0.7rem 0.9rem;
+  border: 1px solid var(--borde);
+  border-left: 3px solid var(--acento);
+  border-radius: var(--radio);
+  background: var(--superficie-2);
+  font-size: 15px;
+  line-height: 1.5;
 }
 
 .veredicto {

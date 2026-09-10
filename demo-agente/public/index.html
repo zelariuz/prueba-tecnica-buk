@@ -71,15 +71,25 @@
             </label>
 
             <div>
-              <label class="casilla" id="casilla-agente">
-                <input type="checkbox" id="agente" name="agente" value="1" />
-                <span>Usar agente</span>
-              </label>
+              <div class="fila-casillas">
+                <label class="casilla" id="casilla-agente">
+                  <input type="checkbox" id="agente" name="agente" value="1" />
+                  <span>Usar agente</span>
+                </label>
+                <label class="casilla apagada" id="casilla-redactar">
+                  <input type="checkbox" id="redactar" name="redactar" value="1" disabled />
+                  <span>Redactar la respuesta</span>
+                </label>
+              </div>
               <p class="nota" id="nota-agente">
                 Marcado: el texto de arriba se le manda a una sesión de Claude Code, que escribe el
                 JSON de la consulta leyendo el catálogo. Sin marcar: se manda el JSON preparado de
                 esta pregunta, sin ningún modelo de por medio.
                 <button type="button" class="enlace" id="ver-prompt">lo que sabe esa sesión</button>
+              </p>
+              <p class="nota" id="nota-redactar">
+                Un salto más: el agente recibe la pregunta y las filas agregadas (nunca filas
+                crudas) y escribe una o dos frases; cuesta ~0,003 USD y 3-5 s.
               </p>
               <label class="campo" id="campo-texto" hidden>
                 <span class="etiqueta">Texto en lenguaje natural</span>
