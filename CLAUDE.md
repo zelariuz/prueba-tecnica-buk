@@ -21,7 +21,7 @@ TypeScript, Node 24, `node:test`, node-postgres.
   sesión separado, 0003 CTE por entidad con empresa, 0004 derivadas ratio,
   0005 segmentos sin SQL, 0006 medidas de una sola entidad, 0007 vocabulario
   Cube, 0008 catálogo en dos vistas, 0009 rango opcional para el agente,
-  0010 consultas sin medida).
+  0010 consultas sin medida, 0011 rango sin granularidad).
 
 ## Estructura
 
@@ -116,6 +116,9 @@ test/
   snapshots/completion-rate.sql   SQL esperado de la derivada, con su etapa agregada
   snapshots/valores-de-dimension.sql  SQL esperado de la consulta sin medidas:
                              GROUP BY sin agregados (ADR 0010)
+  snapshots/rango-sin-granularidad.sql  SQL esperado del rango que sólo filtra:
+                             el dateRange en la CTE y sin la fecha en el
+                             SELECT ni en el GROUP BY (ADR 0011)
   fixtures/snapshot.json     foto del esquema generada desde la base del caso
   fixtures/caso-sqlite.sql   el mismo esquema y las mismas 16 evaluaciones,
                              escritos para SQLite
@@ -382,10 +385,14 @@ curl -s -H 'Authorization: Bearer demo-dashboard-empresa-a' \
   (historia 9). La columna del esquema es `present BOOLEAN`, así que la
   dimensión se llama `present` y el segmento filtra `present = true`; el nombre
   de negocio no inventa un estado de texto que la base no tiene.
-- v1 **exige granularidad** en una `timeDimension`: no hay forma de acotar por
-  fecha sin agrupar por ella. Por eso la consulta tipo de asistencia agrupa por
-  departamento **y mes**, y de paso deja ver la tendencia. Un `dateRange` sin
-  granularidad queda como evolución.
+- v1 **exigía granularidad** en una `timeDimension` —no había forma de acotar
+  por fecha sin agrupar por ella—, y por eso la consulta tipo de asistencia
+  agrupa por departamento **y mes**. **Vigente sólo hasta el ADR 0011
+  (10-09)**: una `timeDimension` con `dateRange` y sin `granularity` ahora sólo
+  filtra, que es lo que pide la pregunta literal del enunciado ("la tasa de
+  asistencia por departamento durante los últimos tres meses" es una fila por
+  departamento). La consulta tipo no cambió: sigue dando la tendencia mes a
+  mes.
 - El seed creció con un bloque de agosto de 2025 de conteos redondos
   (Ingeniería 16 presentes de 20 días → 80; Ventas 5 de 10 → 50; empresa 2, 3
   de 4 → 75). Junio y julio quedaron intactos: los literales anteriores siguen

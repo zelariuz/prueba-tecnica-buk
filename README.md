@@ -226,6 +226,34 @@ con `NO_JOIN_PATH`, porque `departments` no declara relaciones. El SQL está en
 `test/snapshots/valores-de-dimension.sql`. Una consulta sin medidas **y** sin
 dimensiones sigue siendo `INVALID_QUERY`.
 
+### Un período que sólo filtra: `dateRange` sin `granularity`
+
+`granularity` es opcional en una `timeDimension` (ADR 0011). Con `dateRange` y
+sin ella, la fecha **sólo filtra**: acota el período dentro de la CTE de su
+entidad y no aparece como columna. Es lo que pide una pregunta que nombra un
+período pero no un corte por tiempo —"la tasa de asistencia por departamento
+durante los últimos tres meses" es **una fila por departamento**—:
+
+```js
+await engine.run(
+  {
+    measures: ['attendance.attendance_rate'],
+    dimensions: ['departments.name'],
+    timeDimensions: [{ dimension: 'attendance.date', dateRange: ['2025-06-01', '2025-08-31'] }],
+    order: { 'departments.name': 'asc' },
+  },
+  { companyId: 1, consumer: 'dashboard' },
+);
+// → [{ 'departments.name': 'Ingeniería', 'attendance.attendance_rate': 92.5925925925926 },
+//    { 'departments.name': 'Ventas',     'attendance.attendance_rate': 91.54929577464789 }]
+```
+
+El SQL está en `test/snapshots/rango-sin-granularidad.sql`: el rango sigue
+siendo `>= $2 AND <= $3` dentro de la CTE de `attendance`, y el `GROUP BY` lleva
+sólo el departamento. Agregar `granularity: 'month'` devuelve la tendencia mes a
+mes, que es la otra pregunta. Una `timeDimension` **sin** `dateRange` y **sin**
+`granularity` es `INVALID_QUERY`: no filtra ni agrupa, así que no dice nada.
+
 ## Medidas derivadas: razones sobre agregados
 
 `completion_rate` no se declara como una fórmula: se declara como la razón entre
