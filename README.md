@@ -31,8 +31,24 @@ Parquet/S3.
 
 ## Requisitos
 
-- Node 24 o superior.
-- Docker con Compose.
+- Docker con Compose (Docker Desktop en Windows o Mac; en Linux, el paquete
+  `docker` con el plugin `compose`). Con esto solo ya se puede ver el caso
+  funcionando (sección siguiente).
+- Node 24 o superior, sólo para correr la suite de tests y la demo desde el
+  host. `npm` viene con Node. La forma más simple de tener la versión exacta
+  es `nvm`:
+
+  ```bash
+  curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.6/install.sh | bash
+  # abrir una terminal nueva, y después:
+  nvm install 24
+  node -v      # v24.x
+  npm -v
+  ```
+
+  En Windows sin WSL, `nvm-windows` o el instalador de <https://nodejs.org>
+  (versión 24 LTS) hacen lo mismo. Sin dependencias globales: `npm install`
+  en la raíz instala lo único que el proyecto usa (`pg` y `redis`).
 
 ## Probarlo en dos comandos (sólo Docker)
 
