@@ -20,7 +20,7 @@ iframe{position:absolute;inset:0;width:100%;height:100%;border:0}
 </style>
 <header>
 <div class="barra grupos" role="tablist" aria-label="Grupos"><button class="grupo" role="tab" data-g="Bitácora" aria-selected="true">Bitácora</button><button class="grupo" role="tab" data-g="Diseño">Diseño</button><button class="grupo" role="tab" data-g="Arquitectura">Arquitectura</button><button class="grupo" role="tab" data-g="Flujos">Flujos</button></div>
-<div class="barra tabs" role="tablist" aria-label="Páginas"><button class="tab" role="tab" data-g="Bitácora" data-t="riesgos" hidden>Riesgos y cambios</button><button class="tab" role="tab" data-g="Diseño" data-t="diseno" hidden>Diseño Fable (Mermaid)</button><button class="tab" role="tab" data-g="Diseño" data-t="mapas" hidden>Mapas en 3 niveles</button><button class="tab" role="tab" data-g="Diseño" data-t="como-quedo" hidden>Cómo quedó funcionando</button><button class="tab" role="tab" data-g="Diseño" data-t="tests" hidden>Tests realizados (215)</button><button class="tab" role="tab" data-g="Arquitectura" data-t="mapa-repo" hidden>Mapa del repo</button><button class="tab" role="tab" data-g="Arquitectura" data-t="registro" hidden>Registro de un módulo</button><button class="tab" role="tab" data-g="Arquitectura" data-t="estado-fuente" hidden>Estado de una fuente</button><button class="tab" role="tab" data-g="Arquitectura" data-t="cache-vivo" hidden>Caché en vivo (L1, L2, Redis caído)</button><button class="tab" role="tab" data-g="Arquitectura" data-t="cache-l3" hidden>Caché de 3 niveles (evolución)</button><button class="tab" role="tab" data-g="Arquitectura" data-t="concurrencia" hidden>Alta concurrencia</button><button class="tab" role="tab" data-g="Arquitectura" data-t="llm" hidden>Dónde entra el LLM</button><button class="tab" role="tab" data-g="Arquitectura" data-t="agentes" hidden>Agentes y MCP</button><button class="tab" role="tab" data-g="Flujos" data-t="viaje" hidden>Viaje de una consulta</button><button class="tab" role="tab" data-g="Flujos" data-t="consumidor" hidden>Flujo del consumidor</button><button class="tab" role="tab" data-g="Flujos" data-t="op1" hidden>Op 1 · GET /catalog</button><button class="tab" role="tab" data-g="Flujos" data-t="op2" hidden>Op 2 · POST ?dryRun=true</button><button class="tab" role="tab" data-g="Flujos" data-t="op3" hidden>Op 3 · POST /query</button><button class="tab" role="tab" data-g="Flujos" data-t="demo-agente" hidden>Demo agente (rastro)</button></div>
+<div class="barra tabs" role="tablist" aria-label="Páginas"><button class="tab" role="tab" data-g="Bitácora" data-t="riesgos" hidden>Riesgos y cambios</button><button class="tab" role="tab" data-g="Diseño" data-t="diseno" hidden>Diseño Fable (Mermaid)</button><button class="tab" role="tab" data-g="Diseño" data-t="mapas" hidden>Mapas en 3 niveles</button><button class="tab" role="tab" data-g="Diseño" data-t="como-quedo" hidden>Cómo quedó funcionando</button><button class="tab" role="tab" data-g="Diseño" data-t="tests" hidden>Tests realizados (215)</button><button class="tab" role="tab" data-g="Arquitectura" data-t="mapa-repo" hidden>Mapa del repo</button><button class="tab" role="tab" data-g="Arquitectura" data-t="catalogo-planificador" hidden>Catálogo y planificador</button><button class="tab" role="tab" data-g="Arquitectura" data-t="registro" hidden>Registro de un módulo</button><button class="tab" role="tab" data-g="Arquitectura" data-t="estado-fuente" hidden>Estado de una fuente</button><button class="tab" role="tab" data-g="Arquitectura" data-t="cache-vivo" hidden>Caché en vivo (L1, L2, Redis caído)</button><button class="tab" role="tab" data-g="Arquitectura" data-t="cache-l3" hidden>Caché de 3 niveles (evolución)</button><button class="tab" role="tab" data-g="Arquitectura" data-t="concurrencia" hidden>Alta concurrencia</button><button class="tab" role="tab" data-g="Arquitectura" data-t="llm" hidden>Dónde entra el LLM</button><button class="tab" role="tab" data-g="Arquitectura" data-t="agentes" hidden>Agentes y MCP</button><button class="tab" role="tab" data-g="Flujos" data-t="viaje" hidden>Viaje de una consulta</button><button class="tab" role="tab" data-g="Flujos" data-t="consumidor" hidden>Flujo del consumidor</button><button class="tab" role="tab" data-g="Flujos" data-t="op1" hidden>Op 1 · GET /catalog</button><button class="tab" role="tab" data-g="Flujos" data-t="op2" hidden>Op 2 · POST ?dryRun=true</button><button class="tab" role="tab" data-g="Flujos" data-t="op3" hidden>Op 3 · POST /query</button><button class="tab" role="tab" data-g="Flujos" data-t="demo-agente" hidden>Demo agente (rastro)</button></div>
 </header>
 <section class="pane"><div class="aviso" id="aviso">Elige una pestaña</div></section>
 <script type="text/x-html" id="src-riesgos"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -16158,6 +16158,89 @@ q.addEventListener('input',aplicar);
 </body>
 </html>
 </script>
+<script type="text/x-html" id="src-catalogo-planificador"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/11.12.0/mermaid.min.js"><\/script>
+<title>Catálogo y planificador</title>
+<style>
+:root{--bg:#f7f7f5;--fg:#222;--muted:#666;--caja:#fff;--borde:#333;--motor-b:#0a6;--motor-f:#e9fbf3;--db-b:#36c;--db-f:#eaf0ff;--nota-b:#c60;--nota-f:#fff4e6}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#1c1c1a;--fg:#ececea;--muted:#a8a8a4;--caja:#26262a;--borde:#c9c9c4;--motor-b:#3dc98f;--motor-f:#153826;--db-b:#7a9cf0;--db-f:#1b2440;--nota-b:#f0954a;--nota-f:#3a2712}}
+:root[data-theme="dark"]{--bg:#1c1c1a;--fg:#ececea;--muted:#a8a8a4;--caja:#26262a;--borde:#c9c9c4;--motor-b:#3dc98f;--motor-f:#153826;--db-b:#7a9cf0;--db-f:#1b2440;--nota-b:#f0954a;--nota-f:#3a2712}
+body{font-family:system-ui,sans-serif;margin:0;padding:16px;background:var(--bg);color:var(--fg);line-height:1.45}
+h1{font-size:1.25rem;margin:0 0 6px;text-wrap:balance}
+h2{font-size:1.05rem;margin:28px 0 8px;border-bottom:2px solid var(--borde);padding-bottom:4px}
+h3{font-size:.95rem;margin:18px 0 6px;color:var(--muted)}
+p,li{max-width:65ch}
+.sub{color:var(--muted);font-size:.85rem;margin:0 0 14px}
+.diag svg{max-width:none;height:auto}
+.diag{overflow-x:auto;background:var(--caja);border:1px solid var(--borde);border-radius:8px;padding:8px;margin:10px 0}
+.nota{border-left:4px solid var(--nota-b);background:var(--nota-f);padding:8px 10px;margin:12px 0;font-size:.9rem;max-width:65ch}
+.verde{border-color:var(--motor-b);background:var(--motor-f)}
+.azul{border-color:var(--db-b);background:var(--db-f)}
+code{font-family:ui-monospace,monospace;font-size:.85em}
+table{border-collapse:collapse;font-size:.85rem;margin:8px 0}
+td,th{border:1px solid var(--borde);padding:5px 8px;text-align:left;vertical-align:top}
+th{background:var(--caja)}
+ul,ol{padding-left:20px}
+</style>
+<h1>Catálogo y planificador: cómo se decide una consulta</h1>
+<p class="sub">No es magia: el catálogo es un diccionario en memoria que responde preguntas por nombre, y el planificador es una lista de siete funciones que lo consultan en un orden fijo. 10-09.</p>
+
+<h2>El diálogo, paso a paso</h2>
+<p>Consulta de ejemplo: <b>tasa de asistencia por departamento entre junio y agosto de 2025</b> (la pregunta 3 del enunciado). Lo que el planificador le pregunta al catálogo y lo que el catálogo responde, puerta por puerta:</p>
+<div class="diag"><pre class="mermaid">
+%%{init: {"sequence": {"wrap": true, "width": 210, "messageFontSize": 12, "actorFontSize": 12, "noteFontSize": 11, "useMaxWidth": false}}}%%
+sequenceDiagram
+  participant P as Planificador (7 puertas)
+  participant C as Catálogo (en memoria)
+  Note over C: al arrancar, register(def, snapshot) validó cada definición contra el esquema real
+  P->>P: 1 validar forma. Hay measures o dimensions, listas bien formadas, order y limit válidos
+  P->>C: 2 catalog.measure("attendance.attendance_rate")
+  C-->>P: entidad attendance, tipo ratio, numerador present_count, denominador count, escala 100
+  P->>C: catalog.dimension("departments.name")
+  C-->>P: entidad departments, columna name, tipo string
+  P->>C: catalog.dimension("attendance.date")
+  C-->>P: entidad attendance, columna date, tipo date
+  Note over P: entidad de hechos = la de la primera medida (attendance). Fuente = la de esa entidad (postgres)
+  P->>C: 3 filtros. catalog.segment / catalog.dimension de cada filtro
+  C-->>P: a qué entidad pertenece cada uno (va dentro de su CTE)
+  P->>C: 4 joins. catalog.entity("attendance").relationships
+  C-->>P: employee, many_to_one, target employees, foreignKey employee_id
+  P->>C: catalog.entity("employees").relationships
+  C-->>P: department, many_to_one, target departments, foreignKey department_id
+  Note over P: búsqueda en anchura desde attendance hasta alcanzar departments. Camino: attendance, employees, departments
+  P->>C: 5 agregación. catalog.entity("attendance").measures y catalog.derivedOrder("attendance")
+  C-->>P: present_count (count con segmento present), count (count). Orden de cálculo: attendance_rate
+  P->>P: 6 emitir SQL con el dialecto de la fuente. CTE por entidad con company_id = $1, JOIN por las foreignKey, GROUP BY, fórmula fuera de la subconsulta
+  P->>P: 7 describir el plan. Entidad, joins por nombre de relación, medidas base, derivadas, presupuesto, advertencias
+</pre></div>
+
+<h2>Por qué es determinista</h2>
+<ol>
+<li><b>El catálogo solo responde preguntas por nombre.</b> <code>measure(nombre)</code>, <code>dimension(nombre)</code>, <code>segment(nombre)</code>, <code>entity(nombre)</code>, <code>derivedOrder(entidad)</code>. Si el nombre no existe, corta ahí con <code>UNKNOWN_MEMBER</code> y una sugerencia por distancia de edición. El catálogo no infiere nada: lo que un módulo no declaró, no existe.</li>
+<li><b>Los joins no se adivinan: están declarados.</b> Cada definición trae <code>relationships</code> con <code>type: many_to_one</code>, <code>target</code> y <code>foreignKey</code>. El planificador hace una búsqueda en anchura desde la entidad de hechos siguiendo esas relaciones hasta alcanzar las entidades de las dimensiones y filtros pedidos. Si no hay camino, <code>NO_JOIN_PATH</code> con la entidad que falta. Es lo que se ve en <code>plan.joins</code> del dry-run: <code>attendance → employees (via employee) → departments (via department)</code>.</li>
+<li><b>El orden de las puertas es el contrato.</b> Cada puerta recibe el <code>paso</code> que dejó la anterior y lo enriquece; la que rechaza nombra su código y su puerta (<code>gate</code>, que la telemetría cuenta). Los filtros aportan entidades al camino de joins, y los parámetros <code>$n</code> se numeran en el orden en que se piden: por eso el mismo JSON da siempre el mismo SQL, y el SQL se compara byte a byte con snapshots en cada corrida de tests.</li>
+</ol>
+
+<h2>Las siete puertas y qué puede salir mal en cada una</h2>
+<table>
+<tr><th>#</th><th>Puerta</th><th>Qué hace</th><th>Rechaza con</th></tr>
+<tr><td>1</td><td>validar</td><td>forma de la consulta, campos prohibidos, presupuesto de la clase</td><td><code>INVALID_QUERY</code>, <code>FORBIDDEN_FIELD</code>, <code>INVALID_CONSUMER</code></td></tr>
+<tr><td>2</td><td>resolver miembros</td><td>cada nombre → su entidad, columna y tipo; entidad de hechos; fuente</td><td><code>UNKNOWN_MEMBER</code>, <code>MULTI_ENTITY_MEASURES</code></td></tr>
+<tr><td>3</td><td>filtros</td><td>segmentos y filters a la CTE de su entidad; operador válido para el tipo</td><td><code>INVALID_OPERATOR</code>, <code>UNSUPPORTED_OPERATOR</code></td></tr>
+<tr><td>4</td><td>joins</td><td>búsqueda en anchura por las relaciones declaradas</td><td><code>NO_JOIN_PATH</code></td></tr>
+<tr><td>5</td><td>agregación y derivadas</td><td>medidas base que las razones necesitan, orden topológico, advertencia de razón anulada</td><td>(advertencias en <code>meta.warnings</code>)</td></tr>
+<tr><td>6</td><td>emitir SQL</td><td>única puerta que traduce nombres semánticos a tablas y columnas, con el dialecto de la fuente</td><td>—</td></tr>
+<tr><td>7</td><td>describir el plan</td><td>el plan lógico que devuelve el dry-run: sin nombres físicos</td><td>—</td></tr>
+</table>
+
+<h2>Lo que sale del otro lado</h2>
+<p>Para la consulta de ejemplo, el dry-run devuelve el plan (nombres semánticos) y, con sesión interna, el SQL. Así se ve en la demo del agente:</p>
+<div class="nota azul"><b>plan:</b> entidad <code>attendance</code>; joins <code>attendance → employees (employee)</code>, <code>employees → departments (department)</code>; dimensiones <code>departments.name</code>; medidas <code>attendance.attendance_rate</code>; medidas base <code>attendance.present_count</code>, <code>attendance.count</code>; derivada <code>attendance_rate = present_count / count × 100</code>; presupuesto de la clase; advertencias: ninguna.</div>
+<div class="nota verde"><b>SQL emitido:</b> tres CTE (<code>attendance</code>, <code>employees</code>, <code>departments</code>) cada una con <code>WHERE company_id = $1</code> y el rango <code>date &gt;= $2 AND date &lt;= $3</code> dentro de la de asistencia; <code>JOIN</code> por <code>employee_id</code> y <code>department_id</code>; una subconsulta agregada con <code>COUNT(*) FILTER (WHERE present = $4)</code> y <code>COUNT(*)</code>; afuera, <code>"present_count"::numeric / NULLIF("count", 0) * 100</code>; <code>GROUP BY departments.name</code>; <code>LIMIT $5</code>. Filas del seed: Ingeniería 92,59 y Ventas 91,55.</div>
+
+<div class="nota"><b>Lo que el planificador nunca hace:</b> leer definiciones directamente (solo pregunta al catálogo), escribir un JOIN que no esté declarado, ni tocar un nombre físico antes de la puerta 6. Y lo que el catálogo nunca hace: ejecutar. Registra, valida, responde por nombre y publica dos vistas: la pública (sin nombres físicos, la que lee un agente) y la interna (el mapeo, la que usa el planificador).</div>
+
+<script>mermaid.initialize({startOnLoad:true,theme:matchMedia("(prefers-color-scheme:dark)").matches?"dark":"default"});<\/script></script>
 <script type="text/x-html" id="src-registro"><!DOCTYPE html>
 <html lang="en" data-theme="dark" data-preset="classic">
 <head>
@@ -194752,7 +194835,7 @@ cd demo-agente &amp;&amp; npm start                    # http://localhost:3100/<
 
 <script>
 (function(){
-  var TABS=[["Bitácora", "riesgos"], ["Diseño", "diseno"], ["Diseño", "mapas"], ["Diseño", "como-quedo"], ["Diseño", "tests"], ["Arquitectura", "mapa-repo"], ["Arquitectura", "registro"], ["Arquitectura", "estado-fuente"], ["Arquitectura", "cache-vivo"], ["Arquitectura", "cache-l3"], ["Arquitectura", "concurrencia"], ["Arquitectura", "llm"], ["Arquitectura", "agentes"], ["Flujos", "viaje"], ["Flujos", "consumidor"], ["Flujos", "op1"], ["Flujos", "op2"], ["Flujos", "op3"], ["Flujos", "demo-agente"]], marcos={}, pane=document.querySelector('.pane'), aviso=document.getElementById('aviso');
+  var TABS=[["Bitácora", "riesgos"], ["Diseño", "diseno"], ["Diseño", "mapas"], ["Diseño", "como-quedo"], ["Diseño", "tests"], ["Arquitectura", "mapa-repo"], ["Arquitectura", "catalogo-planificador"], ["Arquitectura", "registro"], ["Arquitectura", "estado-fuente"], ["Arquitectura", "cache-vivo"], ["Arquitectura", "cache-l3"], ["Arquitectura", "concurrencia"], ["Arquitectura", "llm"], ["Arquitectura", "agentes"], ["Flujos", "viaje"], ["Flujos", "consumidor"], ["Flujos", "op1"], ["Flujos", "op2"], ["Flujos", "op3"], ["Flujos", "demo-agente"]], marcos={}, pane=document.querySelector('.pane'), aviso=document.getElementById('aviso');
   var grupos=[].slice.call(document.querySelectorAll('.grupo')), tabs=[].slice.call(document.querySelectorAll('.tab'));
   function fuente(t){return document.getElementById('src-'+t).textContent.replace(/<\\\/script/gi,'</'+'script');}
   function mostrar(t){
