@@ -81,7 +81,7 @@ Convención de la columna Resultado: **OK (auto)** = verificado con tests, demo 
 | # | Qué mirar | Resultado |
 |---|---|---|
 | M1 | `npm run demo`: las tres preguntas se leen y los números coinciden con el seed | OK (10-09): corrida con `docker compose exec api node src/demo.js`; los 10 números de las tres preguntas coinciden con los literales del seed; live → cache-l1 → cache-l2, error a propósito con sugerencia y telemetría consistentes |
-| M2 | README: se puede seguir de arriba abajo y correr todo sin conocimiento previo | Pendiente |
+| M2 | README: se puede seguir de arriba abajo y correr todo sin conocimiento previo | OK (10-09): comandos del README ejecutados en orden (catálogo 200, POST con token api, 401 sin token, telemetría 200/403, `post; post` live → cache-l1, SQLite 22 tests); agregados durante el QA: instalación de Node/npm, aviso del login activo de Claude Code y paso a paso en la demo, límites de Redis en la L2, tabla de riesgos cerrados con código y su nivel, SQLite como anexo, referencia al mapa del repo y `docs/diagramas-y-demo.html` |
 | M3 | Catálogo público (`GET /analytics/catalog`): las descripciones sirven como contexto para un agente | Pendiente |
 | M4 | Mensajes de error: las sugerencias dicen qué hacer, no solo qué falló | Pendiente |
 | M5 | Cambio de comportamiento: re-registrar una entidad con otra definición ahora es INVALID_DEFINITION (se arma un catálogo nuevo) | Pendiente |
