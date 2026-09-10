@@ -805,7 +805,7 @@ incluidos los que se resuelven con infraestructura o quedaron como evolución
 (PgBouncer, réplicas, particiones, `EXPLAIN`, cola de trabajos), está en
 [`docs/riesgos.md`](docs/riesgos.md).
 
-**Nivel** = impacto × probabilidad **sin** la mitigación. *Alto*: un consumidor
+**Nivel** (severidad, la misma escala del registro completo) = impacto × probabilidad **sin** la mitigación. *Alto*: un consumidor
 recibe datos de otra empresa o un número falso sin aviso, o la base deja de
 responder. *Medio*: el fallo es visible y acotado (un error claro, una
 respuesta degradada). *Bajo*: cosmético.
