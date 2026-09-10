@@ -751,7 +751,7 @@ function caminoDeJoins(catalog, raiz, destinos) {
         suggestion:
           ausentes.size > 0
             ? `No hay relaciones declaradas que lleven de ${raiz} a ${destino}: el camino pasa por ${[...ausentes].join(', ')}, que no está registrada en el catálogo.`
-            : `No hay relaciones declaradas que lleven de ${raiz} a ${destino}.`,
+            : `No hay relaciones declaradas que lleven de ${raiz} a ${destino}. Las relaciones van de la entidad de hechos hacia sus dimensiones: pide una medida de ${destino} para que sea la entidad de hechos, o declara la relación en la definición de ${raiz}.`,
       });
     }
     const rama = [];

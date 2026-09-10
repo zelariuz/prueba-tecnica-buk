@@ -466,6 +466,9 @@ test('dos entidades sin relación declarada cortan con NO_JOIN_PATH', () => {
   assert.equal(error.code, 'NO_JOIN_PATH');
   assert.equal(error.member, 'reviews');
   assert.match(error.suggestion, /employees/);
+  // QA M4 (10-09): la sugerencia dice qué hacer, no sólo qué falló.
+  assert.match(error.suggestion, /pide una medida de reviews/);
+  assert.match(error.suggestion, /declara la relación en la definición de employees/);
 });
 
 // Una entidad de otra fuente: otra base, otro dialecto. En esta fase el
