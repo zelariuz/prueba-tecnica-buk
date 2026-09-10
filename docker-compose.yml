@@ -18,10 +18,15 @@ services:
     volumes:
       - ./docker/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U capa -d capa_semantica"]
+      # Por TCP a propósito: en el primer arranque la imagen levanta un servidor
+      # temporal, sólo por socket Unix, para correr docker/init; `pg_isready`
+      # sin host lo daba por sano y el api arrancaba justo cuando ese servidor
+      # se apagaba para dar paso al definitivo (ECONNREFUSED). El temporal no
+      # acepta TCP, así que esta sonda sólo pasa con el servidor definitivo.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U capa -d capa_semantica"]
       interval: 2s
       timeout: 3s
-      retries: 30
+      retries: 45
 
   # Caché L2 compartida entre instancias del servicio. Sin volumen a propósito:
   # una caché que sobrevive al reinicio no es una caché, es una base.
@@ -45,6 +50,9 @@ services:
   api:
     build: .
     container_name: capa-semantica-api
+    # Segunda red: si aun así la base no está cuando el api introspecta, el
+    # proceso termina con error y compose lo vuelve a levantar.
+    restart: on-failure
     depends_on:
       db:
         condition: service_healthy
