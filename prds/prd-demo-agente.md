@@ -1,6 +1,7 @@
 # PRD — Demo agente: mini back y front en WSL
 
-Fecha: 2026-09-09. Origen: discusión 28. *Nota (09-09 noche): desde el ADR 0009 las preguntas preparadas son 8 («cuántos empleados hay» se sumó); donde este PRD dice 7, léase 8.* (`prueba-tecnica/discusiones/28-demo-agente.md`).
+Fecha: 2026-09-09. Origen: discusión 28. *Nota (09-09 noche): desde el ADR 0009 las preguntas preparadas son 8 («cuántos empleados hay» se sumó); donde este PRD dice 7, léase 8.*
+*Nota (10-09): lo que este PRD no preveía y se agregó después, por pedido del usuario al usar la demo: front en HTML+JS puro con API NDJSON por POST (el mini back ya no renderiza HTML); selector de token del consumidor (la empresa viaja en el token) con la empresa C de 1 062 283 filas; `--fork-session` por clic (sin memoria entre preguntas); modal con el prompt y botón para ver el catálogo en vivo; panel de presupuestos y telemetría; salto opcional de **redacción** (el agente escribe una o dos frases con las filas agregadas); las 3 preguntas literales del enunciado como preparadas 1-3, hasta 12 preparadas; JSON del agente indentado con el crudo plegable; casilla de enganche del texto. Lo que sigue fuera: MCP, gráficos, historial. Detalle: `demo-agente/README.md` y la discusión 28.* (`prueba-tecnica/discusiones/28-demo-agente.md`).
 Vive en `demo-agente/` dentro del repo, con `package.json`, tests y README propios.
 No modifica la capa (`src/`).
 

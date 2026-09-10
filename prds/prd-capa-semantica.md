@@ -332,6 +332,29 @@ externas" y "dialectos distintos de Postgres" siguen fuera de alcance como
 producto; lo que existe es un archivo hermano de `src/dialect/postgres.js` y una
 suite que lo ejercita en memoria. El resto del PRD no cambia.
 
+**Actualización (09 y 10-09, a raíz de usar la capa con un agente de verdad,
+ver `prds/prd-demo-agente.md`)**: cuatro decisiones que este PRD fijaba
+distinto y que cambiaron con ADR propio, sin reescribir lo de arriba:
+
+- El presupuesto de la clase `agent` decía "rango temporal obligatorio". Hoy
+  el rango es **opcional** para todas las clases; timeout y tope de filas son
+  los guardarraíles y `QUERY_TIMEOUT` sugiere acotar. **ADR 0009.**
+- "Una consulta necesita al menos una medida". Hoy una consulta sin medidas
+  devuelve los **valores distintos** de sus dimensiones (`GROUP BY` sin
+  agregados); la entidad de hechos sale de la primera dimensión. **ADR 0010.**
+- Toda `timeDimension` exigía `granularity`. Hoy `dateRange` sin
+  `granularity` **sólo filtra** por fecha, sin agrupar. **ADR 0011.**
+- La vista pública del catálogo publicaba de cada consulta tipo sólo nombre,
+  descripción y parámetros. Hoy publica también su `query`: son ejemplos
+  resueltos para un agente (ADR 0008, nota del 09-09). Además, `departments`
+  tiene medida `count` y la descripción de `reviews.avg_score` dice que como
+  desempeño se lee sobre evaluaciones completadas: el conocimiento de negocio
+  vive en la definición, que es lo que un agente lee.
+- Ruta nueva `GET /analytics/telemetry` (sólo sesión interna; 403
+  `FORBIDDEN` al resto) con contadores y presupuestos.
+- Seed adicional `docker/init/03-seed-empresa-c.sql`: una tercera empresa con
+  1 062 283 filas de asistencia para medir tiempos, caché y el tope de filas.
+
 Cada punto tiene su costura nombrada en el diseño y se documenta como
 evolución con su costo y beneficio.
 
