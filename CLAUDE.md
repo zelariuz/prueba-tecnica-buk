@@ -936,6 +936,19 @@ cómo va todo, el evento dice qué acaba de pasar.
   "order":{"departments.name":"asc"}}`), con rango precargado vacío en las dos
   empresas: no lleva `timeDimensions`. Antes de esto el agente escribía el JSON
   correcto y la capa se lo rechazaba con `INVALID_QUERY`.
+- **Las tres preguntas del enunciado y 12 preguntas** (10-09, ADR 0011): las
+  tres primeras de `preguntas.json` son las del enunciado con su **texto
+  literal**, sin marcadores y sin cambiarle una palabra. La 1 (score promedio
+  por departamento durante el último año) y la 3 (tasa de asistencia por
+  departamento durante los últimos tres meses) llevan `dateRange` **sin**
+  `granularity`: piden un período, no un corte por tiempo, así que son una fila
+  por departamento. La 2 (cuántos empleados completaron cada trimestre) sí
+  agrupa: es la consulta de `empleados-que-completaron` sin el filtro de
+  departamento. Rangos precargados de la empresa A: 2025 entero para la 1 y la
+  2, junio a agosto de 2025 para la 3 — en la demo "el último año" y "los
+  últimos tres meses" son los del seed, y cada pregunta lo dice en su `nota`.
+  El prompt de creación gana la viñeta del rango sin granularidad; las 9
+  preguntas anteriores quedaron intactas, después de las tres.
 - **Panel de presupuestos y telemetría** (09-09 noche): al pie del rastro,
   alimentado por `GET /api/telemetria?token=<nombre del token de consumidor>`
   del mini back (`src/servidor.js`), que llama a `GET /analytics/telemetry` de
@@ -978,6 +991,18 @@ cual>, process: { uptimeMs, startedAt } }`.
 - La consume la demo (`demo-agente`, `GET /api/telemetria`): ver "Demo agente".
 
 ## Estado
+
+Rango sin granularidad (10-09 madrugada, ADR 0011): una `timeDimension` con
+`dateRange` y sin `granularity` sólo filtra por fecha. La raíz corre **215 tests
+en verde** con `DATABASE_URL` y `REDIS_URL`, y **133 sin nada** (1 se salta);
+`demo-agente` corre sus **53** aparte. Snapshot nuevo
+`test/snapshots/rango-sin-granularidad.sql`; los cuatro anteriores sin cambios.
+Verificado contra Docker (`docker compose up -d --build api`): la tasa de
+asistencia por departamento de junio a agosto de 2025 con `demo-agente-empresa-a`
+devuelve 200 con dos filas (Ingeniería 92,59 y Ventas 91,55). La demo estrena
+las tres preguntas del enunciado con su texto literal (12 en total) y el prompt
+de creación gana la viñeta del rango sin granularidad; el agente la usó sin
+ayuda en la 1 y en la 3 del QA del 10-09.
 
 Identidad de la fuente en la llave de caché (09-09, discusión 26 P12-P16): la
 llave pasó de `{versión}:{empresa}:{queryId}` a

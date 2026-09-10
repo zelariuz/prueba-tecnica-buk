@@ -1,5 +1,97 @@
 [
   {
+    "id": "enunciado-1-score-por-departamento",
+    "titulo": "Enunciado 1 · Score promedio por departamento (último año)",
+    "texto": "¿Cuál es el score promedio de desempeño por departamento durante el último año?",
+    "filtros": [
+      "desde",
+      "hasta"
+    ],
+    "nota": "Pregunta literal del enunciado. En la demo \"el último año\" es 2025, el año del seed: viene precargado en desde y hasta. Sin granularidad, el rango sólo filtra (ADR 0011): una fila por departamento.",
+    "consulta": {
+      "measures": [
+        "reviews.avg_score"
+      ],
+      "dimensions": [
+        "departments.name"
+      ],
+      "segments": [
+        "reviews.completed"
+      ],
+      "timeDimensions": [
+        {
+          "dimension": "reviews.period",
+          "dateRange": [
+            ":desde",
+            ":hasta"
+          ]
+        }
+      ],
+      "order": {
+        "departments.name": "asc"
+      }
+    }
+  },
+  {
+    "id": "enunciado-2-completaron-por-trimestre",
+    "titulo": "Enunciado 2 · Empleados que completaron cada trimestre",
+    "texto": "¿Cuántos empleados completaron su evaluación de desempeño cada trimestre?",
+    "filtros": [
+      "desde",
+      "hasta"
+    ],
+    "nota": "Pregunta literal del enunciado. \"Cada trimestre\" sí es un corte por tiempo: la timeDimension va con granularity quarter. En la demo el período es 2025, el año del seed.",
+    "consulta": {
+      "measures": [
+        "reviews.completed_employees"
+      ],
+      "timeDimensions": [
+        {
+          "dimension": "reviews.period",
+          "granularity": "quarter",
+          "dateRange": [
+            ":desde",
+            ":hasta"
+          ]
+        }
+      ],
+      "order": {
+        "reviews.period": "asc"
+      },
+      "limit": 500
+    }
+  },
+  {
+    "id": "enunciado-3-asistencia-por-departamento",
+    "titulo": "Enunciado 3 · Tasa de asistencia por departamento (últimos tres meses)",
+    "texto": "¿Cuál es la tasa de asistencia por departamento durante los últimos tres meses?",
+    "filtros": [
+      "desde",
+      "hasta"
+    ],
+    "nota": "Pregunta literal del enunciado. En la demo \"los últimos tres meses\" son junio, julio y agosto de 2025, los del seed. Sin granularidad, el rango sólo filtra (ADR 0011): una fila por departamento, no una por departamento y mes.",
+    "consulta": {
+      "measures": [
+        "attendance.attendance_rate"
+      ],
+      "dimensions": [
+        "departments.name"
+      ],
+      "timeDimensions": [
+        {
+          "dimension": "attendance.date",
+          "dateRange": [
+            ":desde",
+            ":hasta"
+          ]
+        }
+      ],
+      "order": {
+        "departments.name": "asc"
+      }
+    }
+  },
+  {
     "id": "evaluaciones-por-departamento",
     "titulo": "Evaluaciones por departamento y trimestre",
     "texto": "Score promedio y evaluaciones completadas por departamento y trimestre, para :departamento.",

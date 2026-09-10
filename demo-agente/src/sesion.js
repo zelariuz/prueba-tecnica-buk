@@ -109,8 +109,14 @@ REGLAS DEL VOCABULARIO QUE EL CATÁLOGO NO DICE:
 - "timeDimensions" es una lista con un objeto
   { "dimension": <la dimensión temporal de la entidad>, "granularity": <una de granularities>,
   "dateRange": [<desde>, <hasta>] }. Va cuando la pregunta pide un corte por tiempo (por mes,
-  por trimestre, por año) o nombra fechas o un período; si la pones, "granularity" es
-  obligatorio. Hay entidades que no publican dimensión temporal: ahí no va ninguna.
+  por trimestre, por año) o nombra fechas o un período. Hay entidades que no publican
+  dimensión temporal: ahí no va ninguna.
+- Una timeDimension puede llevar "dateRange" sin "granularity": entonces sólo filtra por
+  fecha y no agrupa. Úsala cuando la pregunta pide un período pero no un corte por tiempo
+  (por ejemplo, "por departamento durante los últimos tres meses" = una fila por
+  departamento). Con "granularity" agrupa además por mes, trimestre o año, y eso agrega una
+  columna que nadie pidió. Lo que no existe es la timeDimension sin "dateRange" y sin
+  "granularity": no filtra ni agrupa.
 - El rango de fechas ("dateRange") es OPCIONAL: ponlo cuando la pregunta nombre fechas o un
   período, y déjalo fuera cuando no. Sin rango la capa ejecuta igual, con los límites de tu
   clase: recorta a 1.000 filas y corta a los 10 s, y si eso pasa te devuelve QUERY_TIMEOUT

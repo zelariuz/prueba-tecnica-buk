@@ -174,6 +174,23 @@ test('el prompt de creación dice que para listar los valores de una dimensión 
   assert.match(prompt, /qué departamentos hay/);
 });
 
+// Desde el ADR 0011 una timeDimension puede llevar rango sin granularidad. El
+// catálogo publica `granularities` sin decir que la granularidad es opcional, así
+// que sin esta regla el agente sigue agrupando por mes lo que nadie pidió: "por
+// departamento durante los últimos tres meses" volvería con una fila por
+// departamento Y mes.
+test('el prompt de creación dice que el rango puede ir sin granularidad y entonces sólo filtra', () => {
+  const prompt = promptDeCreacion(catalogoReal);
+
+  assert.match(prompt, /"dateRange" sin "granularity"/);
+  assert.match(prompt, /sólo filtra por\s+fecha y no agrupa/);
+  assert.match(prompt, /una fila por\s+departamento/);
+  assert.ok(
+    !prompt.includes('si la pones, "granularity" es'),
+    'ya no se anuncia la granularidad como obligatoria',
+  );
+});
+
 test('el prompt de creación prohíbe el SQL y los miembros inventados', () => {
   const prompt = promptDeCreacion(catalogoReal);
 

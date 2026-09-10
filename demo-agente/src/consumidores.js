@@ -37,6 +37,12 @@ export const CONSUMIDORES = [
     // departamentos también: no lleva `timeDimensions` porque no lleva nada
     // más que la dimensión (ADR 0010).
     rangos: {
+      // Las tres preguntas literales del enunciado: "el último año" y "los
+      // últimos tres meses" son, en la demo, los del seed. Cada pregunta lo
+      // dice en su `nota`.
+      'enunciado-1-score-por-departamento': ['2025-01-01', '2025-12-31'],
+      'enunciado-2-completaron-por-trimestre': ['2025-01-01', '2025-12-31'],
+      'enunciado-3-asistencia-por-departamento': ['2025-06-01', '2025-08-31'],
       'asistencia-por-departamento': ['2025-06-01', '2025-08-31'],
       'headcount-por-departamento': ['', ''],
       'cuantos-empleados-hay': ['', ''],

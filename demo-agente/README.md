@@ -105,7 +105,7 @@ publica estos endpoints:
 
 | Endpoint | Qué devuelve |
 | --- | --- |
-| `GET /api/preguntas` | las 8 preparadas con su texto, sus filtros y su JSON |
+| `GET /api/preguntas` | las 12 preparadas con su texto, sus filtros y su JSON |
 | `GET /api/consumidores` | los tokens de demo elegibles: nombre, etiqueta y rangos precargados. Ningún valor de token — el mini back es el único que los conoce |
 | `GET /api/sesion` | la sesión del agente y los dos prompts completos |
 | `GET /api/rastro?…` | el rastro como **NDJSON en streaming** |
@@ -221,14 +221,18 @@ esa es la diferencia que la demo hace ver. El QA del 09-09 (`docs/qa.md`, 14
 corridas) volvió a dar lo mismo: 3,2-6,2 s y 0,0025-0,0056 USD por llamada al
 agente, 2-17 ms por llamada a la capa.
 
-## Las 9 preguntas preparadas
+## Las 12 preguntas preparadas
 
-Viven en `preguntas.json` (datos, no código). Las 3 del caso, las otras 3
-consultas tipo del catálogo, la trampa, la más simple de todas y la que no
-lleva medidas:
+Viven en `preguntas.json` (datos, no código). Primero las **3 del enunciado**,
+con su texto literal y sin cambiarle una palabra; después las 3 del caso, las
+otras 3 consultas tipo del catálogo, la trampa, la más simple de todas y la que
+no lleva medidas:
 
 | Pregunta | Qué demuestra |
 | --- | --- |
+| **Enunciado 1** · Score promedio por departamento (último año) | La pregunta literal. "Durante el último año" es un período, no un corte por tiempo: la `timeDimension` va con `dateRange` y **sin** `granularity`, así que sólo filtra y sale una fila por departamento (**ADR 0011**). En la demo el último año es 2025, el del seed |
+| **Enunciado 2** · Empleados que completaron cada trimestre | La pregunta literal. "Cada trimestre" **sí** es un corte por tiempo: acá la granularidad va, y la medida `completed_employees` trae puesto su segmento |
+| **Enunciado 3** · Tasa de asistencia por departamento (últimos tres meses) | La pregunta literal. El mismo rango sin granularidad del ADR 0011 sobre otra entidad y una medida derivada: una fila por departamento con su tasa. En la demo, los últimos tres meses son junio a agosto de 2025 |
 | Evaluaciones por departamento y trimestre | El caso, con filtros y segmento |
 | Completitud por departamento | Medida derivada (ratio) |
 | Asistencia por departamento y mes | Otra entidad, otra dimensión temporal |
@@ -267,7 +271,7 @@ filas, el reintento, la caché, los tiempos y el costo.
 
 ```
 index.js            arranque: configuración, catálogo, sesión y escucha
-preguntas.json      las 9 preguntas preparadas (datos, no código)
+preguntas.json      las 12 preguntas preparadas (datos, no código)
 src/ejecutar.js     el seam: petición → rastro de saltos
 src/sesion.js       el seam: crear/conservar/recrear la sesión, prompt y huella
 src/protocolo.js    las palabras que se cruzan con el agente: prompt del clic,
