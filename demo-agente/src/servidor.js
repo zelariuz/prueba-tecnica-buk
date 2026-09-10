@@ -127,7 +127,14 @@ export function crearServidor({
 // existe sale como `error` y cierra: es lo único que `ejecutar` lanza.
 async function responderRastro(peticion, respuesta, { capa, agente, agenteMotivo, reloj }) {
   const pregunta = preguntaPorId(peticion.pregunta);
-  const texto = pregunta ? peticion.texto || prepararTexto(pregunta.texto, peticion) : peticion.texto;
+  // `texto` en la petición significa "texto propio, desenganchado": se manda
+  // tal cual. Vacío significa enganchado: `promptDelClic` arma el preparado
+  // más la línea de filtros. Acá NO se rellena (09-09: rellenarlo hacía que las
+  // fechas del formulario nunca llegaran al agente). El texto que se muestra
+  // en `inicio` sí es el que va a viajar, calculado aparte.
+  const textoMostrado = pregunta
+    ? peticion.texto || prepararTexto(pregunta.texto, peticion)
+    : peticion.texto;
 
   // Sin agente disponible, `agente=1` no rompe nada: se ignora y la nota viaja
   // con el inicio. El camino sin agente siempre está.
@@ -145,7 +152,7 @@ async function responderRastro(peticion, respuesta, { capa, agente, agenteMotivo
   respuesta.write(
     linea({
       tipo: 'inicio',
-      peticion: { ...peticion, usarAgente: conAgente, texto },
+      peticion: { ...peticion, usarAgente: conAgente, texto: textoMostrado },
       // Sin agente son dos saltos (dry-run y consulta); con agente, tres. La
       // corrección agrega dos más y por eso es una previsión, no una promesa.
       saltosPrevistos: conAgente ? 3 : 2,
@@ -156,7 +163,7 @@ async function responderRastro(peticion, respuesta, { capa, agente, agenteMotivo
   const inicio = reloj();
   try {
     await ejecutar(
-      { ...peticion, texto, usarAgente: conAgente },
+      { ...peticion, usarAgente: conAgente },
       {
         agente,
         capa,
