@@ -1,6 +1,6 @@
 # PRD — Demo agente: mini back y front en WSL
 
-Fecha: 2026-09-09. Origen: discusión 28 (`prueba-tecnica/discusiones/28-demo-agente.md`).
+Fecha: 2026-09-09. Origen: discusión 28. *Nota (09-09 noche): desde el ADR 0009 las preguntas preparadas son 8 («cuántos empleados hay» se sumó); donde este PRD dice 7, léase 8.* (`prueba-tecnica/discusiones/28-demo-agente.md`).
 Vive en `demo-agente/` dentro del repo, con `package.json`, tests y README propios.
 No modifica la capa (`src/`).
 

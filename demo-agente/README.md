@@ -105,7 +105,7 @@ publica cuatro endpoints:
 
 | Endpoint | Qué devuelve |
 | --- | --- |
-| `GET /api/preguntas` | las 7 preparadas con su texto, sus filtros y su JSON |
+| `GET /api/preguntas` | las 8 preparadas con su texto, sus filtros y su JSON |
 | `GET /api/consumidores` | los tokens de demo elegibles: nombre, etiqueta y rangos precargados. Ningún valor de token — el mini back es el único que los conoce |
 | `GET /api/sesion` | la sesión del agente y los dos prompts completos |
 | `GET /api/rastro?…` | el rastro como **NDJSON en streaming** |
@@ -230,7 +230,7 @@ El front estático, el `spawn` de `claude`, el adaptador `fetch` y el arranque n
 tienen tests: son efectos, y se verifican mirando la página.
 
 Lo que sí se verificó a mano, contra la capa real y Claude Code real, está en
-**[`docs/qa.md`](docs/qa.md)**: las 7 preguntas de la primera vuelta por los dos caminos, con las
+**[`docs/qa.md`](docs/qa.md)**: las 7 preguntas de la primera vuelta por los dos caminos (y la segunda vuelta con agente, 8 preguntas, tras el ADR 0009), con las
 filas, el reintento, la caché, los tiempos y el costo.
 
 ## Los archivos

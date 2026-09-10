@@ -1,3 +1,4 @@
+import { prepararConsulta, prepararTexto } from '/preparar.js';
 // El front entero: pide las preguntas y la sesión, arma la URL de cada
 // ejecución y consume el NDJSON del rastro línea a línea, pintando cada salto
 // cuando llega. Sin frameworks y sin librerías.
@@ -755,52 +756,6 @@ function comparacionDelAgente() {
   if (!pregunta) return null;
   const preparada = prepararConsulta(pregunta, estado.peticion);
   return { escrito, preparada, igual: canonico(escrito) === canonico(preparada) };
-}
-
-// Réplica exacta de `src/preguntas.js`: departamento vacío no manda un filtro
-// vacío, le saca el filtro a la consulta; fechas vacías le sacan el `dateRange`
-// a la dimensión temporal y le dejan la granularidad.
-function prepararConsulta(pregunta, { desde, hasta, departamento }) {
-  const consulta = sinRangoVacio(sinFiltroVacio(pregunta.consulta, departamento), desde, hasta);
-  return sustituir(consulta, {
-    ':desde': desde,
-    ':hasta': hasta,
-    ':departamento': departamento,
-  });
-}
-
-function prepararTexto(texto, { departamento }) {
-  return texto.replaceAll(':departamento', departamento || 'todos los departamentos');
-}
-
-function sinRangoVacio(consulta, desde, hasta) {
-  if (desde && hasta) return consulta;
-  if (!Array.isArray(consulta.timeDimensions)) return consulta;
-  return {
-    ...consulta,
-    timeDimensions: consulta.timeDimensions.map(({ dateRange: _fuera, ...resto }) => resto),
-  };
-}
-
-function sinFiltroVacio(consulta, departamento) {
-  if (departamento) return consulta;
-  if (!Array.isArray(consulta.filters)) return consulta;
-  const filters = consulta.filters.filter(
-    (filtro) => !(filtro.values ?? []).includes(':departamento'),
-  );
-  const { filters: _fuera, ...resto } = consulta;
-  return filters.length > 0 ? { ...resto, filters } : resto;
-}
-
-function sustituir(valor, reemplazos) {
-  if (typeof valor === 'string') return valor in reemplazos ? reemplazos[valor] : valor;
-  if (Array.isArray(valor)) return valor.map((dentro) => sustituir(dentro, reemplazos));
-  if (valor !== null && typeof valor === 'object') {
-    return Object.fromEntries(
-      Object.entries(valor).map(([clave, dentro]) => [clave, sustituir(dentro, reemplazos)]),
-    );
-  }
-  return valor;
 }
 
 function canonico(valor) {
