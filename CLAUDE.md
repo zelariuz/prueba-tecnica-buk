@@ -132,6 +132,7 @@ docker/init/
 docs/
   adr/                     decisiones arquitectónicas numeradas
   semantica-de-filtros.md  qué filtra a qué y cuándo una razón queda en 100
+  bitacora-de-fases.md     historial: decisiones y correcciones por fase (antes vivía en CLAUDE.md)
 docker-compose.yml         db (Postgres 16, host 5433), redis (host 6380) y api
                            (host 3000, espera a que db y redis estén sanos)
 Dockerfile                 imagen del servicio api (node:24-alpine, USER node)
@@ -153,7 +154,6 @@ demo-agente/               demo web del rastro de llamadas: paquete aparte, con 
   public/                  el front estático: index.html, app.js, estilo.css y
                            sesion.html (sin frameworks, sin build)
   docs/qa.md               QA del 09-09: las 7 preguntas × 2 caminos, de verdad
-  docs/bitacora-de-fases.md  historial: decisiones y correcciones por fase (antes vivía aquí)
 ```
 
 **Comandos de la demo** (con la capa arriba):
