@@ -66,7 +66,7 @@ docker compose exec api node src/demo.js  # las tres preguntas del caso, caché 
 ```
 
 Con eso el servicio ya responde por HTTP; los `curl` de "El servicio HTTP" más
-abajo funcionan tal cual con los tokens de demo. La suite de 215 tests sí
+abajo funcionan tal cual con los tokens de demo. La suite de 217 tests sí
 necesita Node 24 en el host (siguiente sección). Si revisas el repo con Claude
 Code, abre la carpeta y pide "corre la demo y explícame el caso obligatorio":
 `CLAUDE.md` trae el mapa del repo, los comandos y qué mirar.

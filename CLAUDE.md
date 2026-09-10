@@ -1013,7 +1013,7 @@ cual>, process: { uptimeMs, startedAt } }`.
 ## Estado
 
 Rango sin granularidad (10-09 madrugada, ADR 0011): una `timeDimension` con
-`dateRange` y sin `granularity` sólo filtra por fecha. La raíz corre **215 tests
+`dateRange` y sin `granularity` sólo filtra por fecha. La raíz corre **217 tests
 en verde** con `DATABASE_URL` y `REDIS_URL`, y **133 sin nada** (1 se salta);
 `demo-agente` corre sus **62** aparte (9 nuevos del salto de redacción). Snapshot nuevo
 `test/snapshots/rango-sin-granularidad.sql`; los cuatro anteriores sin cambios.
