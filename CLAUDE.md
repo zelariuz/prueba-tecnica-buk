@@ -178,9 +178,12 @@ corre la demo y explícame el caso obligatorio; después corre los tests". Orden
    Ingeniería 4.35/2 y 3.80/1; `completion_rate` 75.
 3. Tests: `npm install` y `npm test` con `DATABASE_URL` y `REDIS_URL` de la
    sección Comandos → 217 en verde (132 + 1 saltado sin variables).
-4. Sólo si lo piden, la demo del agente: `cd demo-agente && npm install &&
-   npm start` (necesita Claude Code logueado; cada clic gasta crédito) en
-   `http://localhost:3100`; no va en el compose.
+4. La demo del agente, si el prompt la pide (el del README la pide):
+   `cd demo-agente && npm install && npm start` en segundo plano, con la capa
+   arriba; no va en el compose. Di la URL (`http://localhost:3100`), que usa la
+   sesión de Claude Code del revisor y que cada clic gasta crédito de su plan.
+   Si `claude --version` no responde o no hay sesión, la demo arranca igual y
+   lo indica en la página.
 5. Al terminar, ofrece bajar todo con `docker compose down` (y Ctrl+C a la
    demo del agente si corre); no lo hagas sin preguntar, el revisor puede
    querer seguir con los `curl` del README.

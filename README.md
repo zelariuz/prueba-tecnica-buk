@@ -127,11 +127,13 @@ qué mirar: `demo-agente/README.md`.
 Con Docker y Claude Code logueado, abre `claude` en la raíz del repo y pide:
 
 > Levanta la capa con docker compose, corre la demo de consola y explícame el
-> caso obligatorio con el SQL que genera. Después corre los tests.
+> caso obligatorio con el SQL que genera. Después corre los tests y deja
+> levantada la demo del agente.
 
 `CLAUDE.md` trae el mapa del repo, los comandos y qué mirar, así que Claude
-sabe qué levantar, en qué orden y cómo bajarlo. Si además pides "levanta la
-demo del agente", la deja corriendo en `http://localhost:3100`.
+sabe qué levantar, en qué orden y cómo bajarlo. La demo del agente queda en
+`http://localhost:3100`; usa tu sesión de Claude Code y cada clic gasta
+crédito de tu plan.
 
 ## Base de datos
 
