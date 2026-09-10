@@ -82,8 +82,10 @@ del repo, los comandos y qué mirar.
 
 ### B · Tests y demo desde el host (Node 24)
 
-Con los contenedores del camino A arriba (para solo los tests basta
-`docker compose up -d db redis`; el servicio `api` no hace falta para la suite):
+Con los contenedores del camino A arriba. Para la suite el servicio `api` no
+hace falta: basta `docker compose up -d db`, y `redis` solo si quieres correr
+también los tests de la caché L2 (sin `REDIS_URL` se saltan con aviso y la
+suite queda verde con menos de 217):
 
 ```bash
 npm install
