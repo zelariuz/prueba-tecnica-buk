@@ -1072,3 +1072,69 @@ describe('valores distintos de una dimensión (consulta sin medidas)', conBase, 
     );
   });
 });
+
+// --- ADR 0011: una dimensión temporal con `dateRange` y sin `granularity`
+// filtra por fecha y no agrupa. Es la forma de las dos preguntas literales del
+// enunciado que piden un período pero no un corte por tiempo: "el score
+// promedio por departamento durante el último año" y "la tasa de asistencia por
+// departamento durante los últimos tres meses" son una fila por departamento.
+describe('rango sin granularidad', conBase, () => {
+  let pool;
+  let engine;
+
+  before(() => {
+    pool = new pg.Pool({ connectionString: DATABASE_URL });
+    const catalog = createCatalog();
+    registrarModulos(catalog);
+    engine = createEngine({ catalog, pool });
+  });
+
+  after(async () => {
+    await pool.end();
+  });
+
+  // Literales del seed, asistencia de la empresa 1 entre junio y agosto de 2025
+  // (el bloque de junio y julio más el de agosto, contados a mano):
+  //   Ingeniería (empleado 100): 29/30 + 30/31 + 16/20 = 75 presentes de 81 días
+  //   Ventas     (empleado 102): 29/30 + 31/31 +  5/10 = 65 presentes de 71 días
+  // La división la hace Postgres en `numeric` y el engine la convierte a número.
+  const TRES_MESES = ['2025-06-01', '2025-08-31'];
+
+  it('la tasa de asistencia por departamento sale sin la fecha en las filas', async () => {
+    const { rows } = await engine.run(
+      {
+        measures: ['attendance.attendance_rate'],
+        dimensions: ['departments.name'],
+        timeDimensions: [{ dimension: 'attendance.date', dateRange: TRES_MESES }],
+        order: { 'departments.name': 'asc' },
+      },
+      { companyId: EMPRESA_A, consumer: 'dashboard' },
+    );
+
+    assert.deepEqual(rows, [
+      { 'departments.name': 'Ingeniería', 'attendance.attendance_rate': 92.5925925925926 },
+      { 'departments.name': 'Ventas', 'attendance.attendance_rate': 91.54929577464789 },
+    ]);
+  });
+
+  it('el score promedio del último año es un número por departamento', async () => {
+    const { rows } = await engine.run(
+      {
+        measures: ['reviews.avg_score'],
+        dimensions: ['departments.name'],
+        segments: ['reviews.completed'],
+        timeDimensions: [
+          { dimension: 'reviews.period', dateRange: ['2025-01-01', '2025-12-31'] },
+        ],
+        order: { 'departments.name': 'asc' },
+      },
+      { companyId: EMPRESA_A, consumer: 'dashboard' },
+    );
+
+    // Literales del seed: en 2025 Ingeniería tiene tres completadas (4.20, 3.80
+    // y 4.50) y Ventas ninguna, así que Ventas no trae fila.
+    assert.deepEqual(rows, [
+      { 'departments.name': 'Ingeniería', 'reviews.avg_score': 4.166666666666667 },
+    ]);
+  });
+});

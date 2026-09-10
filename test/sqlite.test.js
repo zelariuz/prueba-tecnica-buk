@@ -510,3 +510,53 @@ describe('valores distintos de una dimensión contra SQLite', () => {
     assert.ok(!/COUNT|AVG|SUM/.test(sql), 'sin medidas no hay nada que agregar');
   });
 });
+
+// ADR 0011: el rango sin granularidad no es sintaxis de un motor —no hay
+// `dateTrunc` que emitir— así que tiene que dar lo mismo contra los dos. La
+// asistencia no se puede usar acá (el fixture la tiene sin filas: SQLite no
+// tiene `generate_series`), así que la prueba es la otra pregunta del
+// enunciado, la del score promedio del último año.
+describe('rango sin granularidad contra SQLite', () => {
+  let pool;
+
+  before(() => {
+    pool = baseDelCaso();
+  });
+
+  after(() => {
+    pool.cerrar();
+  });
+
+  const scorePromedioDe2025 = {
+    measures: ['reviews.avg_score'],
+    dimensions: ['departments.name'],
+    segments: ['reviews.completed'],
+    timeDimensions: [{ dimension: 'reviews.period', dateRange: ['2025-01-01', '2025-12-31'] }],
+    order: { 'departments.name': 'asc' },
+  };
+
+  it('devuelve las mismas filas que Postgres, sin la fecha y sin agrupar por ella', async () => {
+    const { engine } = await armar(pool);
+
+    const { rows } = await engine.run(scorePromedioDe2025, {
+      companyId: EMPRESA_A,
+      consumer: 'dashboard',
+    });
+
+    // Los mismos literales del test contra Postgres: Ingeniería con sus tres
+    // completadas de 2025 (4.20, 3.80 y 4.50) y Ventas sin ninguna.
+    assert.deepEqual(rows, [
+      { 'departments.name': 'Ingeniería', 'reviews.avg_score': 4.166666666666667 },
+    ]);
+  });
+
+  it('el SQL no trunca ninguna fecha y agrupa sólo por el departamento', async () => {
+    const { engine } = await armar(pool);
+
+    const { sql } = engine.plan(scorePromedioDe2025, { companyId: EMPRESA_A, consumer: 'dashboard' });
+
+    assert.match(sql, /GROUP BY departments\.name\n/);
+    assert.ok(!/STRFTIME|PRINTF/.test(sql), 'sin granularidad no hay fecha que truncar');
+    assert.match(sql, /AND period >= \$2\n {4}AND period <= \$3/);
+  });
+});

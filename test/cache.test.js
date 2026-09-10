@@ -116,6 +116,36 @@ describe('caché L1 en memoria', { ...conBase, timeout: 15_000 }, () => {
     assert.deepEqual(segunda.rows, primera.rows);
   });
 
+  // ADR 0011: una dimensión temporal que sólo filtra es parte de la forma de la
+  // consulta como cualquier otra, así que su `queryId` es reproducible y la
+  // segunda ejecución no vuelve a tocar la base.
+  it('una consulta con rango y sin granularidad se sirve desde cache-l1 la segunda vez', async () => {
+    const { engine } = armar({
+      cache: crearMemoryStore(),
+      definiciones: [reviews, employees, departments, attendance],
+    });
+    const ASISTENCIA_SIN_MES = {
+      measures: ['attendance.attendance_rate'],
+      dimensions: ['departments.name'],
+      timeDimensions: [{ dimension: 'attendance.date', dateRange: ['2025-06-01', '2025-08-31'] }],
+      order: { 'departments.name': 'asc' },
+    };
+
+    const primera = await engine.run(ASISTENCIA_SIN_MES, DASHBOARD_A);
+    const segunda = await engine.run(ASISTENCIA_SIN_MES, DASHBOARD_A);
+
+    assert.equal(primera.meta.servedFrom, 'live');
+    assert.equal(segunda.meta.servedFrom, 'cache-l1');
+    assert.equal(segunda.meta.queryId, primera.meta.queryId);
+    // Literales del seed de junio a agosto de 2025: 75 presentes de 81 días y
+    // 65 de 71. La fecha no viene en las filas: sólo filtró.
+    assert.deepEqual(primera.rows, [
+      { 'departments.name': 'Ingeniería', 'attendance.attendance_rate': 92.5925925925926 },
+      { 'departments.name': 'Ventas', 'attendance.attendance_rate': 91.54929577464789 },
+    ]);
+    assert.deepEqual(segunda.rows, primera.rows);
+  });
+
   it('contra la base real la identidad de la fuente sale del motor', async () => {
     const { engine } = armar({ cache: crearMemoryStore() });
     const identidad = await engine.identidadDeFuente('postgres');

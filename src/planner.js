@@ -42,6 +42,21 @@ const DIRECCIONES = new Set(['asc', 'desc']);
 
 const GRANULARIDADES_VALIDAS = new Set(GRANULARIDADES);
 
+// Desde el ADR 0011 una dimensión temporal puede venir sin `granularity`: con
+// `dateRange` sola, la fecha únicamente filtra. La que agrupa es la que trae
+// granularidad, y sólo esa produce una columna de salida.
+function agrupaPorTiempo(temporal) {
+  return temporal?.granularity !== undefined;
+}
+
+// Lo que la consulta pide en cada una de las tres listas que producen columnas.
+// Una dimensión temporal que sólo filtra no produce ninguna, así que no cuenta:
+// una consulta que no trae más que ella no pide nada.
+function loQuePide(query, campo) {
+  const lista = query[campo] ?? [];
+  return campo === 'timeDimensions' ? lista.filter(agrupaPorTiempo) : lista;
+}
+
 // La forma de la consulta es un error del consumidor, no del servidor: sale con
 // código propio, `member` y sugerencia, como cualquier otro (hallazgo 4 del
 // abogado del diablo).
@@ -71,22 +86,24 @@ function validarForma(query) {
   // agregados, o sea los valores distintos de esas dimensiones (ADR 0010). Lo
   // que no existe es la consulta que no pide nada: sin medidas, sin dimensiones
   // y sin dimensiones temporales no hay columna de salida que emitir.
-  if (LISTAS_QUE_PIDEN.every((campo) => (query[campo] ?? []).length === 0)) {
+  if (LISTAS_QUE_PIDEN.every((campo) => loQuePide(query, campo).length === 0)) {
     throw formaInvalida(
       'measures',
       'Una consulta necesita al menos una medida o una dimensión: declara measures con los nombres de las medidas que quieres, por ejemplo ["reviews.count"], o dimensions con los valores que quieres listar, por ejemplo ["departments.name"].',
     );
   }
 
-  // v1 exige granularidad en toda dimensión temporal: no hay forma de acotar por
-  // fecha sin agrupar por ella. La granularidad se interpola en el SQL, así que
-  // sale de una lista cerrada y se comprueba aquí y no en el dialecto, donde el
-  // rechazo sería un error del servidor.
+  // La granularidad se interpola en el SQL, así que sale de una lista cerrada y
+  // se comprueba aquí y no en el dialecto, donde el rechazo sería un error del
+  // servidor. Desde el ADR 0011 es opcional: una dimensión temporal con
+  // `dateRange` y sin granularidad sólo filtra por fecha. Lo que no existe es la
+  // que no trae ninguna de las dos, porque no filtra ni agrupa: no dice nada.
   (query.timeDimensions ?? []).forEach((temporal, indice) => {
     if (GRANULARIDADES_VALIDAS.has(temporal?.granularity)) return;
+    if (!agrupaPorTiempo(temporal) && temporal?.dateRange !== undefined) return;
     throw formaInvalida(
       `timeDimensions[${indice}].granularity`,
-      `Una dimensión temporal se agrupa por una granularidad de la lista: ${GRANULARIDADES.join(', ')}.`,
+      `Una dimensión temporal se agrupa por una granularidad de la lista: ${GRANULARIDADES.join(', ')}, o lleva dateRange sin granularity para sólo filtrar por fecha.`,
     );
   });
 
@@ -203,17 +220,21 @@ function resolverMiembros(paso) {
     return { miembro, entidad, columna, expresion: `${entidad}.${columna}` };
   });
 
-  // Una dimensión temporal es una dimensión más, agrupada por granularidad; su
-  // rango acota la CTE de su entidad y no el resultado ya agregado.
+  // Una dimensión temporal con granularidad es una dimensión más, agrupada por
+  // ella; su rango acota la CTE de su entidad y no el resultado ya agregado.
+  // Sin granularidad (ADR 0011) queda sólo el rango: la fecha filtra dentro de
+  // la CTE y no produce columna, así que no se suma a las dimensiones.
   const condiciones = new Map();
   for (const temporal of query.timeDimensions ?? []) {
     const { entidad, columna } = catalog.dimension(temporal.dimension);
-    dimensiones.push({
-      miembro: temporal.dimension,
-      entidad,
-      columna,
-      expresion: dialect.dateTrunc(temporal.granularity, `${entidad}.${columna}`),
-    });
+    if (agrupaPorTiempo(temporal)) {
+      dimensiones.push({
+        miembro: temporal.dimension,
+        entidad,
+        columna,
+        expresion: dialect.dateTrunc(temporal.granularity, `${entidad}.${columna}`),
+      });
+    }
     if (!temporal.dateRange) continue;
     const [desde, hasta] = temporal.dateRange;
     // Rango cerrado en ambos extremos, como el dateRange de Cube.
@@ -263,7 +284,6 @@ function exigirFuenteConfigurada(fuentes, fuente, entidad) {
 function aplicarFiltros(paso) {
   const { catalog, query, condiciones, presupuesto } = paso;
 
-  const filtrados = new Set();
   // Un segmento de la consulta aporta los filtros que su dueño declaró: para el
   // planificador no hay diferencia entre esos y los filtros del JSON.
   const declarados = [
@@ -272,7 +292,6 @@ function aplicarFiltros(paso) {
   ];
   for (const filtro of declarados) {
     const { entidad } = catalog.dimension(filtro.member);
-    filtrados.add(entidad);
     condiciones.set(entidad, [...(condiciones.get(entidad) ?? []), condicionDeFiltro(paso, filtro)]);
   }
 
@@ -291,7 +310,7 @@ function aplicarFiltros(paso) {
     }
   }
 
-  return { ...paso, declarados, filtrados };
+  return { ...paso, declarados };
 }
 
 // Puerta 4 · Joins: de qué entidad salen las medidas y por dónde se llega al
@@ -301,7 +320,7 @@ function aplicarFiltros(paso) {
 // del camino se busca igual: una dimensión inalcanzable desde ella sale con
 // `NO_JOIN_PATH` como cualquier otra.
 function resolverCaminoDeJoins(paso) {
-  const { catalog, fuente, raiz, medidas, dimensiones, filtrados } = paso;
+  const { catalog, fuente, raiz, medidas, dimensiones, condiciones } = paso;
 
   const intrusa = medidas.find((m) => m.entidad !== raiz);
   if (intrusa) {
@@ -317,7 +336,10 @@ function resolverCaminoDeJoins(paso) {
   // error diría que falta una relación, que es un diagnóstico falso— y otra vez
   // sobre el camino encontrado, porque una entidad intermedia puede ser de otra
   // fuente aunque el destino sea de la misma.
-  const destinos = [...dimensiones.map((d) => d.entidad), ...filtrados];
+  // Toda entidad con condiciones necesita su CTE, la haya traído una dimensión
+  // pedida, un filtro o el rango de una dimensión temporal que sólo filtra (ADR
+  // 0011): sin CTE, la condición se pierde en silencio y el número sale mal.
+  const destinos = [...dimensiones.map((d) => d.entidad), ...condiciones.keys()];
   for (const destino of destinos) exigirMismaFuente(catalog, fuente, raiz, destino);
 
   const aristas = caminoDeJoins(catalog, raiz, destinos);

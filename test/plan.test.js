@@ -1117,3 +1117,101 @@ test('la consulta sin medidas sigue aislada por empresa dentro de cada CTE', () 
   assert.equal(params[0], EMPRESA);
   assert.ok(!sql.includes(String(EMPRESA)), 'la empresa viaja como parámetro');
 });
+
+// --- ADR 0011: una dimensión temporal puede traer `dateRange` y no traer
+// `granularity`. Entonces la fecha SÓLO filtra —el rango sigue viviendo dentro
+// de la CTE de su entidad— y no aparece como columna del SELECT, del GROUP BY
+// ni de las filas. Es la forma de la pregunta literal del enunciado: "la tasa
+// de asistencia por departamento durante los últimos tres meses" pide un número
+// por departamento, no uno por departamento y mes.
+
+const asistenciaPorDepartamentoSinMes = {
+  measures: ['attendance.attendance_rate'],
+  dimensions: ['departments.name'],
+  timeDimensions: [{ dimension: 'attendance.date', dateRange: ['2025-06-01', '2025-08-31'] }],
+};
+
+function engineConTodosLosModulos() {
+  const catalog = createCatalog();
+  registrarModulos(catalog);
+  return createEngine({ catalog });
+}
+
+test('una dimensión temporal sin granularidad sólo filtra: no entra al SELECT ni al GROUP BY', () => {
+  const { sql, params, plan } = engineConTodosLosModulos().plan(
+    asistenciaPorDepartamentoSinMes,
+    TABLERO,
+  );
+
+  // Quinto snapshot legible del repo: el rango dentro de la CTE de asistencia y
+  // una sola columna de agrupación, la del departamento.
+  const esperado = readFileSync(
+    new URL('./snapshots/rango-sin-granularidad.sql', import.meta.url),
+    'utf8',
+  );
+  assert.equal(sql, esperado.trimEnd());
+  assert.ok(!/DATE_TRUNC/.test(sql), 'sin granularidad no hay nada que truncar');
+  assert.ok(!sql.includes('"attendance.date"'), 'la fecha no es una columna de salida');
+  assert.deepEqual(plan.dimensions, ['departments.name']);
+  assert.deepEqual(params, [EMPRESA, '2025-06-01', '2025-08-31', true, 5000]);
+});
+
+test('el rango sin granularidad sigue viviendo dentro de la CTE de su entidad', () => {
+  const { sql } = engineConTodosLosModulos().plan(asistenciaPorDepartamentoSinMes, TABLERO);
+
+  assert.match(sql, /attendance AS \(\n[^)]*AND date >= \$2\n {4}AND date <= \$3/);
+});
+
+test('una dimensión temporal sin dateRange y sin granularidad se rechaza con INVALID_QUERY', () => {
+  const error = errorDe(() =>
+    engineDePrueba().plan(
+      { measures: ['reviews.count'], timeDimensions: [{ dimension: 'reviews.period' }] },
+      CTX,
+    ),
+  );
+
+  // Una dimensión temporal que ni filtra ni agrupa no dice nada: o trae rango, o
+  // trae granularidad, o no va.
+  assert.equal(error.code, 'INVALID_QUERY');
+  assert.equal(error.member, 'timeDimensions[0].granularity');
+  assert.match(error.suggestion, /dateRange/);
+});
+
+test('una consulta que sólo trae una dimensión temporal que filtra no pide nada', () => {
+  const error = errorDe(() =>
+    engineDePrueba().plan(
+      {
+        timeDimensions: [
+          { dimension: 'reviews.period', dateRange: ['2025-01-01', '2025-12-31'] },
+        ],
+      },
+      CTX,
+    ),
+  );
+
+  assert.equal(error.code, 'INVALID_QUERY');
+  assert.equal(error.member, 'measures');
+  assert.match(error.suggestion, /al menos una medida o una dimensión/);
+});
+
+test('la entidad de un rango que sólo filtra entra al camino de joins como cualquier otra', () => {
+  // Sin esto, el rango de una entidad que la consulta no alcanza se quedaría en
+  // una CTE que nadie emite: el filtro desaparecería en silencio y la consulta
+  // devolvería un número mayor que el pedido. `attendance` no llega a `reviews`
+  // por ninguna relación, así que la respuesta correcta es el mismo
+  // NO_JOIN_PATH que daría con granularidad.
+  const error = errorDe(() =>
+    engineConTodosLosModulos().plan(
+      {
+        measures: ['attendance.count'],
+        timeDimensions: [
+          { dimension: 'reviews.period', dateRange: ['2025-01-01', '2025-12-31'] },
+        ],
+      },
+      TABLERO,
+    ),
+  );
+
+  assert.equal(error.code, 'NO_JOIN_PATH');
+  assert.equal(error.member, 'reviews');
+});
