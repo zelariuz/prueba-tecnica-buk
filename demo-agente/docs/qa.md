@@ -140,3 +140,28 @@ misma consulta; las preguntas 2 a 5 sí mostraron el `live` → `cache-l1` limpi
   eso se vio en la fase 2, no se repitió acá.
 - Un solo modelo (`claude-sonnet-5`) y una sola corrida por combinación (más la
   segunda pasada para la caché). No es una medición estadística del modelo.
+
+
+## Segunda vuelta con agente (09-09 noche, tras el ADR 0009: rango opcional)
+
+Claude Code 2.1.267, `claude-sonnet-5`, `--fork-session` por clic, sesión nueva
+creada con el prompt que manda "la pregunta manda". `POST /api/rastro`, token
+`demo-agente-empresa-a` salvo donde dice C. Rangos: asistencia 2025-06-01..
+2025-08-31; evaluaciones y conteo 2025; headcount y cuántos-empleados SIN fechas.
+
+| # | Pregunta · token | JSON del agente | Filas clave | Seed | Reintento | Salto 1 |
+|---|---|---|---|---|---|---|
+| 1 | evaluaciones-por-departamento · A | copia la consulta tipo con `segments`, quarter, dateRange | Ing. Q1 4.35/2; Q2 3.8/1; sin Ventas | sí | no | 4.458 ms · 0,0027 USD |
+| 2 | completitud-por-departamento · A | completion_rate, year | Ing. 75; Ventas 0 | sí | no | 4.204 ms · 0,0025 |
+| 3 | asistencia-por-departamento · A | attendance_rate, month | Ing. 96,67/96,77/80; Ventas 96,67/100/50 | sí | no | 4.159 ms · 0,0024 |
+| 4 | empleados-que-completaron · A | completed_employees, quarter | 2 / 1 / 0 | sí | no | 3.288 ms · 0,0024 |
+| 5 | conteo-por-estado · A | count por status + period year | completed 3; pending 3; calibrated 1 | sí | no (antes sí) | 23.294 ms · 0,0203 (una corrida anómala, no investigada) |
+| 6 | headcount-por-departamento · A, sin fechas | headcount + active_headcount por departments.name, sin timeDimensions | Ing. 2/2; Ventas 2/1 | sí | no | 4.446 ms · 0,0018 |
+| 7 | sueldo-promedio · A | `{"noPuedo": …}` sin tocar la capa | — | n/a | no | 3.641 ms · 0,0017 |
+| 8 | cuantos-empleados-hay · A, sin fechas | headcount + active_headcount | 4 / 3 | sí | no | 3.672 ms · 0,0015 |
+| 8 | cuantos-empleados-hay · **C**, sin fechas | idéntico | 1.750 / 1.607 | seed C (no calculado a mano) | no | 3.575 ms · 0,0013 |
+
+Observación: con el rango opcional ninguna pregunta preparada dispara ya el
+bucle de corrección; sigue existiendo y probado por el seam, pero no se ve en
+el rastro de estas 8. La primera vuelta de arriba conserva los casos con
+`MISSING_TIME_RANGE` como registro histórico.

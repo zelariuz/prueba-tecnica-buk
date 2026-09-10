@@ -2,6 +2,8 @@
 
 > PRD de origen: `prds/prd-demo-agente.md` (2026-09-09). Tres fases aprobadas
 > por el usuario el 09-09; ejecución completa autorizada ("te dejo trabajar").
+> *Nota (09-09 noche): desde el ADR 0009 son 8 preguntas preparadas; los
+> criterios que dicen 7 se verificaron cuando eran 7.*
 
 ## Decisiones arquitectónicas
 
