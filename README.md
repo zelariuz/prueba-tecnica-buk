@@ -7,9 +7,10 @@ semánticos. El aislamiento por empresa es del motor, no del consumidor.
 
 - **Mapa del repo y diagramas** (arquitectura, viaje de una consulta, caché en
   vivo, flujo del consumidor, agentes y MCP, demo del agente con capturas):
-  [`docs/diagramas-y-demo.html`](docs/diagramas-y-demo.html), una sola página
-  con pestañas; descargar y abrir en el navegador. La pestaña "Mapa del repo"
-  es el plano de `src/` con sus cuatro operaciones HTTP.
+  **<https://zelariuz.github.io/prueba-tecnica-buk/diagramas-y-demo.html>**,
+  una sola página con pestañas, servida con GitHub Pages desde
+  [`docs/diagramas-y-demo.html`](docs/diagramas-y-demo.html). La pestaña
+  "Mapa del repo" es el plano de `src/` con sus cuatro operaciones HTTP.
 - Diseño y decisiones: `prds/prd-capa-semantica.md`, `docs/adr/`.
 - Plan de construcción por fases: `plans/plan-capa-semantica.md`.
 - Vocabulario: `CONTEXT.md`.
@@ -897,8 +898,10 @@ node --test test/sqlite.test.js
 
 ## Diagramas y demo en una sola página
 
-[`docs/diagramas-y-demo.html`](docs/diagramas-y-demo.html) (≈10 MB, sin
-dependencias externas salvo Mermaid desde cdnjs para dos páginas) reúne en
+<https://zelariuz.github.io/prueba-tecnica-buk/diagramas-y-demo.html>
+(GitHub Pages sobre [`docs/diagramas-y-demo.html`](docs/diagramas-y-demo.html),
+≈10 MB, sin dependencias externas salvo Mermaid desde cdnjs para dos páginas)
+reúne en
 pestañas los diagramas de diseño, arquitectura y flujos, la tabla de riesgos y
 cambios, el registro de tests y la página de la demo del agente con capturas
 reales. GitHub no renderiza HTML: hay que descargarlo y abrirlo en el
