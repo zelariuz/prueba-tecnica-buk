@@ -76,6 +76,14 @@ Con eso el servicio ya responde por HTTP; los `curl` de "El servicio HTTP" más
 abajo funcionan tal cual con los tokens de demo. Para bajar todo:
 `docker compose down`.
 
+Para volver a cargar el esquema y el seed desde cero (la imagen de Postgres
+guarda los datos en un volumen anónimo que sobrevive a recrear el contenedor):
+
+```bash
+docker compose up -d --force-recreate --renew-anon-volumes db   # sólo la base, con datos nuevos
+docker compose down -v                                          # o bien: todo abajo, volúmenes incluidos
+```
+
 #### B · Correr los tests (opcional, Node 24 en el host)
 
 Con los contenedores de A arriba, en la raíz del repo:
