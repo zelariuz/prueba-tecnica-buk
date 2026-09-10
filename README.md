@@ -57,16 +57,14 @@ Parquet/S3.
 
 ## Cómo correrlo: dos caminos
 
-Elige uno según lo que quieras ver:
+- **1 · Manual**: tres pasos con Docker y Node. A levanta la capa y la ve
+  responder; B corre los tests (opcional); C levanta la demo del agente de IA
+  (opcional, necesita Claude Code logueado).
+- **2 · Con Claude Code**: abrir el repo con `claude` y pedirle que lo haga.
 
-- **A · Solo Docker**: ver el caso funcionando, sin instalar Node. Tres comandos.
-- **B · Node en el host**: correr la suite de 217 tests y la demo por consola.
-  Necesita Node 24 y los contenedores del camino A (al menos `db` y `redis`).
-- **C · Con Claude Code**: dejar que Claude levante y explique el repo, y ver
-  la demo del agente de IA consultando la capa. Necesita Claude Code con sesión
-  iniciada.
+### 1 · Manual
 
-### A · Solo Docker
+#### A · Levantar la capa y verla responder (sólo Docker)
 
 ```bash
 git clone https://github.com/zelariuz/prueba-tecnica-buk.git && cd prueba-tecnica-buk
@@ -76,14 +74,19 @@ docker compose exec api node src/demo.js  # las tres preguntas del caso, caché 
 
 Con eso el servicio ya responde por HTTP; los `curl` de "El servicio HTTP" más
 abajo funcionan tal cual con los tokens de demo. Para bajar todo:
-`docker compose down`. Si revisas el repo con Claude Code, abre la carpeta y
-pide "corre la demo y explícame el caso obligatorio": `CLAUDE.md` trae el mapa
-del repo, los comandos y qué mirar.
+`docker compose down`.
 
-### B · Tests y demo desde el host (Node 24)
+Para volver a cargar el esquema y el seed desde cero (la imagen de Postgres
+guarda los datos en un volumen anónimo que sobrevive a recrear el contenedor):
 
-Con los contenedores del camino A arriba (para solo los tests basta
-`docker compose up -d db redis`; el servicio `api` no hace falta para la suite):
+```bash
+docker compose up -d --force-recreate --renew-anon-volumes db   # sólo la base, con datos nuevos
+docker compose down -v                                          # o bien: todo abajo, volúmenes incluidos
+```
+
+#### B · Correr los tests (opcional, Node 24 en el host)
+
+Con los contenedores de A arriba, en la raíz del repo:
 
 ```bash
 npm install
@@ -98,43 +101,39 @@ Las dos variables apuntan a los puertos que el compose publica en el host.
 hay que exportarlas en la terminal (en PowerShell,
 `$env:DATABASE_URL = "postgres://..."`).
 
-### C · Con Claude Code
+#### C · Levantar la demo del agente de IA (opcional, Claude Code logueado)
 
-Dos usos distintos, ambos con Claude Code instalado y logueado (`claude` y
-luego `/login`; `claude --version` debe imprimir un número seguido de
-"(Claude Code)"):
+Es distinta de `src/demo.js` (la de consola de los caminos A y B): es una
+página web con un agente real. El compose no la levanta, sólo levanta lo que
+ella necesita (el `api` en `:3000` con su base y Redis); la demo corre en el
+host con `npm start`, porque usa tu sesión de Claude Code. Requisitos: los
+contenedores del camino A arriba, Node 24, y Claude Code instalado y logueado
+(`claude` y luego `/login`; `claude --version` debe imprimir un número seguido
+de "(Claude Code)").
 
-1. **Que Claude levante y explique el repo.** Abre la carpeta con `claude` y
-   pide "corre la demo y explícame el caso obligatorio". `CLAUDE.md` trae el
-   mapa del repo, los comandos de los caminos A y B y qué mirar; Claude los
-   ejecuta y comenta el SQL generado.
-2. **La demo del agente de IA.** Con los contenedores del camino A arriba:
-
-   ```bash
-   cd demo-agente && npm install && npm start    # http://localhost:3100
-   ```
-
-   Una página muestra, por cada pregunta en lenguaje natural, lo que viaja
-   entre una sesión de Claude Code como consumidor de clase `agent` y la capa:
-   catálogo público, JSON, dry-run, consulta real y reintento. Probado con
-   Claude Code 2.1.266 y 2.1.267, modelo `claude-sonnet-5`; cada clic gasta
-   crédito del plan. Sin Claude logueado la página arranca igual y lo indica.
-   Detalle, requisitos y qué mirar: `demo-agente/README.md`.
-
-El host publica Postgres en el puerto **5433** (no 5432) para no chocar con un
-Postgres instalado localmente. La contraseña del compose es de juguete y sirve
-solo para este entorno local.
-
-Los tests que necesitan base leen `DATABASE_URL` y **se saltan con aviso** si no
-está definida:
-
-```
-﹣ conteo de evaluaciones por estado # falta DATABASE_URL — levanta la base con `docker compose up -d db` (ver README)
+```bash
+cd demo-agente && npm install && npm start    # http://localhost:3100
 ```
 
-Lo mismo con Redis y `REDIS_URL`: los tests de la caché L2 se saltan con aviso si
-falta, y `npm test` **sin ninguna de las dos variables queda verde**. La caché L1
-vive en el proceso y no necesita nada levantado.
+La página muestra, por cada pregunta en lenguaje natural, lo que viaja entre
+una sesión de Claude Code como consumidor de clase `agent` y la capa: catálogo
+público, JSON, dry-run, consulta real y reintento. Probado con Claude Code
+2.1.266 y 2.1.267, modelo `claude-sonnet-5`; cada clic gasta crédito del plan.
+Sin Claude logueado la página arranca igual y lo indica. Detalle, requisitos y
+qué mirar: `demo-agente/README.md`.
+
+### 2 · Con Claude Code
+
+Con Docker y Claude Code logueado, abre `claude` en la raíz del repo y pide:
+
+> Levanta la capa con docker compose, corre la demo de consola y explícame el
+> caso obligatorio con el SQL que genera. Después corre los tests y deja
+> levantada la demo del agente.
+
+`CLAUDE.md` trae el mapa del repo, los comandos y qué mirar, así que Claude
+sabe qué levantar, en qué orden y cómo bajarlo. La demo del agente queda en
+`http://localhost:3100`; usa tu sesión de Claude Code y cada clic gasta
+crédito de tu plan.
 
 ## Base de datos
 
