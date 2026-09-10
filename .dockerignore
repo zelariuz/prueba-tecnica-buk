@@ -1,0 +1,9 @@
+node_modules
+.git
+test
+docs
+plans
+prds
+docker
+*.md
+.env

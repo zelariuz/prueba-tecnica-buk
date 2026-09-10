@@ -1,0 +1,85 @@
+#!/usr/bin/env node
+// Punto de entrada del servicio `api`: arma el catálogo contra el esquema real,
+// crea el engine y levanta el servidor HTTP.
+//
+// El registro se hace con el snapshot del introspector, no sin él: si una
+// definición nombra una tabla o una columna que la base no tiene, `register`
+// lanza `INVALID_DEFINITION` y el proceso no llega a escuchar. Un servicio que
+// arranca con un contrato roto es peor que uno que no arranca.
+import pg from 'pg';
+
+import { createCatalog } from './catalog.js';
+import { createEngine } from './engine.js';
+import { crearCacheDelServicio } from './cache/index.js';
+import { crearTelemetria } from './telemetry.js';
+import { postgres } from './dialect/postgres.js';
+import { registrarModulos } from './definitions/index.js';
+import { crearServidor } from './http/server.js';
+import { tokensDeDemo } from './http/tokens.js';
+
+const { DATABASE_URL, REDIS_URL, PORT = '3000', HOST = '0.0.0.0' } = process.env;
+
+if (!DATABASE_URL) {
+  console.error('Falta DATABASE_URL: el servicio necesita la conexión a Postgres (ver .env.example).');
+  process.exit(1);
+}
+
+// Techo para abrir la conexión: sin él, una base que no responde deja la
+// petición esperando el timeout del sistema operativo. Con él, el dialecto
+// traduce el fallo a SOURCE_UNAVAILABLE y el consumidor recibe un 503 con
+// Retry-After en vez de una respuesta que nunca llega.
+const pool = new pg.Pool({ connectionString: DATABASE_URL, connectionTimeoutMillis: 2000 });
+const tokens = tokensDeDemo(process.env);
+
+const snapshot = await postgres.introspect(pool);
+const catalog = createCatalog();
+const advertencias = registrarModulos(catalog, snapshot);
+for (const aviso of advertencias) {
+  console.warn(`[registro] ${aviso.entity} · ${aviso.member}: ${aviso.warning}`);
+}
+
+// La L1 vive en el proceso: cada instancia del servicio tiene la suya. La L2 en
+// Redis es la que hace que dos instancias compartan lo que ya se calculó, y es
+// opcional: sin `REDIS_URL` el servicio arranca igual, sólo con L1.
+const telemetria = crearTelemetria();
+const caches = crearCacheDelServicio({ redisUrl: REDIS_URL, prefijo: process.env.CACHE_PREFIX, telemetria });
+if (!REDIS_URL) {
+  console.warn('[caché] sin REDIS_URL: sólo L1 en memoria, cada instancia con la suya.');
+}
+// Una línea JSON por consulta en stdout: es lo que hace que `docker compose
+// logs -f api` muestre en vivo qué se planificó, si la respuesta salió de la
+// caché o de la base y por qué se rechazó. La telemetría son contadores
+// agregados y responde "cómo va todo"; esto responde "qué acaba de pasar".
+// Una sola línea por evento, sin saltos, para que cada consulta sea un registro
+// y `grep` alcance. La demo no lo enciende: su salida es narrativa.
+function escribirLinea(evento) {
+  console.log(JSON.stringify({ t: new Date().toISOString(), ...evento }));
+}
+
+const engine = createEngine({
+  catalog,
+  pool,
+  telemetria,
+  cache: caches.cache,
+  observar: escribirLinea,
+  // El SQL nombra las tablas y columnas físicas que la vista pública esconde
+  // (ADR 0008): al log sólo va si alguien lo pide a propósito, en desarrollo.
+  observarSql: process.env.LOG_SQL === 'true',
+});
+const servidor = crearServidor({ engine, catalog, tokens, telemetria });
+
+servidor.listen(Number(PORT), HOST, () => {
+  console.log(`Capa semántica escuchando en http://${HOST}:${PORT}`);
+  console.log(`Catálogo versión ${catalog.version()} · ${Object.keys(tokens).length} tokens de demo`);
+  console.log(`Caché: ${caches.descripcion} · TTL por clase de consumidor`);
+});
+
+for (const senal of ['SIGTERM', 'SIGINT']) {
+  process.on(senal, () => {
+    servidor.close(async () => {
+      await caches.cerrar();
+      await pool.end();
+      process.exit(0);
+    });
+  });
+}

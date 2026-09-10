@@ -1,0 +1,989 @@
+import { prepararConsulta, prepararTexto } from '/preparar.js';
+// El front entero: pide las preguntas y la sesión, arma la URL de cada
+// ejecución y consume el NDJSON del rastro línea a línea, pintando cada salto
+// cuando llega. Sin frameworks y sin librerías.
+//
+// Regla dura: todo lo que viene del agente o de la capa se escribe con
+// `textContent`. Nunca `innerHTML` con datos — el texto del salto 1 lo escribió
+// un modelo.
+
+const $ = (id) => document.getElementById(id);
+
+const estado = {
+  preguntas: [],
+  consumidores: [],
+  sesion: null,
+  controlador: null,
+  peticion: null,
+  saltosPrevistos: 0,
+  saltos: [],
+};
+
+// ---------- tema ----------
+
+const raiz = document.documentElement;
+const botonTema = $('tema');
+
+function temaGuardado() {
+  try {
+    return localStorage.getItem('tema');
+  } catch {
+    return null;
+  }
+}
+
+function guardarTema(tema) {
+  try {
+    localStorage.setItem('tema', tema);
+  } catch {
+    // un navegador que no deja guardar no puede romper la página
+  }
+}
+
+function esOscuro() {
+  const elegido = raiz.dataset.theme;
+  if (elegido) return elegido === 'dark';
+  return matchMedia('(prefers-color-scheme: dark)').matches;
+}
+
+function pintarBotonTema() {
+  // Sol y luna en texto: el botón dice a qué se va, no dónde se está.
+  botonTema.textContent = esOscuro() ? 'sol' : 'luna';
+}
+
+const guardado = temaGuardado();
+if (guardado === 'dark' || guardado === 'light') raiz.dataset.theme = guardado;
+pintarBotonTema();
+botonTema.addEventListener('click', () => {
+  const siguiente = esOscuro() ? 'light' : 'dark';
+  raiz.dataset.theme = siguiente;
+  guardarTema(siguiente);
+  pintarBotonTema();
+});
+
+// ---------- arranque ----------
+
+const formulario = $('controles');
+const botonEjecutar = $('ejecutar');
+const rastro = $('rastro');
+const resumen = $('resumen');
+const aviso = $('aviso');
+const modal = $('modal-sesion');
+
+formulario.addEventListener('submit', (evento) => {
+  evento.preventDefault();
+  ejecutar();
+});
+
+$('cerrar-modal').addEventListener('click', () => modal.close());
+modal.addEventListener('click', (evento) => {
+  // Clic en el fondo: el propio `<dialog>` es el área que rodea al contenido.
+  if (evento.target === modal) modal.close();
+});
+for (const boton of [$('ver-prompt'), $('ver-prompt-2')]) {
+  boton.addEventListener('click', abrirModal);
+}
+
+arrancar();
+
+async function arrancar() {
+  try {
+    const [preguntas, consumidores, sesion] = await Promise.all([
+      pedir('/api/preguntas'),
+      pedir('/api/consumidores'),
+      pedir('/api/sesion'),
+    ]);
+    estado.preguntas = preguntas;
+    estado.consumidores = consumidores;
+    estado.sesion = sesion;
+    llenarConsumidores(consumidores);
+    llenarSelector(preguntas);
+    pintarSesion(sesion);
+  } catch (error) {
+    mostrarAviso(`No se pudo hablar con el mini back: ${error.message}`);
+    return;
+  }
+
+  const parametros = new URLSearchParams(location.search);
+  if (parametros.has('pregunta')) {
+    aplicarURL(parametros);
+    ejecutar();
+  } else {
+    // Estado inicial: la pregunta de asistencia, el rango precargado de la
+    // empresa del token y sin agente. Entrar a la demo no dispara una consulta
+    // sola, ni siquiera con `?token=` en el link.
+    if (parametros.has('token')) {
+      $('token').value = parametros.get('token');
+      pintarNotaDelToken();
+    }
+    $('pregunta').value = 'asistencia-por-departamento';
+    sincronizarRango();
+    sincronizarTexto();
+  }
+
+  // El estado de la capa al abrir: presupuestos y contadores de este proceso,
+  // aunque todavía no se haya ejecutado nada.
+  cargarTelemetria();
+}
+
+async function pedir(ruta) {
+  const respuesta = await fetch(ruta, { headers: { Accept: 'application/json' } });
+  if (!respuesta.ok) throw new Error(`${ruta} respondió ${respuesta.status}`);
+  return respuesta.json();
+}
+
+// El selector de token es el selector de empresa: la capa deriva la empresa del
+// token y la consulta no la lleva. Se muestra el NOMBRE del token de demo —está
+// publicado en el docker-compose del repo—; el valor que firma la petición vive
+// en el `.env` del mini back y nunca baja acá.
+function llenarConsumidores(consumidores) {
+  const selector = $('token');
+  selector.replaceChildren();
+  for (const consumidor of consumidores) {
+    const opcion = document.createElement('option');
+    opcion.value = consumidor.id;
+    opcion.textContent = consumidor.etiqueta;
+    selector.append(opcion);
+  }
+  selector.addEventListener('change', () => {
+    // Cambiar de empresa cambia los datos, así que el rango precargado vuelve a
+    // mandar: el de la A es el trimestre del seed chico, el de la C es un año.
+    fechasEditadas = false;
+    pintarNotaDelToken();
+    sincronizarRango();
+    sincronizarTexto();
+  });
+  pintarNotaDelToken();
+}
+
+function consumidorElegido() {
+  return (
+    estado.consumidores.find((consumidor) => consumidor.id === $('token').value) ??
+    estado.consumidores[0] ??
+    null
+  );
+}
+
+function pintarNotaDelToken() {
+  const nota = consumidorElegido()?.nota ?? null;
+  $('nota-token').textContent = nota ?? '';
+  $('nota-token').hidden = !nota;
+}
+
+function llenarSelector(preguntas) {
+  const selector = $('pregunta');
+  selector.replaceChildren();
+  for (const pregunta of preguntas) {
+    const opcion = document.createElement('option');
+    opcion.value = pregunta.id;
+    opcion.textContent = pregunta.titulo;
+    selector.append(opcion);
+  }
+  selector.addEventListener('change', () => {
+    sincronizarRango();
+    sincronizarTexto();
+  });
+  for (const campo of ['desde', 'hasta', 'departamento']) {
+    $(campo).addEventListener('change', sincronizarTexto);
+  }
+}
+
+// El rango es opcional desde el ADR 0009, pero sigue precargado: cada pregunta
+// trae uno que da filas con el seed de su empresa, y vaciarlo a mano manda la
+// consulta sin `dateRange`. Las preguntas sobre `employees` —que no tiene
+// dimensión temporal— vienen con el rango vacío. Los precargados salen de
+// `/api/consumidores`: dependen de la empresa (la asistencia de la A son tres
+// meses; la de la C, el año entero). Se precarga al cambiar de pregunta o de
+// token y deja de tocarse en cuanto el usuario escribe una fecha a mano.
+const RANGO_DE_RESPALDO = ['2025-01-01', '2025-12-31'];
+
+let fechasEditadas = false;
+for (const campo of ['desde', 'hasta']) {
+  $(campo).addEventListener('input', () => (fechasEditadas = true));
+}
+
+function sincronizarRango() {
+  if (fechasEditadas) return;
+  const consumidor = consumidorElegido();
+  const [desde, hasta] =
+    consumidor?.rangos?.[$('pregunta').value] ?? consumidor?.rangoPorDefecto ?? RANGO_DE_RESPALDO;
+  $('desde').value = desde;
+  $('hasta').value = hasta;
+}
+
+// El textarea muestra el texto ya sustituido de la pregunta elegida mientras
+// esté "enganchado" (casilla explícita, marcada por defecto). Editar el texto a
+// mano lo desengancha; volver a marcar la casilla lo reescribe.
+function enganchado() {
+  return $('enganche').checked;
+}
+$('texto').addEventListener('input', () => {
+  if (enganchado()) $('enganche').checked = false;
+});
+$('enganche').addEventListener('change', () => {
+  if (enganchado()) sincronizarTexto();
+});
+
+// El texto solo existe para el agente: aparece debajo de la casilla al marcarla.
+function mostrarTextoSegunAgente() {
+  const oculto = !$('agente').checked;
+  $('campo-texto').hidden = oculto;
+  $('casilla-enganche').hidden = oculto;
+  $('nota-enganche').hidden = oculto;
+  sincronizarRedaccion();
+}
+$('agente').addEventListener('change', mostrarTextoSegunAgente);
+
+// "Redactar" es una opción DE "usar agente": sin agente no hay a quién pedirle
+// la frase. Se deshabilita en vez de esconderse —que se vea que existe— y su
+// marca se conserva: volver a marcar el agente la deja como estaba.
+function sincronizarRedaccion() {
+  const apagada = !$('agente').checked || $('agente').disabled;
+  $('redactar').disabled = apagada;
+  $('casilla-redactar').classList.toggle('apagada', apagada);
+}
+
+function sincronizarTexto() {
+  if (!enganchado()) return;
+  const pregunta = preguntaElegida();
+  if (pregunta) $('texto').value = prepararTexto(pregunta.texto, leerFormulario());
+}
+
+function preguntaElegida() {
+  return estado.preguntas.find((pregunta) => pregunta.id === $('pregunta').value);
+}
+
+function pintarSesion(sesion) {
+  $('datos-cabecera').textContent = sesion.versionCatalogo
+    ? `catálogo ${sesion.versionCatalogo}${sesion.nombre ? ` · sesión ${sesion.nombre}` : ''}${
+        sesion.huella ? ` · huella ${sesion.huella}` : ''
+      }`
+    : 'sin catálogo';
+
+  const tabla = $('tabla-sesion');
+  tabla.replaceChildren();
+  const filas = [
+    ['nombre', sesion.nombre ?? '(sin sesión)'],
+    ['modelo', sesion.modelo ?? ''],
+    ['claude code', sesion.claudeCode ?? '(no disponible)'],
+    ['huella', sesion.huella ?? ''],
+    ['uuid', sesion.uuid ?? ''],
+    ['creada', sesion.creadaEn ?? ''],
+  ];
+  for (const [clave, valor] of filas) {
+    const dt = document.createElement('dt');
+    dt.textContent = clave;
+    const dd = document.createElement('dd');
+    dd.textContent = valor;
+    tabla.append(dt, dd);
+  }
+
+  if (!sesion.agenteDisponible) {
+    const casilla = $('casilla-agente');
+    casilla.classList.add('apagada');
+    $('agente').disabled = true;
+    $('nota-agente').textContent = `No disponible: ${
+      sesion.agenteMotivo ?? 'Claude Code no responde'
+    }. El camino sin agente funciona igual.`;
+  }
+}
+
+// El catálogo se pide a la capa en el momento (por el mini back, con el token
+// agente) y se compara con el que aprendió la sesión.
+$('ver-catalogo').addEventListener('click', async () => {
+  const estadoTexto = $('catalogo-estado');
+  const pre = $('modal-catalogo');
+  if (!pre.hidden) {
+    pre.hidden = true;
+    estadoTexto.textContent = '';
+    return;
+  }
+  estadoTexto.textContent = 'pidiendo…';
+  try {
+    const respuesta = await fetch('/api/catalogo');
+    const datos = await respuesta.json();
+    if (!respuesta.ok) throw new Error(datos.error ?? `HTTP ${respuesta.status}`);
+    pre.textContent = JSON.stringify(datos.catalogo, null, 2);
+    pre.hidden = false;
+    const igual = datos.huellaDeLaSesion && datos.huella === datos.huellaDeLaSesion;
+    estadoTexto.textContent = `${datos.origen} · huella ${datos.huella ?? '?'} · ${
+      igual ? 'es el mismo que aprendió la sesión' : 'DISTINTO al que aprendió la sesión: reiniciar el mini back'
+    }`;
+  } catch (error) {
+    estadoTexto.textContent = `No se pudo: ${error.message}`;
+  }
+});
+
+function abrirModal() {
+  const sesion = estado.sesion;
+  if (!sesion) return;
+  $('modal-datos').textContent = [
+    sesion.nombre ?? '(sin sesión)',
+    sesion.modelo ?? '',
+    sesion.huella ? `huella ${sesion.huella}` : '',
+  ]
+    .filter(Boolean)
+    .join(' · ');
+  $('modal-sistema').textContent = sesion.promptDeSistema ?? '';
+  $('modal-creacion').textContent =
+    sesion.promptDeCreacion ?? sesion.agenteMotivo ?? 'No hay sesión del agente.';
+  modal.showModal();
+}
+
+// ---------- ejecutar ----------
+
+function leerFormulario() {
+  return {
+    pregunta: $('pregunta').value,
+    token: $('token').value,
+    // Enganchado: el back arma el texto preparado + filtros. Desenganchado: va
+    // este texto y nada más.
+    texto: enganchado() ? '' : $('texto').value,
+    desde: $('desde').value,
+    hasta: $('hasta').value,
+    departamento: $('departamento').value,
+    usarAgente: $('agente').checked,
+    // Sólo viaja marcada si el agente está marcado: es un salto suyo.
+    redactar: $('agente').checked && $('redactar').checked,
+  };
+}
+
+function aplicarURL(parametros) {
+  if (parametros.has('token')) $('token').value = parametros.get('token');
+  pintarNotaDelToken();
+  if (parametros.has('pregunta')) $('pregunta').value = parametros.get('pregunta');
+  // El rango del link manda sobre el precargado de la pregunta.
+  if (parametros.has('desde') || parametros.has('hasta')) fechasEditadas = true;
+  $('desde').value = parametros.get('desde') ?? '';
+  $('hasta').value = parametros.get('hasta') ?? '';
+  if (!fechasEditadas) sincronizarRango();
+  $('departamento').value = parametros.get('departamento') ?? '';
+  $('agente').checked = parametros.get('agente') === '1' && !$('agente').disabled;
+  $('redactar').checked = parametros.get('redactar') === '1';
+  mostrarTextoSegunAgente();
+  const texto = parametros.get('texto') ?? '';
+  if (texto) {
+    $('texto').value = texto;
+    $('enganche').checked = false;
+  } else {
+    $('enganche').checked = true;
+    sincronizarTexto();
+  }
+}
+
+function parametrosDe(peticion) {
+  const parametros = new URLSearchParams({
+    // El token va primero y siempre: es lo que decide la empresa de los datos,
+    // y un link sin él se leería como si no importara.
+    token: peticion.token,
+    pregunta: peticion.pregunta,
+    desde: peticion.desde,
+    hasta: peticion.hasta,
+  });
+  if (peticion.departamento) parametros.set('departamento', peticion.departamento);
+  if (!enganchado() && peticion.texto) parametros.set('texto', peticion.texto);
+  if (peticion.usarAgente) parametros.set('agente', '1');
+  if (peticion.redactar) parametros.set('redactar', '1');
+  return parametros;
+}
+
+async function ejecutar() {
+  const peticion = leerFormulario();
+  const parametros = parametrosDe(peticion);
+  // Cada estado sigue siendo un link copiable.
+  history.replaceState(null, '', `?${parametros}`);
+
+  estado.controlador?.abort();
+  const controlador = new AbortController();
+  estado.controlador = controlador;
+  estado.saltos = [];
+  estado.peticion = null;
+  estado.saltosPrevistos = 0;
+  botonEjecutar.disabled = true;
+  aviso.replaceChildren();
+  resumen.replaceChildren();
+  rastro.replaceChildren();
+
+  try {
+    // POST: el texto va en el cuerpo, sin el tope de largo de una URL. El link
+    // de la página (arriba) sigue llevando el estado del formulario.
+    const respuesta = await fetch('/api/rastro', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(peticion),
+      signal: controlador.signal,
+    });
+    if (!respuesta.ok) throw new Error(`el mini back respondió ${respuesta.status}`);
+    await leerLineas(respuesta.body, (linea) => manejarLinea(JSON.parse(linea)));
+  } catch (error) {
+    if (error.name === 'AbortError') return;
+    quitarEnCurso();
+    mostrarAviso(`Se cortó el rastro: ${error.message}`);
+  } finally {
+    if (estado.controlador === controlador) botonEjecutar.disabled = false;
+  }
+}
+
+// NDJSON: el cuerpo llega por trozos y una línea puede quedar partida entre
+// dos, así que lo que sobra se guarda para el trozo siguiente.
+async function leerLineas(cuerpo, alLinea) {
+  const lector = cuerpo.getReader();
+  const decodificador = new TextDecoder();
+  let resto = '';
+  for (;;) {
+    const { value, done } = await lector.read();
+    if (done) break;
+    resto += decodificador.decode(value, { stream: true });
+    const partes = resto.split('\n');
+    resto = partes.pop() ?? '';
+    for (const linea of partes) if (linea.trim()) alLinea(linea);
+  }
+  if (resto.trim()) alLinea(resto);
+}
+
+function manejarLinea(evento) {
+  if (evento.tipo === 'inicio') {
+    estado.peticion = evento.peticion;
+    estado.saltosPrevistos = evento.saltosPrevistos;
+    if (evento.nota) mostrarAviso(`${evento.nota} — se ejecutó el camino sin agente.`);
+    mostrarEnCurso(1);
+    return;
+  }
+  if (evento.tipo === 'salto') {
+    quitarEnCurso();
+    estado.saltos.push(evento.salto);
+    rastro.append(tarjetaDeSalto(evento.salto, evento.indice));
+    mostrarEnCurso(evento.indice + 2);
+    return;
+  }
+  if (evento.tipo === 'fin') {
+    quitarEnCurso();
+    pintarResumen(evento.totalMs);
+    // El rastro acaba de sumar consultas a los contadores del proceso: el panel
+    // del pie se refresca acá y no con un temporizador, para que lo que muestre
+    // sea exactamente el efecto de lo que se ve arriba.
+    cargarTelemetria();
+    return;
+  }
+  if (evento.tipo === 'error') {
+    quitarEnCurso();
+    mostrarAviso(`No se pudo ejecutar: ${evento.mensaje}`);
+  }
+}
+
+function mostrarAviso(mensaje) {
+  const caja = document.createElement('p');
+  caja.className = 'aviso';
+  caja.textContent = mensaje;
+  aviso.replaceChildren(caja);
+}
+
+// ---------- la línea de tiempo ----------
+
+function actorDe(destino) {
+  return String(destino).startsWith('agente') ? 'agente' : 'capa';
+}
+
+// Con agente el salto 1 es suyo y, si además redacta, también el último
+// previsto; los del medio son de la capa. Pasado el número previsto no se
+// adivina: el reintento agrega saltos que nadie prometió.
+function actorPrevisto(numero) {
+  if (numero > estado.saltosPrevistos) return null;
+  if (!estado.peticion?.usarAgente) return 'capa';
+  if (numero === 1) return 'agente';
+  return estado.peticion.redactar && numero === estado.saltosPrevistos ? 'agente' : 'capa';
+}
+
+function mostrarEnCurso(numero) {
+  const previsto = actorPrevisto(numero);
+  const fila = document.createElement('div');
+  fila.className = `salto en-curso${previsto ? ` ${previsto}` : ''}`;
+  fila.id = 'en-curso';
+  const tarjeta = document.createElement('div');
+  tarjeta.className = 'tarjeta';
+  tarjeta.textContent = previsto
+    ? `Salto ${numero} (${previsto === 'agente' ? 'agente' : 'capa semántica'}) en curso…`
+    : `Salto ${numero} en curso…`;
+  fila.append(tarjeta);
+  rastro.append(fila);
+}
+
+// Antes del salto 1 no hay un salto: el GET del catálogo lo hizo el mini back
+// al arrancar, una sola vez, y lo pegó en el prompt de creación de la sesión.
+// Se muestra para que el flujo del consumidor se lea completo: token → catálogo
+// → JSON → dry-run → consulta. No se repite por clic.
+function tarjetaDelCatalogo() {
+  const sesion = estado.sesion ?? {};
+  const fila = document.createElement('div');
+  fila.className = 'salto capa previo';
+  const tarjeta = document.createElement('div');
+  tarjeta.className = 'tarjeta';
+  const titulo = document.createElement('div');
+  titulo.className = 'titulo-salto';
+  titulo.append(texto('span', 'Antes de todo', 'numero'), texto('span', 'GET /analytics/catalog', 'destino'));
+  tarjeta.append(titulo);
+  tarjeta.append(
+    texto(
+      'p',
+      'Lo inició el mini back al arrancar, una sola vez, con el token agente: pidió el catálogo ' +
+        'público a la capa y lo pegó entero en el prompt de creación de la sesión del agente. ' +
+        'Por eso no aparece como salto en cada clic: el agente ya lo tiene en memoria.' +
+        (sesion.creadaEn ? ` Sesión creada el ${sesion.creadaEn}` : '') +
+        (sesion.versionCatalogo ? ` · catálogo ${sesion.versionCatalogo}` : '') +
+        (sesion.huella ? ` · huella ${sesion.huella}` : '') +
+        '. Si el catálogo cambia, la huella cambia y el mini back crea una sesión nueva al arrancar.',
+      'nota',
+    ),
+  );
+  // Con un token que no es el de la empresa por defecto salta la pregunta
+  // obvia: ¿no habría que crear otra sesión? No: el catálogo no depende del
+  // consumidor, así que la sesión es una sola. Lo dice el mini back.
+  const otraEmpresa = estado.peticion?.token && estado.peticion.token !== estado.consumidores[0]?.id;
+  if (otraEmpresa && sesion.motivoCatalogoUnico) {
+    tarjeta.append(texto('p', sesion.motivoCatalogoUnico, 'nota'));
+  }
+  fila.append(tarjeta);
+  return fila;
+}
+
+function quitarEnCurso() {
+  document.getElementById('en-curso')?.remove();
+}
+
+function tarjetaDeSalto(salto, indice) {
+  const actor = actorDe(salto.destino);
+  const fila = document.createElement('div');
+  fila.className = `salto ${actor}`;
+
+  const tarjeta = document.createElement('div');
+  tarjeta.className = 'tarjeta';
+  fila.append(tarjeta);
+
+  const titulo = document.createElement('h3');
+  titulo.className = 'titulo-salto';
+  titulo.append(texto('span', `Salto ${indice + 1}`), texto('span', salto.destino, 'destino'));
+  tarjeta.append(titulo);
+
+  const meta = document.createElement('p');
+  meta.className = 'meta-salto';
+  meta.append(texto('span', salto.via, 'via'));
+  // El token se nombra, nunca se muestra su valor.
+  meta.append(texto('span', salto.token ?? 'sin token', 'chip'));
+  meta.append(texto('span', `${salto.ms} ms`));
+  meta.append(texto('span', salto.estado, `pildora ${salto.estado}`));
+  tarjeta.append(meta);
+
+  if (salto.meta) {
+    const medicion = medicionDe(salto.meta);
+    if (medicion) tarjeta.append(texto('p', medicion, 'medicion'));
+  }
+
+  const explicacion = explicacionDe(salto, actor);
+  if (explicacion) tarjeta.append(texto('p', explicacion, 'explicacion'));
+
+  const cuerpos = document.createElement('div');
+  cuerpos.className = 'cuerpos';
+  cuerpos.append(panel('enviado', salto.enviado), panel('recibido', salto.recibido));
+  // El dry-run con token interno trae el SQL que emitió la capa: se muestra
+  // aparte, con saltos de línea de verdad y los $n señalados con su valor.
+  if (typeof salto.recibido?.sql === 'string') {
+    cuerpos.append(panelSql(salto.recibido.sql, salto.recibido.params));
+  }
+  tarjeta.append(cuerpos);
+
+  return fila;
+}
+
+function explicacionDe(salto, actor) {
+  if (salto.estado === 'ok') return null;
+  if (actor === 'capa') {
+    if (salto.estado === 'fallo') return `La capa no contestó: ${mensajeDeError(salto.recibido)}`;
+    const error = salto.recibido ?? {};
+    const partes = [error.code, error.member, error.suggestion].filter(Boolean);
+    return `La capa rechazó: ${partes.join(' · ') || 'sin detalle'}`;
+  }
+  const escrito = comoJson(salto.recibido);
+  if (escrito?.noPuedo) return `El agente no pudo: ${escrito.noPuedo}`;
+  return 'El agente no pudo: lo que devolvió no es el JSON de una consulta.';
+}
+
+function mensajeDeError(recibido) {
+  if (typeof recibido === 'string') return recibido;
+  return recibido?.error ?? recibido?.message ?? 'sin detalle';
+}
+
+function medicionDe(meta) {
+  return [
+    meta.total_cost_usd != null ? `costo ${meta.total_cost_usd.toFixed(4)} USD` : null,
+    meta.duration_api_ms != null ? `API ${meta.duration_api_ms} ms` : null,
+    meta.cache_read_input_tokens != null
+      ? `${meta.cache_read_input_tokens} tokens desde caché`
+      : null,
+    meta.session_id ? `sesión ${meta.session_id}` : null,
+  ]
+    .filter(Boolean)
+    .join(' · ');
+}
+
+// Un panel por cuerpo. Lo de la capa es JSON y se indenta; lo del agente es
+// texto tal cual viajó, y si ese texto resulta ser JSON se muestra indentado
+// con lo crudo a un clic.
+function panel(titulo, valor) {
+  const caja = document.createElement('div');
+  caja.className = 'cuerpo';
+  caja.append(texto('span', titulo, 'etiqueta'));
+
+  if (typeof valor !== 'string') {
+    caja.append(texto('pre', JSON.stringify(valor, null, 2)));
+    return caja;
+  }
+  const indentado = indentar(valor);
+  caja.append(texto('pre', indentado ?? valor));
+  if (indentado) {
+    const detalles = document.createElement('details');
+    const resumenCrudo = document.createElement('summary');
+    resumenCrudo.textContent = 'crudo';
+    detalles.append(resumenCrudo, texto('pre', valor));
+    caja.append(detalles);
+  }
+  return caja;
+}
+
+// SQL con palabras clave y parámetros marcados. Se arma con nodos y
+// `textContent`, nunca con HTML: el texto viene de la capa.
+const PALABRAS_SQL =
+  /\b(WITH|SELECT|FROM|WHERE|AND|OR|NOT|AS|ON|JOIN|LEFT|INNER|GROUP BY|ORDER BY|LIMIT|FILTER|COUNT|AVG|SUM|NULLIF|CAST|DISTINCT|ASC|DESC|IN|NULL|TRUE|FALSE|DATE_TRUNC|IS)\b/g;
+
+function panelSql(sql, params = []) {
+  const caja = document.createElement('div');
+  caja.className = 'cuerpo ancho';
+  caja.append(texto('span', 'SQL emitido por la capa', 'etiqueta'));
+  caja.append(
+    texto(
+      'p',
+      'Se ve solo aquí: este dry-run usa el token interno para mostrarlo en la demo. ' +
+        'El consumidor agente nunca lo recibe: su dry-run devuelve solo params y plan, y la ' +
+        'consulta real devuelve filas. Los $n son parámetros, nunca texto interpolado.',
+      'nota',
+    ),
+  );
+  const pre = document.createElement('pre');
+  pre.className = 'sql';
+  const partes = sql.split(/(\$\d+)/);
+  for (const parte of partes) {
+    const parametro = /^\$(\d+)$/.exec(parte);
+    if (parametro) {
+      const nodo = texto('span', parte, 'param');
+      const valor = params[Number(parametro[1]) - 1];
+      if (valor !== undefined) nodo.title = `${parte} = ${JSON.stringify(valor)}`;
+      pre.append(nodo);
+      continue;
+    }
+    let ultimo = 0;
+    for (const m of parte.matchAll(PALABRAS_SQL)) {
+      if (m.index > ultimo) pre.append(document.createTextNode(parte.slice(ultimo, m.index)));
+      pre.append(texto('span', m[0], 'kw'));
+      ultimo = m.index + m[0].length;
+    }
+    if (ultimo < parte.length) pre.append(document.createTextNode(parte.slice(ultimo)));
+  }
+  caja.append(pre);
+  if (params.length) {
+    caja.append(texto('p', `parámetros: ${params.map((v, i) => `$${i + 1} = ${JSON.stringify(v)}`).join(' · ')}`, 'medicion'));
+  }
+  return caja;
+}
+
+function indentar(cadena) {
+  const valor = comoJson(cadena);
+  return valor === null ? null : JSON.stringify(valor, null, 2);
+}
+
+// La misma leniencia del mini back: se tolera la envoltura ``` y no la prosa.
+function comoJson(cadena) {
+  if (typeof cadena !== 'string') return null;
+  const limpio = cadena
+    .trim()
+    .replace(/^```(?:json)?/i, '')
+    .replace(/```$/, '')
+    .trim();
+  try {
+    const valor = JSON.parse(limpio);
+    return valor !== null && typeof valor === 'object' ? valor : null;
+  } catch {
+    return null;
+  }
+}
+
+// ---------- resumen ----------
+
+function pintarResumen(totalMs) {
+  const caja = document.createElement('div');
+  caja.className = 'resumen';
+  caja.append(dato('saltos', String(estado.saltos.length)));
+  caja.append(dato('total', `${totalMs} ms`));
+
+  const consulta = ultimaConsulta();
+  const meta = consulta?.recibido?.meta;
+  if (meta?.servedFrom) caja.append(dato('servedFrom', meta.servedFrom));
+  if (meta?.queryId) caja.append(dato('queryId', meta.queryId));
+
+  const comparacion = comparacionDelAgente();
+  if (comparacion) {
+    caja.append(
+      texto(
+        'span',
+        `El agente escribió lo mismo que el JSON preparado: ${comparacion.igual ? 'sí' : 'no'}.`,
+        'veredicto',
+      ),
+    );
+  }
+  resumen.replaceChildren();
+  // Arriba de todo: lo que el agente escribió. Es la respuesta en palabras, y
+  // el resto del resumen es cómo se consiguió.
+  const redactado = respuestaRedactada();
+  if (redactado) resumen.append(texto('p', `Respuesta del agente: ${redactado}`, 'respuesta-agente'));
+  resumen.append(caja);
+  if (comparacion) resumen.append(bloqueComparacion(comparacion));
+  // Pedido del usuario: la nota del catálogo va justo después del veredicto
+  // del agente, no encabezando el rastro.
+  resumen.append(tarjetaDelCatalogo());
+}
+
+// Con agente, los dos JSON quedan lado a lado: el veredicto dice si son el
+// mismo, y esto deja ver en qué se separan.
+function bloqueComparacion({ escrito, preparada }) {
+  const caja = document.createElement('div');
+  caja.className = 'panel comparacion';
+  caja.append(texto('h2', 'El JSON preparado y el del agente', 'etiqueta'));
+  const cuerpos = document.createElement('div');
+  cuerpos.className = 'cuerpos';
+  cuerpos.append(panel('preparado', preparada), panel('escrito por el agente', escrito));
+  caja.append(cuerpos);
+  return caja;
+}
+
+function dato(clave, valor) {
+  const caja = document.createElement('span');
+  caja.append(texto('span', clave, 'clave'), texto('span', valor));
+  return caja;
+}
+
+// El texto del salto de redacción, si lo hubo y salió bien. Un salto fallido no
+// aporta frase: su tarjeta ya dice qué pasó.
+function respuestaRedactada() {
+  const salto = [...estado.saltos]
+    .reverse()
+    .find((uno) => uno.destino === 'agente — redacción' && uno.estado === 'ok');
+  return typeof salto?.recibido === 'string' ? salto.recibido.trim() : null;
+}
+
+function ultimaConsulta() {
+  return [...estado.saltos]
+    .reverse()
+    .find((salto) => actorDe(salto.destino) === 'capa' && !salto.destino.includes('dry-run'));
+}
+
+// ¿El agente escribió lo mismo que el JSON preparado? Se compara canónicamente
+// —claves ordenadas— contra la consulta preparada con los mismos marcadores
+// sustituidos que hace el mini back.
+function comparacionDelAgente() {
+  if (!estado.peticion?.usarAgente) return null;
+  const primero = estado.saltos[0];
+  if (!primero || actorDe(primero.destino) !== 'agente') return null;
+  const escrito = comoJson(primero.recibido);
+  if (!escrito || escrito.noPuedo) return null;
+  const pregunta = estado.preguntas.find((una) => una.id === estado.peticion.pregunta);
+  if (!pregunta) return null;
+  const preparada = prepararConsulta(pregunta, estado.peticion);
+  return { escrito, preparada, igual: canonico(escrito) === canonico(preparada) };
+}
+
+function canonico(valor) {
+  if (Array.isArray(valor)) return `[${valor.map(canonico).join(',')}]`;
+  if (valor !== null && typeof valor === 'object') {
+    const pares = Object.keys(valor)
+      .sort()
+      .map((clave) => `${JSON.stringify(clave)}:${canonico(valor[clave])}`);
+    return `{${pares.join(',')}}`;
+  }
+  return JSON.stringify(valor) ?? 'null';
+}
+
+// ---------- utilidades ----------
+
+function texto(etiqueta, contenido, clase = null) {
+  const nodo = document.createElement(etiqueta);
+  nodo.textContent = contenido;
+  if (clase) nodo.className = clase;
+  return nodo;
+}
+
+// ---------- telemetría y presupuestos de la capa ----------
+//
+// El pie de la página: lo que la capa dice de sí misma. Sale de
+// `GET /api/telemetria`, que el mini back pide a `GET /analytics/telemetry` con
+// el token INTERNO de la empresa elegida —la capa no se la entrega a un token
+// de clase agente—. Se carga al abrir, se refresca al terminar cada rastro y con
+// el botón "Actualizar", y NUNCA con un temporizador: un refresco de fondo
+// mientras se lee el rastro ensuciaría los contadores que el rastro acaba de
+// producir.
+
+const CLASES_PRESUPUESTO = ['dashboard', 'api', 'agent'];
+const NOTA_DEL_DRY_RUN =
+  'el dry-run de esta demo va con la sesión interna (clase api): por eso su plan.budget muestra ' +
+  '15 s / 10.000; la consulta real va con la clase del token elegido.';
+
+$('actualizar-telemetria').addEventListener('click', cargarTelemetria);
+
+async function cargarTelemetria() {
+  const estadoTexto = $('telemetria-estado');
+  const cuerpo = $('telemetria-cuerpo');
+  const token = $('token').value;
+  estadoTexto.textContent = 'pidiendo…';
+  try {
+    const respuesta = await fetch(`/api/telemetria?token=${encodeURIComponent(token)}`);
+    const datos = await respuesta.json();
+    if (!respuesta.ok) throw new Error(datos.error ?? `HTTP ${respuesta.status}`);
+    const encendido = Math.round((datos.process?.uptimeMs ?? 0) / 1000);
+    estadoTexto.textContent =
+      `GET /analytics/telemetry con el token interno de ${token} · proceso encendido hace ` +
+      `${encendido.toLocaleString('es-CL')} s (desde ${datos.process?.startedAt ?? '?'}) · ` +
+      `leído a las ${new Date().toLocaleTimeString('es-CL')}`;
+    cuerpo.replaceChildren(
+      bloqueDePresupuestos(datos.budgets ?? {}),
+      bloqueDeConsumidores(datos.telemetry ?? {}),
+      detallesCrudos(datos),
+    );
+  } catch (error) {
+    estadoTexto.textContent = `No se pudo: ${error.message}`;
+    cuerpo.replaceChildren();
+  }
+}
+
+// La tabla de `src/budgets.js` tal cual la publica la capa: es lo que explica
+// por qué a una clase se le recorta la salida y a otra no.
+function bloqueDePresupuestos(budgets) {
+  const caja = document.createElement('div');
+  caja.className = 'bloque-telemetria';
+  caja.append(texto('h3', 'Presupuesto por clase', 'etiqueta'));
+
+  const clases = [...CLASES_PRESUPUESTO, ...Object.keys(budgets).filter((c) => !CLASES_PRESUPUESTO.includes(c))];
+  const propia = consumidorElegido()?.clase ?? null;
+  const filas = [];
+  for (const clase of clases) {
+    const presupuesto = budgets[clase];
+    if (!presupuesto) continue;
+    filas.push({
+      destacada: clase === propia,
+      celdas: [
+        { valor: clase, mono: true },
+        { valor: numero(presupuesto.timeoutMs / 1000), numerica: true },
+        { valor: numero(presupuesto.maxFilas), numerica: true },
+        { valor: presupuesto.rangoObligatorio ? 'sí' : 'no' },
+        { valor: numero(presupuesto.cacheTtlMs / 1000), numerica: true },
+      ],
+    });
+  }
+  caja.append(
+    tablaDeDatos(['clase', 'timeout (s)', 'filas máximas', 'rango obligatorio', 'TTL de caché (s)'], filas),
+  );
+  caja.append(texto('p', NOTA_DEL_DRY_RUN, 'nota'));
+  return caja;
+}
+
+// Los contadores del proceso: primero la línea de totales, después el desglose
+// por consumidor y las dos listas de rechazos.
+function bloqueDeConsumidores(telemetry) {
+  const caja = document.createElement('div');
+  caja.className = 'bloque-telemetria';
+  caja.append(texto('h3', 'Por consumidor', 'etiqueta'));
+
+  const cache = telemetry.cache ?? { hits: 0, misses: 0, hitRatio: 0, porNivel: {} };
+  const base = telemetry.database ?? { count: 0, totalMs: 0 };
+  const linea = document.createElement('div');
+  linea.className = 'resumen';
+  linea.append(dato('total', numero(telemetry.total ?? 0)));
+  linea.append(dato('ok', numero(telemetry.byResult?.ok ?? 0)));
+  linea.append(dato('error', numero(telemetry.byResult?.error ?? 0)));
+  linea.append(dato('hit ratio', `${(cache.hitRatio * 100).toFixed(1)} % (${numero(cache.hits)}/${numero(cache.hits + cache.misses)})`));
+  linea.append(dato('hits por nivel', mapaCorto(cache.porNivel)));
+  linea.append(dato('errores de caché', mapaCorto(telemetry.cacheErrors)));
+  linea.append(
+    dato(
+      'base',
+      `${numero(base.count)} consultas · ${base.totalMs.toFixed(1)} ms · ${
+        base.count ? (base.totalMs / base.count).toFixed(1) : '0.0'
+      } ms promedio`,
+    ),
+  );
+  caja.append(linea);
+
+  const clientGone = telemetry.clientGone ?? {};
+  const filas = Object.entries(telemetry.byConsumer ?? {}).map(([consumidor, contadores]) => ({
+    destacada: false,
+    celdas: [
+      { valor: consumidor, mono: true },
+      { valor: numero(contadores.ok), numerica: true },
+      { valor: numero(contadores.error), numerica: true },
+      { valor: numero(contadores.cacheHits), numerica: true },
+      { valor: numero(contadores.cacheMisses), numerica: true },
+      { valor: numero(clientGone[consumidor] ?? 0), numerica: true },
+    ],
+  }));
+  caja.append(
+    filas.length
+      ? tablaDeDatos(['consumidor', 'ok', 'error', 'hits', 'misses', 'clientGone'], filas)
+      : texto('p', 'Todavía no pasó ninguna consulta por este proceso.', 'nota'),
+  );
+
+  caja.append(texto('p', `por código de error: ${mapaCorto(telemetry.byErrorCode)}`, 'medicion'));
+  caja.append(texto('p', `por puerta: ${mapaCorto(telemetry.byGate)}`, 'medicion'));
+  return caja;
+}
+
+// El JSON entero, tal cual lo devolvió la capa: lo de arriba es una lectura, y
+// una lectura sin el original al lado es una afirmación que no se puede
+// comprobar.
+function detallesCrudos(datos) {
+  const detalles = document.createElement('details');
+  const cabecera = document.createElement('summary');
+  cabecera.textContent = 'crudo';
+  detalles.append(cabecera, texto('pre', JSON.stringify(datos, null, 2)));
+  return detalles;
+}
+
+function tablaDeDatos(encabezados, filas) {
+  const tabla = document.createElement('table');
+  tabla.className = 'tabla-datos';
+  const cabecera = document.createElement('tr');
+  for (const titulo of encabezados) cabecera.append(texto('th', titulo));
+  const thead = document.createElement('thead');
+  thead.append(cabecera);
+  const tbody = document.createElement('tbody');
+  for (const fila of filas) {
+    const tr = document.createElement('tr');
+    if (fila.destacada) tr.className = 'destacada';
+    for (const celda of fila.celdas) {
+      const clases = [celda.numerica ? 'numero' : null, celda.mono || celda.numerica ? 'mono' : null]
+        .filter(Boolean)
+        .join(' ');
+      tr.append(texto('td', celda.valor, clases || null));
+    }
+    tbody.append(tr);
+  }
+  tabla.append(thead, tbody);
+  return tabla;
+}
+
+// Un mapa `{ clave: cuenta }` en una línea. Vacío se dice, no se deja en blanco:
+// "ninguno" es un dato y una celda vacía es una duda.
+function mapaCorto(mapa) {
+  const pares = Object.entries(mapa ?? {});
+  if (!pares.length) return 'ninguno';
+  return pares.map(([clave, cuenta]) => `${clave} ${numero(cuenta)}`).join(' · ');
+}
+
+function numero(valor) {
+  return Number(valor).toLocaleString('es-CL');
+}

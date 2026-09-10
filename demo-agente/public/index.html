@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Rastro del agente</title>
+    <!-- Las fuentes entran como hoja de impresión que se promueve al cargar: si
+         no hay internet, la página se pinta igual con las de sistema. Nada
+         depende de que lleguen. -->
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap"
+      media="print"
+      onload="this.media='all'"
+    />
+    <link rel="stylesheet" href="/estilo.css" />
+  </head>
+  <body>
+    <header class="cabecera">
+      <h1>Rastro del agente</h1>
+      <p class="datos" id="datos-cabecera">cargando…</p>
+      <button type="button" class="tema" id="tema">luna</button>
+    </header>
+
+    <main class="pagina">
+      <div class="lateral">
+        <section class="panel">
+          <form class="controles" id="controles">
+            <label class="campo">
+              <span class="etiqueta">Token del consumidor (define la empresa)</span>
+              <select id="token" name="token"></select>
+              <span class="nota">
+                La capa deriva la empresa del token: el JSON nunca lleva
+                <code>companyId</code> (<code>FORBIDDEN_FIELD</code>). El dry-run usa el token
+                interno de la misma empresa para mostrar el SQL.
+              </span>
+              <span class="nota" id="nota-token" hidden></span>
+            </label>
+
+            <label class="campo">
+              <span class="etiqueta">Pregunta preparada</span>
+              <select id="pregunta" name="pregunta"></select>
+              <span class="nota">
+                Cada pregunta trae su JSON fijo, escrito a mano en <code>preguntas.json</code>. Sin
+                "usar agente", ese JSON es el "enviado" de los saltos a la capa y los filtros solo
+                sustituyen desde, hasta y departamento: no cambian la forma de la consulta. Con
+                "usar agente", el JSON lo escribe él a partir del texto y puede diferir del
+                preparado.
+              </span>
+            </label>
+
+            <div class="fila">
+              <label class="campo">
+                <span class="etiqueta">Desde</span>
+                <input type="date" id="desde" name="desde" value="2025-06-01" />
+              </label>
+              <label class="campo">
+                <span class="etiqueta">Hasta</span>
+                <input type="date" id="hasta" name="hasta" value="2025-08-31" />
+              </label>
+            </div>
+            <p class="nota">
+              Las fechas son opcionales (ADR 0009): vacíalas las dos y la consulta sale sin
+              <code>dateRange</code>. La capa la ejecuta igual, con el tope de 1.000 filas y los
+              10 s de la clase <code>agente</code>.
+            </p>
+
+            <label class="campo">
+              <span class="etiqueta">Departamento</span>
+              <input type="text" id="departamento" name="departamento" value="" placeholder="vacío = todos" />
+            </label>
+
+            <div>
+              <div class="fila-casillas">
+                <label class="casilla" id="casilla-agente">
+                  <input type="checkbox" id="agente" name="agente" value="1" />
+                  <span>Usar agente</span>
+                </label>
+                <label class="casilla apagada" id="casilla-redactar">
+                  <input type="checkbox" id="redactar" name="redactar" value="1" disabled />
+                  <span>Redactar la respuesta</span>
+                </label>
+              </div>
+              <p class="nota" id="nota-agente">
+                Marcado: el texto de arriba se le manda a una sesión de Claude Code, que escribe el
+                JSON de la consulta leyendo el catálogo. Sin marcar: se manda el JSON preparado de
+                esta pregunta, sin ningún modelo de por medio.
+                <button type="button" class="enlace" id="ver-prompt">lo que sabe esa sesión</button>
+              </p>
+              <p class="nota" id="nota-redactar">
+                Un salto más: el agente recibe la pregunta y las filas agregadas (nunca filas
+                crudas) y escribe una o dos frases; cuesta ~0,003 USD y 3-5 s.
+              </p>
+              <label class="campo" id="campo-texto" hidden>
+                <span class="etiqueta">Texto en lenguaje natural</span>
+                <textarea id="texto" name="texto"></textarea>
+                <span class="nota">Es lo que se le manda al agente, con los filtros de arriba.</span>
+              </label>
+              <label class="casilla" id="casilla-enganche" hidden>
+                <input type="checkbox" id="enganche" checked />
+                <span>Enganchado a la pregunta preparada</span>
+              </label>
+              <p class="nota" id="nota-enganche" hidden>
+                Marcado: al cambiar la pregunta, las fechas o el departamento, el texto se
+                reescribe con el preparado, y al agente se le manda ese texto más una línea
+                "Filtros:" con las fechas y el departamento del formulario. Desmarcado: el
+                texto es tuyo, nadie lo toca, y al agente se le manda solo eso: las fechas y el
+                departamento del formulario NO se agregan (siguen valiendo para el camino sin
+                agente).
+              </p>
+            </div>
+
+            <button type="submit" class="ejecutar" id="ejecutar">Ejecutar</button>
+          </form>
+        </section>
+
+        <section class="panel">
+          <h2 class="etiqueta">Sesión del agente</h2>
+          <dl class="tabla-sesion" id="tabla-sesion"></dl>
+          <p class="nota">
+            <button type="button" class="enlace" id="ver-prompt-2">ver el prompt completo</button>
+          </p>
+        </section>
+      </div>
+
+      <section>
+        <section class="panel telemetria" id="panel-telemetria">
+          <div class="telemetria-cabecera">
+            <h2 class="etiqueta">Capa semántica: presupuestos y telemetría</h2>
+            <button type="button" class="enlace" id="actualizar-telemetria">Actualizar</button>
+          </div>
+          <p class="nota" id="telemetria-estado">cargando…</p>
+          <div id="telemetria-cuerpo"></div>
+        </section>
+
+        <div id="aviso"></div>
+        <div id="resumen"></div>
+        <div class="rastro" id="rastro">
+          <p class="vacio">
+            Elige una pregunta, ajusta los filtros y pulsa Ejecutar. Cada salto aparece acá apenas
+            termina, con lo que se envió y lo que se recibió.
+          </p>
+        </div>
+      </section>
+    </main>
+
+    <dialog id="modal-sesion">
+      <div class="modal-cabecera">
+        <h2>La sesión del agente</h2>
+        <p class="datos" id="modal-datos"></p>
+        <button type="button" id="cerrar-modal">Cerrar</button>
+      </div>
+      <div class="modal-cuerpo">
+        <p class="acciones">
+          <button type="button" id="ver-catalogo">Ver el catálogo público (GET /analytics/catalog, ahora)</button>
+          <span class="nota" id="catalogo-estado"></span>
+        </p>
+        <pre id="modal-catalogo" hidden></pre>
+        <h3>System prompt de la llamada</h3>
+        <pre id="modal-sistema"></pre>
+        <h3>Prompt de creación de la sesión</h3>
+        <p class="nota">
+          Esto es todo lo que el agente sabe: rol, catálogo público tal cual lo publica la capa,
+          reglas del vocabulario y contrato de salida.
+        </p>
+        <pre id="modal-creacion"></pre>
+      </div>
+    </dialog>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,92 @@
+{
+  "schema": "public",
+  "tables": {
+    "attendance": {
+      "columns": {
+        "id": "bigint",
+        "employee_id": "bigint",
+        "company_id": "bigint",
+        "date": "date",
+        "present": "boolean"
+      },
+      "indexes": [
+        {
+          "name": "attendance_pkey",
+          "columns": [
+            "id"
+          ],
+          "unique": true
+        }
+      ]
+    },
+    "companies": {
+      "columns": {
+        "id": "bigint",
+        "name": "text"
+      },
+      "indexes": [
+        {
+          "name": "companies_pkey",
+          "columns": [
+            "id"
+          ],
+          "unique": true
+        }
+      ]
+    },
+    "departments": {
+      "columns": {
+        "id": "bigint",
+        "company_id": "bigint",
+        "name": "text"
+      },
+      "indexes": [
+        {
+          "name": "departments_pkey",
+          "columns": [
+            "id"
+          ],
+          "unique": true
+        }
+      ]
+    },
+    "employees": {
+      "columns": {
+        "id": "bigint",
+        "company_id": "bigint",
+        "department_id": "bigint",
+        "name": "text",
+        "hire_date": "date",
+        "active": "boolean"
+      },
+      "indexes": [
+        {
+          "name": "employees_pkey",
+          "columns": [
+            "id"
+          ],
+          "unique": true
+        }
+      ]
+    },
+    "performance_reviews": {
+      "columns": {
+        "id": "bigint",
+        "employee_id": "bigint",
+        "company_id": "bigint",
+        "period": "date",
+        "score": "numeric",
+        "status": "text"
+      },
+      "indexes": [
+        {
+          "name": "performance_reviews_pkey",
+          "columns": [
+            "id"
+          ],
+          "unique": true
+        }
+      ]
+    }
+  }
+}

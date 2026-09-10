@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>La sesión del agente</title>
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap"
+      media="print"
+      onload="this.media='all'"
+    />
+    <link rel="stylesheet" href="/estilo.css" />
+  </head>
+  <body>
+    <header class="cabecera">
+      <h1>La sesión del agente</h1>
+      <p class="datos" id="datos-cabecera">cargando…</p>
+      <button type="button" class="tema" id="tema">luna</button>
+    </header>
+
+    <main class="sesion-pagina">
+      <p><a href="/">Volver al rastro</a></p>
+
+      <section class="panel">
+        <dl class="tabla-sesion" id="tabla-sesion"></dl>
+      </section>
+
+      <section class="panel">
+        <h2 class="etiqueta">System prompt de la llamada</h2>
+        <pre id="sistema"></pre>
+      </section>
+
+      <section class="panel">
+        <h2 class="etiqueta">Prompt de creación de la sesión</h2>
+        <p class="nota">
+          Esto es todo lo que el agente sabe: rol, catálogo público tal cual lo publica la capa,
+          reglas del vocabulario y contrato de salida.
+        </p>
+        <pre id="creacion"></pre>
+      </section>
+    </main>
+
+    <script type="module">
+      const $ = (id) => document.getElementById(id);
+      const raiz = document.documentElement;
+      const botonTema = $('tema');
+
+      const esOscuro = () =>
+        raiz.dataset.theme
+          ? raiz.dataset.theme === 'dark'
+          : matchMedia('(prefers-color-scheme: dark)').matches;
+      const pintarBoton = () => (botonTema.textContent = esOscuro() ? 'sol' : 'luna');
+
+      try {
+        const guardado = localStorage.getItem('tema');
+        if (guardado === 'dark' || guardado === 'light') raiz.dataset.theme = guardado;
+      } catch {
+        // sin almacenamiento la página funciona igual
+      }
+      pintarBoton();
+      botonTema.addEventListener('click', () => {
+        raiz.dataset.theme = esOscuro() ? 'light' : 'dark';
+        try {
+          localStorage.setItem('tema', raiz.dataset.theme);
+        } catch {
+          // idem
+        }
+        pintarBoton();
+      });
+
+      const respuesta = await fetch('/api/sesion', { headers: { Accept: 'application/json' } });
+      const sesion = await respuesta.json();
+
+      $('datos-cabecera').textContent = [
+        sesion.versionCatalogo ? `catálogo ${sesion.versionCatalogo}` : '',
+        sesion.nombre ? `sesión ${sesion.nombre}` : '(sin sesión)',
+      ]
+        .filter(Boolean)
+        .join(' · ');
+
+      const tabla = $('tabla-sesion');
+      const filas = [
+        ['nombre', sesion.nombre ?? '(sin sesión)'],
+        ['uuid', sesion.uuid ?? ''],
+        ['versión del catálogo', sesion.versionCatalogo ?? ''],
+        ['huella del catálogo', sesion.huella ?? ''],
+        ['creada', [sesion.creadaEn, sesion.motivo].filter(Boolean).join(' · ')],
+        ['modelo', sesion.modelo ?? ''],
+        ['claude code', sesion.claudeCode ?? '(no disponible)'],
+        ['agente', sesion.agenteDisponible ? 'disponible' : `no disponible: ${sesion.agenteMotivo}`],
+      ];
+      for (const [clave, valor] of filas) {
+        const dt = document.createElement('dt');
+        dt.textContent = clave;
+        const dd = document.createElement('dd');
+        dd.textContent = valor;
+        tabla.append(dt, dd);
+      }
+
+      $('sistema').textContent = sesion.promptDeSistema ?? '';
+      $('creacion').textContent = sesion.promptDeCreacion ?? 'No hay catálogo que mostrar.';
+    </script>
+  </body>
+</html>

@@ -1,0 +1,68 @@
+# Entorno local de la capa semántica: db, redis y api.
+# El compose no declara volumen para la base, pero la imagen `postgres` sí
+# declara uno anónimo para su directorio de datos, y ese sobrevive a recrear el
+# contenedor. Para volver a aplicar el esquema y el seed de docker/init hace
+# falta renovarlo:
+#   docker compose up -d --force-recreate --renew-anon-volumes db
+services:
+  db:
+    image: postgres:16
+    container_name: capa-semantica-db
+    environment:
+      POSTGRES_USER: capa
+      POSTGRES_PASSWORD: capa
+      POSTGRES_DB: capa_semantica
+    ports:
+      # 5433 en el host para no chocar con un Postgres local en 5432.
+      - "5433:5432"
+    volumes:
+      - ./docker/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U capa -d capa_semantica"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # Caché L2 compartida entre instancias del servicio. Sin volumen a propósito:
+  # una caché que sobrevive al reinicio no es una caché, es una base.
+  redis:
+    image: redis:7-alpine
+    container_name: capa-semantica-redis
+    ports:
+      - "6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # El servicio HTTP. Arranca después de que la base esté sana porque lo
+  # primero que hace es introspectar el esquema para registrar las definiciones
+  # con snapshot: sin base no puede validar el contrato y no debe escuchar.
+  #
+  # De Redis también espera a que esté sano, pero por comodidad y no por
+  # necesidad: si Redis no está, el servicio arranca igual y sirve con sólo L1.
+  api:
+    build: .
+    container_name: capa-semantica-api
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      # Dentro de la red de compose la base es `db:5432` y Redis `redis:6379`;
+      # el 5433 y el 6380 son sólo la publicación al host.
+      DATABASE_URL: postgres://capa:capa@db:5432/capa_semantica
+      REDIS_URL: redis://redis:6379
+      PORT: "3000"
+      # Log por consulta: el servicio escribe una línea JSON por consulta en
+      # stdout (`docker compose logs -f api`). Por defecto esa línea NO lleva el
+      # SQL, que nombra tablas y columnas físicas; descomentar para verlo en
+      # desarrollo. Ver README, "Ver qué se hace, en vivo".
+      # LOG_SQL: "true"
+      # Tokens de demo (ver .env.example): valores falsos y públicos a
+      # propósito. La autenticación real está fuera de alcance.
+      DEMO_TOKENS: '{"demo-dashboard-empresa-a":{"companyId":1,"consumer":"dashboard"},"demo-api-empresa-a":{"companyId":1,"consumer":"api"},"demo-agente-empresa-a":{"companyId":1,"consumer":"agent"},"demo-dashboard-empresa-b":{"companyId":2,"consumer":"dashboard"},"demo-interno-empresa-a":{"companyId":1,"consumer":"api","internal":true},"demo-dashboard-empresa-c":{"companyId":3,"consumer":"dashboard"},"demo-agente-empresa-c":{"companyId":3,"consumer":"agent"},"demo-interno-empresa-c":{"companyId":3,"consumer":"api","internal":true}}'
+    ports:
+      - "3000:3000"

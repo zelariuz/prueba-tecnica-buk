@@ -1,0 +1,118 @@
+// Telemetría del engine (CONTEXT.md, "Telemetría"): señales de monitoreo, no
+// medidas de negocio. Vive en memoria del proceso y se lee con `snapshot()`;
+// exportarla a Prometheus u OpenTelemetry está fuera de alcance y sería otra
+// implementación de esta misma interfaz.
+//
+// Lo que cuenta responde tres preguntas de plataforma (historia 31): cuántas
+// consultas se rechazan, con qué código y en qué puerta, y dónde se va el
+// tiempo de base. Todo desglosado por consumidor, que es quien tiene
+// presupuesto.
+export function crearTelemetria() {
+  let contadores = vacios();
+
+  function sumar(mapa, clave) {
+    if (clave === undefined) return;
+    mapa[clave] = (mapa[clave] ?? 0) + 1;
+  }
+
+  function porConsumidor(consumer) {
+    const clave = consumer ?? 'desconocido';
+    contadores.byConsumer[clave] ??= { ok: 0, error: 0, cacheHits: 0, cacheMisses: 0 };
+    return contadores.byConsumer[clave];
+  }
+
+  return {
+    // Una respuesta servida. `dbMs` ausente significa que no hubo consulta a la
+    // base —la respuesta salió de la caché—, y por eso no suma al contador de
+    // base: si contara con 0 ms, el promedio de tiempo de base mentiría hacia
+    // abajo justamente cuando la caché está funcionando.
+    registrarOk({ consumer, dbMs }) {
+      contadores.total += 1;
+      contadores.byResult.ok += 1;
+      porConsumidor(consumer).ok += 1;
+      if (dbMs === undefined) return;
+      contadores.database.count += 1;
+      contadores.database.totalMs += dbMs;
+    },
+
+    // `gate` es la puerta del pipeline que cortó: es lo que dice si los
+    // rechazos son del vocabulario del consumidor o del presupuesto.
+    registrarError({ consumer, code, gate }) {
+      contadores.total += 1;
+      contadores.byResult.error += 1;
+      porConsumidor(consumer).error += 1;
+      sumar(contadores.byErrorCode, code);
+      sumar(contadores.byGate, gate);
+    },
+
+    // La puerta de caché: `hit` cuando la entrada estaba, `miss` cuando hubo
+    // que ir a la base. Se cuenta aparte de `registrarOk` porque un hit y un
+    // miss son el mismo evento servido —las dos respuestas son `ok`— y lo que
+    // se quiere medir es cuántas de ellas se ahorraron la base. Un engine sin
+    // caché no llama a esta función: sin caché no hay miss que reportar, y un
+    // hit ratio de 0 sobre nada diría algo falso.
+    registrarCache({ consumer, resultado, nivel }) {
+      const esHit = resultado === 'hit';
+      contadores.cache[esHit ? 'hits' : 'misses'] += 1;
+      porConsumidor(consumer)[esHit ? 'cacheHits' : 'cacheMisses'] += 1;
+      // De qué nivel salió el hit. Un hit de L1 no salió del proceso y uno de L2
+      // cruzó la red: contarlos juntos deja invisible lo único que dice si la L2
+      // sirve de algo —cuántas respuestas se ahorraron la base gracias a lo que
+      // ya había calculado otra instancia—. Un miss no tiene nivel.
+      if (esHit) sumar(contadores.cache.porNivel, nivel);
+    },
+
+    // Un fallo de la caché, por nivel. No es un error de la consulta —la
+    // respuesta salió igual— así que no toca `byResult`: es la señal de que un
+    // nivel de caché está caído y que la base está recibiendo tráfico que no
+    // debería. Contarlo aparte es lo que permite ver un Redis muerto antes de
+    // que se note como latencia.
+    registrarErrorDeCache({ nivel }) {
+      sumar(contadores.cacheErrors, nivel ?? 'cache');
+    },
+
+    // El cliente cerró la conexión antes de recibir la respuesta. No se cancela
+    // la consulta (decisión: lo ya formulado se termina y se cachea, así el
+    // retry es un hit); se cuenta, porque es la señal adelantada de un
+    // dashboard que refresca demasiado o de un timeout del lado cliente más
+    // corto que el presupuesto. Por consumidor, como todo lo demás.
+    registrarClienteSeFue({ consumer }) {
+      sumar(contadores.clientGone, consumer ?? 'desconocido');
+    },
+
+    snapshot() {
+      const copia = structuredClone(contadores);
+      const consultadas = copia.cache.hits + copia.cache.misses;
+      // Sin consultas por la caché el ratio es 0 y no NaN: quien lo grafique no
+      // tiene que defenderse de una división por cero.
+      copia.cache.hitRatio = consultadas === 0 ? 0 : copia.cache.hits / consultadas;
+      return copia;
+    },
+
+    reset() {
+      contadores = vacios();
+    },
+  };
+}
+
+function vacios() {
+  return {
+    total: 0,
+    byResult: { ok: 0, error: 0 },
+    byErrorCode: {},
+    byGate: {},
+    byConsumer: {},
+    // Hits y misses de la caché; el `hitRatio` lo calcula `snapshot()` a partir
+    // de estos dos, para que no haya dos números que puedan contradecirse.
+    cache: { hits: 0, misses: 0, porNivel: {} },
+    // Fallos de la caché por nivel (`cache-l2`, …). Una caché caída no rechaza
+    // ninguna consulta, así que sin este contador sería invisible.
+    cacheErrors: {},
+    // Suma y cuenta en vez de histograma: con las dos se saca el promedio, y
+    // los percentiles son trabajo del exportador, que está fuera de alcance.
+    database: { count: 0, totalMs: 0 },
+    // Clientes que se fueron antes de la respuesta, por consumidor. La consulta
+    // igual se sirvió y contó en `byResult`; esto mide lo que nadie leyó.
+    clientGone: {},
+  };
+}

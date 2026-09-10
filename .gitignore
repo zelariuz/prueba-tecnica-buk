@@ -1,0 +1,6 @@
+node_modules/
+.env
+
+# Sesión nombrada de Claude Code que crea la demo: uuid, versión y huella del
+# catálogo con el que se creó.
+demo-agente/.sesion.json
