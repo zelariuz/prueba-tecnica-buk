@@ -342,7 +342,7 @@ cada CTE de su SQL lleva `company_id = $1` y que todas devuelven filas.
 
 ## El servicio HTTP
 
-Dos rutas, sin framework (`node:http`). La capa es delgada a propósito: traduce
+Tres rutas, sin framework (`node:http`). La capa es delgada a propósito: traduce
 el token a contexto de sesión `{ companyId, consumer }` (ADR 0002), delega en el
 engine y traduce el error estructurado a su código HTTP. No valida miembros, no
 arma SQL y no decide presupuestos.
@@ -352,6 +352,7 @@ arma SQL y no decide presupuestos.
 | `POST /analytics/query` | Ejecuta una consulta declarativa. Devuelve `{ rows, meta }`. |
 | `POST /analytics/query?dryRun=true` | Devuelve `{ params, plan }` sin tocar la base; agrega `sql` sólo si el token es de una sesión interna. |
 | `GET /analytics/catalog` | Devuelve la vista **pública** del catálogo (nunca la interna). |
+| `GET /analytics/telemetry` | Contadores del proceso, tabla de presupuestos y tiempo encendido. **Sólo con un token de sesión interna**; cualquier otro token conocido recibe 403. |
 
 El `dryRun` viaja en la URL y no en el cuerpo a propósito: el cuerpo es la
 consulta declarativa y nada más, así que pedirlo no cambia su forma ni, por lo
@@ -363,7 +364,8 @@ variable `DEMO_TOKENS` en JSON —`{ token → { companyId, consumer, internal? 
 valores falsos y públicos, ver `.env.example`—. En producción esa función se
 reemplaza por el verificador de tokens de la plataforma y nada más cambia.
 `internal` es opcional y por defecto falsa; sólo la trae `demo-interno-empresa-a`,
-y lo único que abre es el SQL del dry-run. Va en el token y no en la consulta
+y lo que abre son el SQL del dry-run y `GET /analytics/telemetry`. Va en el
+token y no en la consulta
 justamente para que un consumidor no pueda pedírsela solo (ADR 0002).
 
 ```bash
@@ -394,6 +396,7 @@ queda en el log del servidor.
 | --- | --- |
 | 401 | `MISSING_TENANT` (sin token o token desconocido) |
 | 400 | `FORBIDDEN_FIELD`, `UNKNOWN_MEMBER`, `NO_JOIN_PATH`, `INVALID_OPERATOR`, `UNSUPPORTED_OPERATOR`, `MULTI_ENTITY_MEASURES`, `MISSING_TIME_RANGE`, `INVALID_CONSUMER`, `UNKNOWN_QUERY`, `MISSING_PARAM`, `INVALID_JSON` |
+| 403 | `FORBIDDEN` (el token se reconoció, pero su sesión no es interna) |
 | 413 | `PAYLOAD_TOO_LARGE` (el cuerpo pasó los 64 KiB) |
 | 503 | `SCHEMA_DRIFT` (la base ya no calza con el catálogo), `SOURCE_UNAVAILABLE` (la base de la fuente no responde; la respuesta lleva `Retry-After: 5`) |
 | 504 | `QUERY_TIMEOUT` |
@@ -590,6 +593,40 @@ del engine que cambian el resultado sin cambiar la consulta —sobre todo el
 **límite efectivo**, que lo pone el presupuesto de la clase de consumidor—: si la
 identidad no lo mirara, el tablero (techo de 5000 filas) le dejaría servida a la
 API (10000) una entrada recortada.
+
+### Leerla por HTTP
+
+`GET /analytics/telemetry` publica los mismos contadores, la tabla de
+presupuestos por clase y cuánto lleva encendido el proceso. **Sólo para una
+sesión interna**: es la misma marca `internal` del token que abre el SQL del
+dry-run, y por la misma razón —cada consumidor ve lo suyo; qué pide el resto es
+información de operación—. Sin token conocido es 401 como todo lo demás; con un
+token conocido que no es interno, 403 `FORBIDDEN`.
+
+Es de lectura y nada más: **no hay reset por HTTP**. Los contadores viven
+mientras viva el proceso, y reiniciarlos desde afuera dejaría a cualquiera
+borrando la única evidencia de lo que pasó (con varias instancias, además, sin
+saber a cuál se le borró).
+
+```bash
+curl -s -H 'Authorization: Bearer demo-interno-empresa-a' \
+  http://localhost:3000/analytics/telemetry
+# → {"telemetry":{"total":1,"byResult":{"ok":1,"error":0},…,
+#                 "byConsumer":{"agent":{"ok":1,"error":0,"cacheHits":0,"cacheMisses":1}},
+#                 "cache":{"hits":0,"misses":1,"porNivel":{},"hitRatio":0},
+#                 "database":{"count":1,"totalMs":4.34},"clientGone":{}},
+#    "budgets":{"dashboard":{"timeoutMs":5000,"maxFilas":5000,"rangoObligatorio":false,"cacheTtlMs":60000},
+#               "api":{…,"maxFilas":10000},"agent":{"timeoutMs":10000,"maxFilas":1000,…}},
+#    "process":{"uptimeMs":11180,"startedAt":"2026-09-10T01:46:41.375Z"}}
+
+# Con un token de consumidor
+curl -s -H 'Authorization: Bearer demo-agente-empresa-a' \
+  http://localhost:3000/analytics/telemetry
+# → {"code":"FORBIDDEN","suggestion":"La telemetría del servicio sale sólo para una sesión interna…"}
+```
+
+La `demo-agente/` la usa: su panel al pie del rastro muestra el presupuesto de
+cada clase y los contadores por consumidor después de cada ejecución.
 
 ## Caché
 

@@ -73,6 +73,7 @@ Convención de la columna Resultado: **OK (auto)** = verificado con tests, demo 
 | A15 | Disc. 25 | Registrar dos veces la misma entidad con otra definición es INVALID_DEFINITION; con la misma, idempotente | tests `catalog.test.js` | OK (auto) |
 | A16 | QA 08-09 | El plan lógico del dry-run describe los joins por relación (`via`) y no por columnas | hallazgo del QA; corregido con test; curl posterior sin employee_id ni department_id | OK (auto) |
 | A17 | ADR 0010 | Una consulta sin medidas devuelve los valores distintos de sus dimensiones: `GROUP BY` sin agregados, con el filtro de empresa en la CTE y el LIMIT de la clase; sin medidas ni dimensiones sigue siendo 400 | snapshot `valores-de-dimension.sql`; tests `plan/run/cache/sqlite/http`; curl `{"dimensions":["departments.name"]}` con `demo-agente-empresa-a` → 200 Ingeniería y Ventas | OK (auto) |
+| A18 | Telemetría HTTP | `GET /analytics/telemetry` sale sólo para una sesión interna y trae contadores, presupuestos y uptime; no hay reset por HTTP | curl 09-09 contra Docker: sin token → 401 MISSING_TENANT, `demo-agente-empresa-a` → 403 FORBIDDEN, `demo-interno-empresa-a` → 200 con `telemetry.total` 1, `budgets.agent.maxFilas` 1000 y `process.startedAt`; tests en `http.test.js` | OK (auto) |
 
 ## Revisión manual de Bastián
 

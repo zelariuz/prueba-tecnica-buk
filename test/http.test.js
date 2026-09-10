@@ -263,6 +263,57 @@ describe('capa HTTP', { ...conBase, timeout: 10_000 }, () => {
     assert.match(sql, /performance_reviews/);
     assert.equal(plan.entity, 'reviews');
   });
+
+  // Telemetría por HTTP (09-09): los contadores del proceso y la tabla de
+  // presupuestos salen por una ruta más, y sólo para una sesión interna — la
+  // misma marca que abre el SQL del dry-run. Quien no puede ver el esquema
+  // físico tampoco tiene por qué ver qué pide el resto de los consumidores.
+  it('la telemetría sin token conocido es 401, como todo lo demás', async () => {
+    const respuesta = await fetch(`${base}/analytics/telemetry`);
+
+    assert.equal(respuesta.status, 401);
+    assert.equal((await respuesta.json()).code, 'MISSING_TENANT');
+  });
+
+  it('un token conocido que no es interno recibe 403 FORBIDDEN', async () => {
+    const respuesta = await fetch(`${base}/analytics/telemetry`, {
+      headers: { authorization: `Bearer ${TOKEN_A}` },
+    });
+
+    assert.equal(respuesta.status, 403);
+    const { code, suggestion } = await respuesta.json();
+    assert.equal(code, 'FORBIDDEN');
+    assert.match(suggestion, /interna/);
+  });
+
+  it('el token interno recibe los contadores del proceso y los presupuestos', async () => {
+    // Una consulta antes: la telemetría es del proceso y lo que cuenta es lo
+    // que ya pasó por él.
+    await fetch(`${base}/analytics/query`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${TOKEN_A}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ measures: ['reviews.count'] }),
+    });
+
+    const respuesta = await fetch(`${base}/analytics/telemetry`, {
+      headers: { authorization: `Bearer ${TOKEN_INTERNO}` },
+    });
+
+    assert.equal(respuesta.status, 200);
+    const { telemetry, budgets, process: proceso } = await respuesta.json();
+    assert.ok(telemetry.total >= 1, 'la telemetría del proceso ya contó consultas');
+    assert.equal(typeof telemetry.byResult.ok, 'number');
+    assert.equal(typeof telemetry.cache.hitRatio, 'number');
+    assert.ok(Object.hasOwn(telemetry.byConsumer, 'dashboard'), 'desglosada por consumidor');
+    // La tabla de presupuestos tal cual la declara `src/budgets.js`: es lo que
+    // explica por qué a un consumidor se le recorta la salida y a otro no.
+    assert.equal(budgets.agent.maxFilas, 1000);
+    assert.equal(budgets.agent.timeoutMs, 10_000);
+    assert.equal(budgets.dashboard.cacheTtlMs, 60_000);
+    assert.equal(budgets.api.maxFilas, 10_000);
+    assert.ok(proceso.uptimeMs >= 0);
+    assert.match(proceso.startedAt, /^\d{4}-\d{2}-\d{2}T/);
+  });
 });
 
 // Límite del cuerpo: un cuerpo gigante no puede crecer sin techo en memoria del

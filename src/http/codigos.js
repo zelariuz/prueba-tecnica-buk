@@ -24,10 +24,15 @@
 //     fuente no respondió a la conexión. A diferencia del `QUERY_TIMEOUT`, aquí
 //     volver más tarde con la misma consulta sí puede funcionar, así que el
 //     servicio lo dice con la cabecera en vez de dejar que el cliente adivine.
+//   * `FORBIDDEN` es 403 y no 404: el token se reconoció y la sesión existe, lo
+//     que falta es que sea interna. Esconder la ruta con un 404 le mentiría a
+//     una herramienta del equipo que sólo tiene el token equivocado. Nace en la
+//     capa HTTP, como `INVALID_JSON`: ninguna puerta del engine llega a opinar.
 //   * `INVALID_DEFINITION` no está en la tabla a propósito: una definición mal
 //     declarada es un error del servidor, no de quien consulta.
 export const CODIGOS_HTTP = {
   MISSING_TENANT: 401,
+  FORBIDDEN: 403,
   FORBIDDEN_FIELD: 400,
   UNKNOWN_MEMBER: 400,
   NO_JOIN_PATH: 400,

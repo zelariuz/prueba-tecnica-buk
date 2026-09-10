@@ -8,6 +8,11 @@ import { createServer } from 'node:http';
 import { SemanticError } from '../errors.js';
 import { CABECERAS_HTTP, CODIGOS_HTTP } from './codigos.js';
 import { crearTelemetria } from '../telemetry.js';
+import { presupuestos } from '../budgets.js';
+
+// El instante en que arrancó el proceso, calculado una sola vez: `process.uptime()`
+// se mueve a cada llamada y `startedAt` no debería moverse con él.
+const ARRANQUE = new Date(Date.now() - process.uptime() * 1000).toISOString();
 
 // `registrarFallo` es la costura por la que salen los errores no estructurados:
 // se escriben en el servidor y nunca en la respuesta. `telemetria` es la misma
@@ -66,11 +71,42 @@ export function crearServidor({
       return { estado: 200, cuerpo: catalog.describe(sesion) };
     }
 
+    // Los contadores del proceso y la tabla de presupuestos, para una sesión
+    // interna y sólo para ella: es la misma marca que abre el SQL del dry-run
+    // (ADR 0002, ADR 0008), y por la misma razón —quien consulta ve lo suyo;
+    // qué pide el resto de los consumidores es información de operación—.
+    // `internal` viene del token, nunca de la petición.
+    //
+    // Es de lectura y nada más: la telemetría es del proceso —los contadores
+    // viven mientras él viva— y no hay reset por HTTP. Reiniciarla desde afuera
+    // dejaría a cualquiera borrando la única evidencia de lo que pasó, y con
+    // varias instancias ni siquiera se sabría a cuál se le borró.
+    if (url.pathname === '/analytics/telemetry' && peticion.method === 'GET') {
+      if (sesion.internal !== true) {
+        throw new SemanticError({
+          code: 'FORBIDDEN',
+          suggestion:
+            'La telemetría del servicio sale sólo para una sesión interna: usa el token de una herramienta del equipo.',
+        });
+      }
+      return {
+        estado: 200,
+        cuerpo: {
+          telemetry: engine.telemetry(),
+          // La tabla tal cual la declara `src/budgets.js`: no se recalcula ni se
+          // resume acá, para que lo que se lee sea lo que el planificador aplica.
+          budgets: presupuestos,
+          process: { uptimeMs: Math.round(process.uptime() * 1000), startedAt: ARRANQUE },
+        },
+      };
+    }
+
     return {
       estado: 404,
       cuerpo: {
         code: 'NOT_FOUND',
-        suggestion: 'Rutas: POST /analytics/query y GET /analytics/catalog.',
+        suggestion:
+          'Rutas: POST /analytics/query, GET /analytics/catalog y GET /analytics/telemetry (sesión interna).',
       },
     };
   }

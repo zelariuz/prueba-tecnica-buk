@@ -82,10 +82,11 @@ src/
                              inyectable y reiniciable
   canonical.js               serialización canónica compartida (versión del
                              catálogo y queryId)
-  http/server.js             las dos rutas con node:http; token → ctx, techo de
+  http/server.js             las tres rutas con node:http (query, catalog y la
+                             telemetría interna); token → ctx, techo de
                              64 KiB al cuerpo y delega
-  http/codigos.js            mapa código de error → código HTTP (incluido 413) y
-                             cabeceras por código (Retry-After del 503)
+  http/codigos.js            mapa código de error → código HTTP (incluidos 403 y
+                             413) y cabeceras por código (Retry-After del 503)
   http/tokens.js             tabla de tokens de demo desde DEMO_TOKENS
   server.js                  bin del servicio `api`: introspecta, registra con
                              snapshot y escucha
@@ -341,7 +342,8 @@ curl -s -H 'Authorization: Bearer demo-dashboard-empresa-a' \
 
 ## Decisiones de la fase 6
 
-- La capa HTTP es `node:http` sin frameworks, con dos rutas y un solo trabajo:
+- La capa HTTP es `node:http` sin frameworks, con dos rutas (tres desde el
+  09-09, con la telemetría interna) y un solo trabajo:
   traducir el token a `{ companyId, consumer }` y delegar (ADR 0002). No valida
   miembros, no arma SQL y no decide presupuestos; si aparece una regla de
   negocio ahí, está en el lugar equivocado.
@@ -928,6 +930,30 @@ cómo va todo, el evento dice qué acaba de pasar.
   correcto y la capa se lo rechazaba con `INVALID_QUERY`.
 - **Regla de operación**: nunca abrir esa sesión de forma interactiva mientras
   el mini back la usa. Es el mismo uuid.
+
+## Telemetría por HTTP (09-09)
+
+`GET /analytics/telemetry` (`src/http/server.js`) devuelve
+`{ telemetry: engine.telemetry(), budgets: <la tabla de src/budgets.js tal
+cual>, process: { uptimeMs, startedAt } }`.
+
+- **Sólo sesión interna**: la misma marca `internal` del token que abre el SQL
+  del dry-run (ADR 0002, ADR 0008). Sin token conocido, `MISSING_TENANT` → 401,
+  como cualquier otra ruta; con un token conocido que no es interno, código
+  nuevo **`FORBIDDEN` → 403** (`src/http/codigos.js`). 403 y no 404: esconder la
+  ruta le mentiría a una herramienta del equipo que sólo trae el token
+  equivocado.
+- **De lectura y nada más**: la telemetría es del proceso y **no se reinicia por
+  HTTP**. Un reset expuesto dejaría a cualquiera borrando la única evidencia de
+  lo que pasó, y con varias instancias ni siquiera se sabría a cuál se le borró.
+- `budgets` sale de `src/budgets.js` sin recalcular ni resumir: lo que se lee es
+  exactamente lo que aplica el planificador. `startedAt` se calcula una vez al
+  cargar el módulo (`process.uptime()` se mueve a cada llamada y el instante de
+  arranque no).
+- Tests en `test/http.test.js` por el servidor de prueba: 401 sin token, 403 con
+  el token `dashboard`, 200 con el interno y la forma de la respuesta
+  (`telemetry.total` ≥ 1 después de una consulta, `budgets.agent.maxFilas` 1000).
+- La consume la demo (`demo-agente`, `GET /api/telemetria`): ver "Demo agente".
 
 ## Estado
 

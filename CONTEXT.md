@@ -116,6 +116,10 @@ equivalente en Cube, se indica para facilitar la lectura al equipo.
   dirección de orden que no es `asc`/`desc` o un `limit` que no es entero
   positivo. Es la puerta de forma, antes de mirar el catálogo),
   `INVALID_CONSUMER` (clase de consumidor desconocida o ausente en el contexto),
+  `FORBIDDEN` (el token se reconoció pero su sesión no es interna: la
+  telemetría por HTTP sale sólo para una herramienta del equipo. Es 403 y no
+  404 —esconder la ruta le mentiría a quien sólo tiene el token equivocado— y
+  nace en la capa HTTP, como `INVALID_JSON`),
   `QUERY_TIMEOUT` (la ejecución superó el timeout del presupuesto),
   `SCHEMA_DRIFT` (el SQL nombró una tabla o columna que la base ya no tiene: el
   esquema cambió debajo del catálogo y hay que re-registrar las definiciones),
