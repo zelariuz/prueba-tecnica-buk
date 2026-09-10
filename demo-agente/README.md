@@ -72,7 +72,8 @@ token elegido no es el de la empresa A.
 ## Qué muestra
 
 Los saltos se numeran en la página según el rastro real: sin agente son dos
-(el 2 y el 3 de esta lista), con agente son tres, o cinco si hubo corrección.
+(el 2 y el 3 de esta lista), con agente son tres, cuatro si además redacta, y
+cinco si hubo corrección.
 
 - **Salto 1 — al agente** — `claude -p --resume agente-buk`, solo con la casilla
   marcada. Enviado: el texto en lenguaje natural (el editado, si lo hay) más
@@ -93,6 +94,25 @@ Los saltos se numeran en la página según el rastro real: sin agente son dos
   escribió primero. Un segundo rechazo termina el rastro; nunca hay un tercer
   intento. Si la corrección es `noPuedo`, termina ahí. Lo que sigue a la
   corrección es otro salto 3, marcado "consulta (corregida)".
+- **Salto 4 — redacción** (opcional, casilla "Redactar la respuesta", solo con
+  agente) — el mismo agente, la misma sesión bifurcada, un segundo momento:
+  ahora recibe la pregunta original y las filas que devolvió la capa y escribe
+  **una o dos frases** en texto plano. Enviado: el prompt de
+  `promptDeRedaccion` —la pregunta tal cual viajó en el salto 1, las filas como
+  JSON (tope **50 filas**; si había más, el prompt dice "se muestran 50 de N"),
+  `servedFrom` y `asOf`, y el contrato: español, texto plano, los números de las
+  filas tal cual (sin redondear a más de dos decimales), sin inventar ningún
+  número ni categoría, sin nombrar SQL ni JSON, sin markdown, y si las filas
+  están vacías decirlo—. Recibido: el texto crudo; `ejecutar` **no** lo parsea.
+  La frase aparece arriba del resumen como "Respuesta del agente: …".
+  Al modelo llegan **sólo el catálogo público y filas agregadas por empresa**:
+  la capa no publica filas crudas ni columnas personales, y el prompt lo dice.
+  Cuesta ~0,003 USD y 3-5 s, y **nunca corta el rastro**: si el agente falla o
+  devuelve vacío, el salto queda en `fallo` y las filas siguen ahí — la
+  respuesta ya estaba, redactarla es un extra. Sólo hay redacción si el último
+  salto de consulta terminó `ok` con `rows`: un rechazo, un `noPuedo` o un fallo
+  no dejan nada que redactar. En la petición es `redactar` (POST) o
+  `redactar=1` (GET), y sólo tiene efecto junto a `usarAgente`.
 
 Un `noPuedo` del agente deja el rastro en un solo salto y la capa no se toca.
 Un texto que no es JSON queda como salto `fallo` con lo crudo a la vista: para
@@ -275,7 +295,8 @@ preguntas.json      las 12 preguntas preparadas (datos, no código)
 src/ejecutar.js     el seam: petición → rastro de saltos
 src/sesion.js       el seam: crear/conservar/recrear la sesión, prompt y huella
 src/protocolo.js    las palabras que se cruzan con el agente: prompt del clic,
-                    prompt de corrección y lectura del JSON que devuelve
+                    prompt de corrección, prompt de redacción y lectura del
+                    JSON que devuelve
 src/preguntas.js    busca la preparada y sustituye :desde, :hasta, :departamento
 src/consumidores.js los pares de tokens de demo (uno por empresa), sus etiquetas
                     y los rangos precargados; y el mapa nombre → valor del .env

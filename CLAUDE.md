@@ -872,6 +872,26 @@ cómo va todo, el evento dice qué acaba de pasar.
   consulta tipo del caso, y la pregunta 1 daba 3,4 en 2025-04-01 y filas de
   Ventas de más. Con eso da 4,35/2 y 3,8/1, igual que el seed. No cambia la
   versión del catálogo ni los snapshots de SQL.
+- **Salto opcional de redacción** (10-09, discusión 24): la casilla "Redactar la
+  respuesta" —al lado de "usar agente", deshabilitada sin ella— agrega un cuarto
+  salto `agente — redacción` después de la consulta que trajo filas. Es el
+  **mismo modelo en un segundo momento**: primero tradujo la pregunta a JSON,
+  ahora recibe la pregunta original y las filas y escribe una o dos frases.
+  `promptDeRedaccion(pregunta, filas, meta)` en `src/protocolo.js` (pura): la
+  pregunta tal cual viajó en el salto 1, las filas como JSON con **tope de 50**
+  (más allá dice "se muestran 50 de N"), `servedFrom`/`asOf` y el contrato
+  (español, texto plano, los números tal cual sin redondear a más de dos
+  decimales, nada inventado, sin nombrar SQL ni JSON, sin markdown, y decir si
+  no hay filas). **Al LLM sólo llegan el catálogo público y filas agregadas por
+  empresa**, nunca filas crudas ni columnas personales. La salida es texto y
+  `ejecutar` NO la parsea; el adaptador es el mismo `crearAgente`. Sólo redacta
+  si el último salto de consulta (el 3 o el corregido) terminó `ok` con `rows`;
+  un rechazo, un `noPuedo` o un fallo no dejan nada que redactar. Nunca corta el
+  rastro: fallo o texto vacío dejan el salto en `fallo` con las filas intactas.
+  En la petición es `redactar` (POST) o `redactar=1` (GET), sólo con
+  `usarAgente`, y suma 1 a `saltosPrevistos`. La frase se muestra arriba del
+  resumen ("Respuesta del agente: …", con `textContent`). Cuesta ~0,003 USD y
+  3-5 s por salto.
 - **Estados del rastro**: `ok`, `rechazo`, `fallo`. Un `{"noPuedo": …}` del
   agente sale como `rechazo` igual que un 4xx de la capa —el `destino` del salto
   dice de quién viene—; un 5xx es `fallo`, porque ahí no hay JSON que corregir.
@@ -995,7 +1015,7 @@ cual>, process: { uptimeMs, startedAt } }`.
 Rango sin granularidad (10-09 madrugada, ADR 0011): una `timeDimension` con
 `dateRange` y sin `granularity` sólo filtra por fecha. La raíz corre **215 tests
 en verde** con `DATABASE_URL` y `REDIS_URL`, y **133 sin nada** (1 se salta);
-`demo-agente` corre sus **53** aparte. Snapshot nuevo
+`demo-agente` corre sus **62** aparte (9 nuevos del salto de redacción). Snapshot nuevo
 `test/snapshots/rango-sin-granularidad.sql`; los cuatro anteriores sin cambios.
 Verificado contra Docker (`docker compose up -d --build api`): la tasa de
 asistencia por departamento de junio a agosto de 2025 con `demo-agente-empresa-a`
