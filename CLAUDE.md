@@ -181,7 +181,9 @@ corre la demo y explícame el caso obligatorio; después corre los tests". Orden
 4. Sólo si lo piden, la demo del agente: `cd demo-agente && npm install &&
    npm start` (necesita Claude Code logueado; cada clic gasta crédito) en
    `http://localhost:3100`; no va en el compose.
-5. Al terminar, `docker compose down` (y Ctrl+C a la demo del agente si corre).
+5. Al terminar, ofrece bajar todo con `docker compose down` (y Ctrl+C a la
+   demo del agente si corre); no lo hagas sin preguntar, el revisor puede
+   querer seguir con los `curl` del README.
 
 ## Comandos
 
