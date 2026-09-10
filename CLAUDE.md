@@ -989,10 +989,11 @@ en verde** con `DATABASE_URL` y `REDIS_URL` (contra Docker, el rol `capa` sí
 puede ejecutar `pg_control_system()`: origen `motor`), 114 sin nada (1 se
 salta). Snapshots de SQL sin cambios.
 
-Al 09-09, con el test del `query` de las consultas tipo en la vista pública: la
-raíz corre **180 tests en verde** con `DATABASE_URL` y `REDIS_URL`, y **115 sin
-nada** (1 se salta). `demo-agente` corre sus **39** aparte. Snapshots de SQL sin
-cambios.
+Al cierre del 09-09 (query de consultas tipo en la vista pública, empresa C,
+rango opcional ADR 0009, consultas sin medida ADR 0010, telemetría por HTTP): la
+raíz corre **204 tests en verde** con `DATABASE_URL` y `REDIS_URL`, y **125 sin
+nada** (1 se salta). `demo-agente` corre sus **52** aparte. Los tres snapshots
+de SQL originales sin cambios; uno nuevo (`valores-de-dimension.sql`).
 
 Log por consulta terminado (08-09): el engine emite un evento por `run` y por
 `plan` por la costura `observar`, y el servicio `api` lo escribe como una línea
