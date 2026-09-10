@@ -472,3 +472,41 @@ describe('identidad de la fuente SQLite', () => {
     }
   });
 });
+
+// ADR 0010: la consulta sin medidas es del planificador, no del motor. El
+// segundo dialecto la responde con las mismas filas, que es lo que prueba que
+// el GROUP BY sin agregados no se apoyó en nada propio de Postgres.
+describe('valores distintos de una dimensión contra SQLite', () => {
+  let pool;
+
+  before(() => {
+    pool = baseDelCaso();
+  });
+
+  after(() => {
+    pool.cerrar();
+  });
+
+  it('devuelve los mismos departamentos de la empresa A que Postgres', async () => {
+    const { engine } = await armar(pool);
+
+    const { rows } = await engine.run(
+      { dimensions: ['departments.name'], order: { 'departments.name': 'asc' } },
+      { companyId: EMPRESA_A, consumer: 'dashboard' },
+    );
+
+    assert.deepEqual(rows, [{ 'departments.name': 'Ingeniería' }, { 'departments.name': 'Ventas' }]);
+  });
+
+  it('el SQL no lleva ninguna función de agregación y sí el GROUP BY', async () => {
+    const { engine } = await armar(pool);
+
+    const { sql } = engine.plan(
+      { dimensions: ['departments.name'] },
+      { companyId: EMPRESA_A, consumer: 'dashboard' },
+    );
+
+    assert.match(sql, /GROUP BY departments\.name/);
+    assert.ok(!/COUNT|AVG|SUM/.test(sql), 'sin medidas no hay nada que agregar');
+  });
+});

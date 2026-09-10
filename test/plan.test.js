@@ -947,13 +947,10 @@ test('equals con un solo valor sigue emitiendo la misma comparación', () => {
 // `granularity` mal escrito, `order: 'ASC'`— salía como 500 con un mensaje que
 // culpaba al servidor. `INVALID_QUERY` es la puerta de forma: se rechaza sin
 // mirar el catálogo, con `member` y sugerencia como cualquier otro error.
-test('una consulta sin medidas se rechaza con INVALID_QUERY', () => {
-  for (const consulta of [
-    {},
-    { measures: [] },
-    { measures: 'reviews.count' },
-    { dimensions: ['departments.name'] },
-  ]) {
+// Desde el ADR 0010 la consulta sin `measures` es válida si pide dimensiones;
+// lo que sigue sin existir es la consulta que no pide nada.
+test('una consulta que no pide nada se rechaza con INVALID_QUERY', () => {
+  for (const consulta of [{}, { measures: [] }, { measures: [], timeDimensions: [] }]) {
     const error = errorDe(() => engineDePrueba().plan(consulta, CTX));
     assert.equal(error.code, 'INVALID_QUERY', JSON.stringify(consulta));
     assert.equal(error.member, 'measures');
@@ -962,7 +959,7 @@ test('una consulta sin medidas se rechaza con INVALID_QUERY', () => {
 });
 
 test('las listas de la consulta tienen que ser listas', () => {
-  for (const campo of ['dimensions', 'segments', 'filters', 'timeDimensions']) {
+  for (const campo of ['measures', 'dimensions', 'segments', 'filters', 'timeDimensions']) {
     const error = errorDe(() =>
       engineDePrueba().plan({ measures: ['reviews.count'], [campo]: 'reviews.status' }, CTX),
     );
@@ -1013,11 +1010,110 @@ test('un limit que no es un entero positivo se rechaza con INVALID_QUERY', () =>
   }
 });
 
-test('sin medidas nadie pregunta por la fuente: el error es del consumidor y no del servidor', () => {
+test('la consulta vacía no pregunta por la fuente: el error es del consumidor y no del servidor', () => {
   // Antes, una consulta sin medidas llegaba a resolver la fuente de
   // `medidas[0]?.entidad` —`undefined`— y salía como error de configuración del
   // servidor ("está mal armado el servidor"), que es un diagnóstico falso.
-  const error = errorDe(() => engineDePrueba().plan({ dimensions: ['reviews.status'] }, CTX));
+  // Desde el ADR 0010 la que no tiene entidad de hechos de dónde salir es la
+  // consulta que no pide nada; la que pide dimensiones la saca de la primera.
+  const error = errorDe(() => engineDePrueba().plan({}, CTX));
   assert.equal(error.code, 'INVALID_QUERY');
   assert.doesNotMatch(error.suggestion, /engine|configurada/);
+});
+
+// --- ADR 0010: una consulta sin medidas es el GROUP BY sin agregados, o sea
+// los valores distintos de sus dimensiones. Hasta el 09-09 la puerta de forma
+// la rechazaba con INVALID_QUERY: "cuáles departamentos hay" no tenía
+// traducción y el agente de la demo se quedaba sin JSON que escribir.
+
+const valoresDeDimension = {
+  dimensions: ['departments.name'],
+  order: { 'departments.name': 'asc' },
+};
+
+const TABLERO = { companyId: EMPRESA, consumer: 'dashboard' };
+
+test('una consulta sin medidas agrupa por sus dimensiones y no agrega nada', () => {
+  const { sql, params } = engineDePrueba().plan(valoresDeDimension, TABLERO);
+
+  // Cuarto snapshot legible del repo: la consulta de valores distintos, con su
+  // CTE filtrada por empresa, su GROUP BY y su LIMIT, y sin una sola función de
+  // agregación.
+  const esperado = readFileSync(
+    new URL('./snapshots/valores-de-dimension.sql', import.meta.url),
+    'utf8',
+  );
+  assert.equal(sql, esperado.trimEnd());
+  assert.deepEqual(params, [EMPRESA, 5000]);
+});
+
+test('sin medidas la entidad de hechos es la de la primera dimensión', () => {
+  const { plan } = engineDePrueba().plan(valoresDeDimension, TABLERO);
+
+  assert.equal(plan.entity, 'departments');
+  assert.deepEqual(plan.measures, []);
+  assert.deepEqual(plan.baseMeasures, []);
+  assert.deepEqual(plan.dimensions, ['departments.name']);
+  assert.deepEqual(plan.joins, []);
+});
+
+test('sin medidas ni dimensiones la consulta sigue siendo INVALID_QUERY', () => {
+  for (const consulta of [{}, { measures: [] }, { measures: [], dimensions: [] }]) {
+    const error = errorDe(() => engineDePrueba().plan(consulta, CTX));
+    assert.equal(error.code, 'INVALID_QUERY', JSON.stringify(consulta));
+    assert.equal(error.member, 'measures');
+    assert.match(error.suggestion, /al menos una medida o una dimensión/);
+  }
+});
+
+test('sin medidas las dimensiones de otra entidad se alcanzan por el mismo camino de joins', () => {
+  const { sql, plan } = engineDePrueba().plan(
+    { dimensions: ['employees.active', 'departments.name'] },
+    TABLERO,
+  );
+
+  assert.equal(plan.entity, 'employees');
+  assert.match(sql, /JOIN departments ON employees\.department_id = departments\.id/);
+  assert.match(sql, /GROUP BY employees\.active, departments\.name/);
+  assert.ok(!/COUNT|AVG|SUM/.test(sql), 'una consulta sin medidas no agrega nada');
+});
+
+test('sin medidas una dimensión inalcanzable desde la primera sigue siendo NO_JOIN_PATH', () => {
+  // `departments` no declara ninguna relación: pedir primero su dimensión deja
+  // a `employees` fuera del alcance del BFS. Es la consecuencia visible de que
+  // la entidad de hechos sea la de la PRIMERA dimensión.
+  const error = errorDe(() =>
+    engineDePrueba().plan({ dimensions: ['departments.name', 'employees.active'] }, TABLERO),
+  );
+
+  assert.equal(error.code, 'NO_JOIN_PATH');
+  assert.equal(error.member, 'employees');
+});
+
+test('sin dimensiones la entidad de hechos es la de la primera dimensión temporal', () => {
+  const { sql, plan } = engineDePrueba().plan(
+    {
+      timeDimensions: [{ dimension: 'reviews.period', granularity: 'year' }],
+      order: { 'reviews.period': 'asc' },
+    },
+    TABLERO,
+  );
+
+  assert.equal(plan.entity, 'reviews');
+  assert.deepEqual(plan.dimensions, ['reviews.period']);
+  assert.match(sql, /WITH reviews AS \(\n  SELECT period\n  FROM performance_reviews\n  WHERE company_id = \$1\n\)/);
+  assert.match(sql, /GROUP BY TO_CHAR\(DATE_TRUNC\('year', reviews\.period\), 'YYYY-MM-DD'\)/);
+});
+
+test('la consulta sin medidas sigue aislada por empresa dentro de cada CTE', () => {
+  const { sql, params } = engineDePrueba().plan(
+    { dimensions: ['employees.active', 'departments.name'] },
+    TABLERO,
+  );
+
+  for (const entidad of ['employees', 'departments']) {
+    assert.match(sql, new RegExp(`${entidad} AS \\(\\n[^)]*WHERE company_id = \\$1`));
+  }
+  assert.equal(params[0], EMPRESA);
+  assert.ok(!sql.includes(String(EMPRESA)), 'la empresa viaja como parámetro');
 });

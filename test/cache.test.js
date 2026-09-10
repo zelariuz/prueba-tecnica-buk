@@ -95,6 +95,27 @@ describe('caché L1 en memoria', { ...conBase, timeout: 15_000 }, () => {
     assert.equal(primera.meta.queryId, enLaOtra.meta.queryId, 'mismo queryId: es la llave la que separa');
   });
 
+  // ADR 0010: la consulta sin medidas es una consulta como cualquier otra para
+  // la identidad y la caché. Su `queryId` sale del SQL y sus parámetros, así
+  // que dos ejecuciones iguales lo comparten y la segunda no toca la base.
+  it('una consulta sin medidas tiene queryId reproducible y la segunda se sirve desde cache-l1', async () => {
+    const { engine } = armar({ cache: crearMemoryStore() });
+    const DEPARTAMENTOS = {
+      dimensions: ['departments.name'],
+      order: { 'departments.name': 'asc' },
+    };
+
+    const primera = await engine.run(DEPARTAMENTOS, DASHBOARD_A);
+    const segunda = await engine.run(DEPARTAMENTOS, DASHBOARD_A);
+
+    assert.equal(primera.meta.servedFrom, 'live');
+    assert.equal(segunda.meta.servedFrom, 'cache-l1');
+    assert.equal(segunda.meta.queryId, primera.meta.queryId);
+    // Literales del seed de la empresa 1.
+    assert.deepEqual(primera.rows.map((fila) => fila['departments.name']), ['Ingeniería', 'Ventas']);
+    assert.deepEqual(segunda.rows, primera.rows);
+  });
+
   it('contra la base real la identidad de la fuente sale del motor', async () => {
     const { engine } = armar({ cache: crearMemoryStore() });
     const identidad = await engine.identidadDeFuente('postgres');

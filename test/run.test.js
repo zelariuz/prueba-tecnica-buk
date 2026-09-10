@@ -917,3 +917,147 @@ describe('empleado activo', conBase, () => {
     );
   });
 });
+
+// --- ADR 0010: consultas sin medidas. Una consulta que sólo pide dimensiones
+// es un GROUP BY sin agregados: los valores distintos de esas dimensiones,
+// aislados por empresa y con el LIMIT de la clase como cualquier otra.
+describe('valores distintos de una dimensión (consulta sin medidas)', conBase, () => {
+  let pool;
+  let engine;
+
+  before(() => {
+    pool = new pg.Pool({ connectionString: DATABASE_URL });
+    const catalog = createCatalog();
+    for (const definicion of [reviews, employees, departments]) catalog.register(definicion);
+    engine = createEngine({ catalog, pool });
+  });
+
+  after(async () => {
+    await pool.end();
+  });
+
+  const nombres = (rows) => rows.map((fila) => fila['departments.name']);
+
+  const departamentos = {
+    dimensions: ['departments.name'],
+    order: { 'departments.name': 'asc' },
+  };
+
+  it('devuelve los departamentos del seed de la empresa A, sin ninguna medida', async () => {
+    const { rows, meta } = await engine.run(departamentos, {
+      companyId: EMPRESA_A,
+      consumer: 'dashboard',
+    });
+
+    // Literales del seed: la empresa 1 tiene dos departamentos.
+    assert.deepEqual(nombres(rows), ['Ingeniería', 'Ventas']);
+    assert.deepEqual(Object.keys(rows[0]), ['departments.name'], 'la fila no trae más columnas');
+    assert.equal(meta.servedFrom, 'live');
+  });
+
+  it('el limit de la consulta recorta los valores como en cualquier otra', async () => {
+    const { rows } = await engine.run(
+      { ...departamentos, limit: 1 },
+      { companyId: EMPRESA_A, consumer: 'dashboard' },
+    );
+
+    assert.deepEqual(nombres(rows), ['Ingeniería']);
+  });
+
+  it('los estados de evaluación del seed salen sin pedir reviews.count', async () => {
+    const { rows } = await engine.run(
+      { dimensions: ['reviews.status'], order: { 'reviews.status': 'asc' } },
+      { companyId: EMPRESA_A, consumer: 'dashboard' },
+    );
+
+    // Los tres estados del caso, en orden alfabético.
+    assert.deepEqual(
+      rows.map((fila) => fila['reviews.status']),
+      ['calibrated', 'completed', 'pending'],
+    );
+  });
+
+  it('dos dimensiones de entidades distintas se cruzan por el camino de joins', async () => {
+    const { rows } = await engine.run(
+      {
+        dimensions: ['employees.active', 'departments.name'],
+        order: { 'departments.name': 'asc', 'employees.active': 'desc' },
+      },
+      { companyId: EMPRESA_A, consumer: 'dashboard' },
+    );
+
+    // Calculado a mano sobre el seed de la empresa 1: los empleados 100 y 101
+    // son de Ingeniería y están activos; el 102 es de Ventas y está activo; el
+    // 103 es de Ventas y está inactivo. Tres combinaciones distintas.
+    assert.deepEqual(
+      rows.map((fila) => [fila['departments.name'], fila['employees.active']]),
+      [
+        ['Ingeniería', true],
+        ['Ventas', true],
+        ['Ventas', false],
+      ],
+    );
+  });
+
+  it('una dimensión temporal sola devuelve los períodos con datos, agrupados por su granularidad', async () => {
+    const { rows } = await engine.run(
+      {
+        timeDimensions: [
+          {
+            dimension: 'reviews.period',
+            granularity: 'year',
+            dateRange: ['2024-01-01', '2025-12-31'],
+          },
+        ],
+        order: { 'reviews.period': 'asc' },
+      },
+      { companyId: EMPRESA_A, consumer: 'dashboard' },
+    );
+
+    // El seed de la empresa 1 tiene evaluaciones en 2024 y en 2025.
+    assert.deepEqual(
+      rows.map((fila) => fila['reviews.period']),
+      ['2024-01-01', '2025-01-01'],
+    );
+  });
+
+  it('sin medidas ni dimensiones la consulta se rechaza con INVALID_QUERY', async () => {
+    await assert.rejects(
+      () => engine.run({}, { companyId: EMPRESA_A, consumer: 'dashboard' }),
+      (error) => {
+        assert.equal(error.code, 'INVALID_QUERY');
+        assert.equal(error.member, 'measures');
+        assert.match(error.suggestion, /al menos una medida o una dimensión/);
+        return true;
+      },
+    );
+  });
+
+  it('la empresa B no ve nada de la empresa A: el filtro de empresa está en la CTE', async () => {
+    // Las dos empresas tienen departamentos que se llaman igual, así que la
+    // prueba del aislamiento no puede ser el nombre: es el parámetro de empresa
+    // dentro de la CTE, y el cruce con empleados, que sí da distinto.
+    const { sql, params } = engine.plan(departamentos, {
+      companyId: EMPRESA_B,
+      consumer: 'dashboard',
+    });
+    assert.match(sql, /WHERE company_id = \$1/);
+    assert.equal(params[0], EMPRESA_B);
+
+    const conEmpleados = {
+      dimensions: ['employees.active', 'departments.name'],
+      order: { 'departments.name': 'asc' },
+    };
+    const { rows } = await engine.run(conEmpleados, { companyId: EMPRESA_B, consumer: 'dashboard' });
+
+    // El seed de la empresa 2: el empleado 200 en Ingeniería y el 201 en
+    // Ventas, los dos activos. Ninguno inactivo, al revés que la empresa 1.
+    assert.deepEqual(
+      rows.map((fila) => [fila['departments.name'], fila['employees.active']]),
+      [
+        ['Ingeniería', true],
+        ['Ventas', true],
+      ],
+    );
+  });
+});

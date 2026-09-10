@@ -190,11 +190,11 @@ describe('capa HTTP', { ...conBase, timeout: 10_000 }, () => {
   // Hallazgo 4: lo primero que prueba quien no conoce la API es una consulta
   // incompleta. Tiene que salir como error del consumidor (400) con su código,
   // nunca como 500 diciendo que el servidor está mal armado.
-  it('una consulta sin medidas responde 400 INVALID_QUERY y no 500', async () => {
+  it('una consulta que no pide nada responde 400 INVALID_QUERY y no 500', async () => {
     const respuesta = await fetch(`${base}/analytics/query`, {
       method: 'POST',
       headers: { authorization: `Bearer ${TOKEN_A}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ dimensions: ['departments.name'] }),
+      body: JSON.stringify({}),
     });
 
     assert.equal(respuesta.status, 400);
@@ -202,6 +202,24 @@ describe('capa HTTP', { ...conBase, timeout: 10_000 }, () => {
     assert.equal(cuerpo.code, 'INVALID_QUERY');
     assert.equal(cuerpo.member, 'measures');
     assert.ok(cuerpo.suggestion.length > 0, 'el error estructurado trae sugerencia');
+  });
+
+  // ADR 0010: la misma consulta que hasta el 09-09 salía como 400 —dimensiones
+  // sin medidas— es la que responde "cuáles departamentos hay".
+  it('una consulta con dimensiones y sin medidas responde 200 con los valores distintos', async () => {
+    const respuesta = await fetch(`${base}/analytics/query`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${TOKEN_A}`, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        dimensions: ['departments.name'],
+        order: { 'departments.name': 'asc' },
+      }),
+    });
+
+    assert.equal(respuesta.status, 200);
+    const cuerpo = await respuesta.json();
+    // Literales del seed de la empresa 1, no recalculados.
+    assert.deepEqual(cuerpo.rows, [{ 'departments.name': 'Ingeniería' }, { 'departments.name': 'Ventas' }]);
   });
 
   // Hallazgo 5: el dry-run entregaba el SQL —con los nombres de las tablas

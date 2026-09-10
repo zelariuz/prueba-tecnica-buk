@@ -26,10 +26,15 @@ const OPERADORES_DE_LISTA = new Set(['in', 'notIn']);
 // 3 del abogado del diablo). Se rechaza en vez de adivinar.
 const OPERADORES_DE_UN_VALOR = new Set(['equals', 'notEquals']);
 
-// Las listas opcionales de la consulta declarativa (ADR 0007). Se nombran juntas
-// porque la comprobación es la misma: si vienen, vienen como arreglo.
-// `measures` no está aquí: no es opcional y su ausencia tiene un mensaje propio.
-const LISTAS_DE_LA_CONSULTA = ['dimensions', 'segments', 'filters', 'timeDimensions'];
+// Las listas de la consulta declarativa (ADR 0007). Se nombran juntas porque la
+// comprobación es la misma: si vienen, vienen como arreglo. Ninguna es
+// obligatoria por sí sola desde el ADR 0010; lo obligatorio es que la consulta
+// pida algo, y eso se comprueba aparte.
+const LISTAS_DE_LA_CONSULTA = ['measures', 'dimensions', 'segments', 'filters', 'timeDimensions'];
+
+// Las tres listas que producen columnas de salida. Una consulta que no llena
+// ninguna no pide nada: no hay SQL que responda a eso.
+const LISTAS_QUE_PIDEN = ['measures', 'dimensions', 'timeDimensions'];
 
 // Direcciones de orden. Se interpolan en el SQL en mayúsculas, así que salen de
 // una lista cerrada y se escriben exactamente así: `ASC` no es `asc`.
@@ -47,7 +52,7 @@ function formaInvalida(member, suggestion) {
 // Puerta 1a · Forma de la consulta: lo que se puede rechazar sin catálogo, sin
 // esquema y sin base. Va antes de resolver miembros porque una consulta que no
 // tiene forma de consulta no tiene miembros que resolver: sin esta puerta, una
-// consulta sin `measures` terminaba preguntándole al catálogo por la fuente de
+// consulta que no pide nada terminaba preguntándole al catálogo por la fuente de
 // `undefined` y salía como error de configuración del servidor.
 function validarForma(query) {
   if (query === null || typeof query !== 'object' || Array.isArray(query)) {
@@ -57,16 +62,20 @@ function validarForma(query) {
     );
   }
 
-  if (!Array.isArray(query.measures) || query.measures.length === 0) {
-    throw formaInvalida(
-      'measures',
-      'Una consulta necesita al menos una medida: declara measures con los nombres de las medidas que quieres, por ejemplo ["reviews.count"].',
-    );
-  }
-
   for (const campo of LISTAS_DE_LA_CONSULTA) {
     if (query[campo] === undefined || Array.isArray(query[campo])) continue;
     throw formaInvalida(campo, `${campo} se declara como una lista; recibí ${typeof query[campo]}.`);
+  }
+
+  // Una consulta sin medidas es válida si pide dimensiones: es el GROUP BY sin
+  // agregados, o sea los valores distintos de esas dimensiones (ADR 0010). Lo
+  // que no existe es la consulta que no pide nada: sin medidas, sin dimensiones
+  // y sin dimensiones temporales no hay columna de salida que emitir.
+  if (LISTAS_QUE_PIDEN.every((campo) => (query[campo] ?? []).length === 0)) {
+    throw formaInvalida(
+      'measures',
+      'Una consulta necesita al menos una medida o una dimensión: declara measures con los nombres de las medidas que quieres, por ejemplo ["reviews.count"], o dimensions con los valores que quieres listar, por ejemplo ["departments.name"].',
+    );
   }
 
   // v1 exige granularidad en toda dimensión temporal: no hay forma de acotar por
@@ -180,11 +189,12 @@ function resolverMiembros(paso) {
   const { catalog, fuentes, query, parametro } = paso;
 
   const medidas = (query.measures ?? []).map((miembro) => catalog.measure(miembro));
+  const raiz = entidadDeHechos(catalog, query, medidas);
   // La entidad de hechos manda: su fuente es la fuente de la consulta, y el
   // dialecto de esa fuente es el que escribe el SQL. El planificador no nombra
   // ningún motor.
-  const fuente = catalog.source(medidas[0]?.entidad);
-  const dialect = exigirFuenteConfigurada(fuentes, fuente, medidas[0]?.entidad);
+  const fuente = catalog.source(raiz);
+  const dialect = exigirFuenteConfigurada(fuentes, fuente, raiz);
   // Una derivada no se agrega: combina medidas que sí se agregan.
   const derivadas = medidas.filter((medida) => medida.definicion.type === 'ratio');
 
@@ -214,7 +224,20 @@ function resolverMiembros(paso) {
     ]);
   }
 
-  return { ...paso, fuente, dialect, medidas, derivadas, dimensiones, condiciones };
+  return { ...paso, raiz, fuente, dialect, medidas, derivadas, dimensiones, condiciones };
+}
+
+// De qué entidad sale el SQL. Con medidas es la entidad de la primera, y las
+// demás tienen que ser de esa misma (ADR 0006). Sin medidas —la consulta de
+// valores distintos del ADR 0010— es la entidad de la primera dimensión, o la
+// de la primera dimensión temporal si no hay dimensiones: el resto del pedido
+// se alcanza por joins desde ella, así que el orden en que se piden decide
+// cuál es la raíz del BFS. La puerta de forma ya garantizó que alguna de las
+// tres listas trae algo.
+function entidadDeHechos(catalog, query, medidas) {
+  if (medidas.length > 0) return medidas[0].entidad;
+  const primera = query.dimensions?.[0] ?? query.timeDimensions?.[0]?.dimension;
+  return catalog.dimension(primera).entidad;
 }
 
 // El catálogo y el engine reciben el mismo mapa de fuentes, pero no tienen por
@@ -274,11 +297,12 @@ function aplicarFiltros(paso) {
 // Puerta 4 · Joins: de qué entidad salen las medidas y por dónde se llega al
 // resto. Una sola entidad de hechos en v1: medidas de dos entidades en el mismo
 // SELECT multiplican filas y devuelven números incorrectos en silencio (ADR
-// 0006).
+// 0006). Sin medidas la raíz la puso la primera dimensión (ADR 0010) y el resto
+// del camino se busca igual: una dimensión inalcanzable desde ella sale con
+// `NO_JOIN_PATH` como cualquier otra.
 function resolverCaminoDeJoins(paso) {
-  const { catalog, fuente, medidas, dimensiones, filtrados } = paso;
+  const { catalog, fuente, raiz, medidas, dimensiones, filtrados } = paso;
 
-  const raiz = medidas[0].entidad;
   const intrusa = medidas.find((m) => m.entidad !== raiz);
   if (intrusa) {
     throw new SemanticError({
@@ -299,7 +323,7 @@ function resolverCaminoDeJoins(paso) {
   const aristas = caminoDeJoins(catalog, raiz, destinos);
   for (const arista of aristas) exigirMismaFuente(catalog, fuente, raiz, arista.hacia);
 
-  return { ...paso, raiz, aristas };
+  return { ...paso, aristas };
 }
 
 // Una consulta vive entera dentro de una fuente. Cruzar dos bases no es un
@@ -318,7 +342,9 @@ function exigirMismaFuente(catalog, fuente, raiz, entidad) {
 }
 
 // Puerta 5 · Agregación y derivadas: qué se agrega, con qué fórmula se combina
-// lo agregado y qué hay que advertirle al consumidor sobre lo que pidió.
+// lo agregado y qué hay que advertirle al consumidor sobre lo que pidió. Una
+// consulta sin medidas la atraviesa sin producir nada: no hay base que agregar
+// ni derivada que calcular, y el SELECT queda con las dimensiones solas.
 function resolverAgregacion(paso) {
   const { catalog, raiz, medidas, derivadas, declarados } = paso;
 
