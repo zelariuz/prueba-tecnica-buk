@@ -7,6 +7,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { ejecutar } from '../src/ejecutar.js';
+import { promptDeRedaccion } from '../src/protocolo.js';
 
 // Capa falsa: registra lo que le piden y devuelve las respuestas en orden.
 function capaFalsa(respuestas) {
@@ -684,4 +685,187 @@ test('sin alSalto el rastro es exactamente el mismo que con alSalto', async () =
 
   assert.deepEqual(sinObservador, conObservador);
   assert.equal(sinObservador.length, 5);
+});
+
+// ---------------------------------------------------------------------------
+// La redacción: un salto más, opcional, después de la consulta que trajo filas.
+// El agente es el mismo (misma sesión bifurcada) y lo que devuelve es texto, no
+// JSON. Nunca corta el rastro: la respuesta ya está, redactarla es un extra.
+const filasDeAsistencia = [
+  { 'departments.name': 'Ingeniería', 'attendance.rate': 92.59 },
+  { 'departments.name': 'Ventas', 'attendance.rate': 91.55 },
+];
+const respuestaConFilas = {
+  status: 200,
+  json: { rows: filasDeAsistencia, meta: { servedFrom: 'live', asOf: '2025-09-10T00:00:00Z' } },
+  ms: 9,
+};
+
+test('con redactar y la consulta ok, el último salto es la redacción con el texto del agente', async () => {
+  const capa = capaFalsa([respuestaConFilas]);
+  const agente = agenteFalso([
+    JSON.stringify(consultaDelAgente),
+    'Ingeniería tiene 92,59 % de asistencia y Ventas 91,55 %.',
+  ]);
+
+  const rastro = await ejecutar(peticion({ usarAgente: true, redactar: true }), {
+    agente,
+    capa,
+    reloj: () => 0,
+  });
+
+  assert.deepEqual(
+    rastro.map((salto) => [salto.destino, salto.estado]),
+    [
+      ['agente', 'ok'],
+      ['capa semántica — dry-run (params, plan y SQL)', 'ok'],
+      ['capa semántica — consulta', 'ok'],
+      ['agente — redacción', 'ok'],
+    ],
+  );
+  const redaccion = rastro[3];
+  assert.equal(redaccion.recibido, 'Ingeniería tiene 92,59 % de asistencia y Ventas 91,55 %.');
+  assert.equal(redaccion.token, null);
+  assert.equal(redaccion.via, agente.via);
+  // El prompt lleva la pregunta original (la misma del salto 1), las filas y
+  // de dónde salieron.
+  const prompt = agente.prompts[1];
+  assert.match(prompt, /score promedio y evaluaciones completadas/i);
+  assert.match(prompt, /Ingeniería/);
+  assert.match(prompt, /92\.59/);
+  assert.match(prompt, /servedFrom: live/);
+});
+
+test('sin redactar el rastro termina en la consulta: no hay salto de redacción', async () => {
+  const capa = capaFalsa([respuestaConFilas]);
+  const agente = agenteFalso([JSON.stringify(consultaDelAgente)]);
+
+  const rastro = await ejecutar(peticion({ usarAgente: true }), { agente, capa, reloj: () => 0 });
+
+  assert.equal(rastro.length, 3);
+  assert.equal(agente.prompts.length, 1);
+});
+
+// `redactar` es una opción del camino con agente: sin agente no hay a quién
+// pedirle la frase, y la casilla sola no inventa un salto.
+test('redactar sin usarAgente no agrega ningún salto', async () => {
+  const capa = capaFalsa([respuestaConFilas]);
+
+  const rastro = await ejecutar(peticion({ redactar: true }), {
+    agente: null,
+    capa,
+    reloj: () => 0,
+  });
+
+  assert.equal(rastro.length, 2);
+});
+
+test('si la capa rechaza y la corrección no llega, no hay redacción que hacer', async () => {
+  const capa = capaFalsa([respuestaOk, errorUnknownMember, errorUnknownMember]);
+  const agente = agenteFalso([
+    JSON.stringify(consultaDelAgente),
+    '{"noPuedo": "el catálogo no publica eso"}',
+  ]);
+
+  const rastro = await ejecutar(peticion({ usarAgente: true, redactar: true }), {
+    agente,
+    capa,
+    reloj: () => 0,
+  });
+
+  assert.deepEqual(
+    rastro.map((salto) => salto.destino),
+    [
+      'agente',
+      'capa semántica — dry-run (params, plan y SQL)',
+      'capa semántica — consulta',
+      'agente — corrección',
+    ],
+  );
+});
+
+test('después de una corrección que sí trae filas, la redacción se hace sobre esas filas', async () => {
+  const capa = capaFalsa([respuestaOk, errorUnknownMember, respuestaConFilas]);
+  const agente = agenteFalso([
+    JSON.stringify(consultaDelAgente),
+    JSON.stringify(consultaCorregida),
+    'Ingeniería 92,59 % y Ventas 91,55 %.',
+  ]);
+
+  const rastro = await ejecutar(peticion({ usarAgente: true, redactar: true }), {
+    agente,
+    capa,
+    reloj: () => 0,
+  });
+
+  assert.deepEqual(
+    rastro.map((salto) => salto.destino),
+    [
+      'agente',
+      'capa semántica — dry-run (params, plan y SQL)',
+      'capa semántica — consulta',
+      'agente — corrección',
+      'capa semántica — consulta (corregida)',
+      'agente — redacción',
+    ],
+  );
+  assert.equal(rastro[5].estado, 'ok');
+  assert.match(agente.prompts[2], /92\.59/);
+});
+
+// La respuesta ya está: que el agente no redacte deja el salto en `fallo` y no
+// borra las filas que la capa devolvió — mismo criterio que el observador.
+test('un fallo del agente al redactar deja el salto en fallo sin cortar el rastro', async () => {
+  const capa = capaFalsa([respuestaConFilas]);
+  let llamadas = 0;
+  const agente = async () => {
+    llamadas += 1;
+    return llamadas === 1
+      ? { texto: JSON.stringify(consultaDelAgente), ms: 2100 }
+      : { texto: '', ms: 30, fallo: 'timeout de 60000 ms' };
+  };
+  agente.via = 'claude -p --resume agente-buk';
+
+  const rastro = await ejecutar(peticion({ usarAgente: true, redactar: true }), {
+    agente,
+    capa,
+    reloj: () => 0,
+  });
+
+  assert.equal(rastro.length, 4);
+  assert.equal(rastro[3].estado, 'fallo');
+  assert.match(rastro[3].recibido, /timeout/);
+  // Las filas siguen ahí: el rastro no perdió la respuesta.
+  assert.deepEqual(rastro[2].recibido.rows, filasDeAsistencia);
+});
+
+test('un texto vacío del agente también es un salto de redacción fallido', async () => {
+  const capa = capaFalsa([respuestaConFilas]);
+  const agente = agenteFalso([JSON.stringify(consultaDelAgente), '   ']);
+
+  const rastro = await ejecutar(peticion({ usarAgente: true, redactar: true }), {
+    agente,
+    capa,
+    reloj: () => 0,
+  });
+
+  assert.equal(rastro[3].estado, 'fallo');
+});
+
+test('el prompt de redacción recorta a 50 filas y dice cuántas había', async () => {
+  const filas = Array.from({ length: 60 }, (_, i) => ({ departamento: `D${i + 1}`, valor: i }));
+
+  const prompt = promptDeRedaccion('¿Cuántos hay?', filas, { servedFrom: 'cache' });
+
+  assert.match(prompt, /se muestran 50 de 60/);
+  assert.match(prompt, /"D50"/);
+  assert.equal(prompt.includes('"D51"'), false);
+});
+
+test('con 50 filas o menos el prompt no habla de recorte', async () => {
+  const prompt = promptDeRedaccion('¿Cuántos hay?', filasDeAsistencia, { servedFrom: 'live' });
+
+  assert.equal(prompt.includes('se muestran'), false);
+  assert.match(prompt, /agregados por empresa/);
+  assert.match(prompt, /Sin markdown/);
 });

@@ -4,7 +4,7 @@
 // el agente están en `protocolo.js`.
 import { consumidorPorId, CONSUMIDORES } from './consumidores.js';
 import { preguntas, preguntaPorId, prepararConsulta } from './preguntas.js';
-import { comoJson, promptDeCorreccion, promptDelClic } from './protocolo.js';
+import { comoJson, promptDeCorreccion, promptDeRedaccion, promptDelClic } from './protocolo.js';
 
 const RUTA_CONSULTA = '/analytics/query';
 const RUTA_DRY_RUN = '/analytics/query?dryRun=true';
@@ -17,6 +17,7 @@ const RUTA_DRY_RUN = '/analytics/query?dryRun=true';
 const DRY_RUN = 'dry-run (params, plan y SQL)';
 const CONSULTA = 'consulta';
 const CONSULTA_CORREGIDA = 'consulta (corregida)';
+const REDACCION = 'agente — redacción';
 
 export async function ejecutar(peticion, { agente, capa, reloj, alSalto = null }) {
   const pregunta = preguntaPorId(peticion.pregunta);
@@ -53,10 +54,26 @@ export async function ejecutar(peticion, { agente, capa, reloj, alSalto = null }
   const laConsulta = await aLaCapa(consulta, CONSULTA);
   agregar(laConsulta);
 
+  // La redacción es opcional y va al final: lo mismo si la consulta salió a la
+  // primera o si hizo falta corregirla. `redactarSobre` decide si corresponde.
+  const redactarSobre = async (ultima) => {
+    if (!peticion.redactar || !peticion.usarAgente) return;
+    if (ultima.estado !== 'ok' || !Array.isArray(ultima.recibido?.rows)) return;
+    agregar(
+      await saltoDeRedaccion(
+        promptDeRedaccion(promptDelClic(pregunta, peticion), ultima.recibido.rows, ultima.recibido.meta),
+        { agente, reloj },
+      ),
+    );
+  };
+
   // Un solo reintento, y solo con agente: la capa rechazó lo que él escribió,
   // así que se le devuelve el error con su sugerencia y se repite el salto 3.
   // Si eso también se rechaza, el rastro termina: nunca hay un tercer intento.
-  if (!peticion.usarAgente || laConsulta.estado !== 'rechazo') return rastro;
+  if (!peticion.usarAgente || laConsulta.estado !== 'rechazo') {
+    await redactarSobre(laConsulta);
+    return rastro;
+  }
 
   const correccion = await saltoAlAgente(
     promptDeCorreccion(laConsulta.recibido, { pregunta: promptDelClic(pregunta, peticion), consulta }),
@@ -66,8 +83,35 @@ export async function ejecutar(peticion, { agente, capa, reloj, alSalto = null }
   agregar(correccion.salto);
   if (!correccion.consulta) return rastro;
 
-  agregar(await aLaCapa(correccion.consulta, CONSULTA_CORREGIDA));
+  const corregida = await aLaCapa(correccion.consulta, CONSULTA_CORREGIDA);
+  agregar(corregida);
+  await redactarSobre(corregida);
   return rastro;
+}
+
+// El salto de redacción es el mismo agente y la misma sesión, pero lo que
+// vuelve es texto para leer, no JSON para ejecutar: acá no se parsea nada. `ok`
+// es "volvió texto"; vacío o fallo del adaptador es `fallo`, y ni así se corta
+// el rastro — las filas ya están en el salto anterior (mismo criterio que el
+// observador: la respuesta ya está, esto es un extra).
+async function saltoDeRedaccion(enviado, { agente, reloj }) {
+  const inicio = reloj();
+  const salto = { destino: REDACCION, via: agente?.via ?? 'claude -p --resume', token: null, enviado };
+  let respuesta;
+  try {
+    respuesta = await agente(enviado);
+  } catch (error) {
+    return { ...salto, recibido: String(error.message), ms: reloj() - inicio, estado: 'fallo' };
+  }
+  const { texto, ms, meta, fallo } = respuesta;
+  const escrito = fallo ? '' : String(texto ?? '').trim();
+  return {
+    ...salto,
+    recibido: fallo ? `(sin respuesta del agente: ${fallo})` : texto,
+    ms: Number.isFinite(ms) ? ms : reloj() - inicio,
+    ...(meta ? { meta } : {}),
+    estado: escrito ? 'ok' : 'fallo',
+  };
 }
 
 // Cada salto entra al rastro por acá, y por acá se avisa. El observador es

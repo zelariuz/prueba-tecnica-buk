@@ -164,6 +164,7 @@ async function responderRastro(peticion, respuesta, { capa, agente, agenteMotivo
   // Sin agente disponible, `agente=1` no rompe nada: se ignora y la nota viaja
   // con el inicio. El camino sin agente siempre está.
   const conAgente = peticion.usarAgente && Boolean(agente);
+  const conRedaccion = conAgente && Boolean(peticion.redactar);
   const nota =
     peticion.usarAgente && !agente ? `Claude Code no está disponible: ${agenteMotivo}` : null;
 
@@ -177,10 +178,11 @@ async function responderRastro(peticion, respuesta, { capa, agente, agenteMotivo
   respuesta.write(
     linea({
       tipo: 'inicio',
-      peticion: { ...peticion, usarAgente: conAgente, texto: textoMostrado },
-      // Sin agente son dos saltos (dry-run y consulta); con agente, tres. La
-      // corrección agrega dos más y por eso es una previsión, no una promesa.
-      saltosPrevistos: conAgente ? 3 : 2,
+      peticion: { ...peticion, usarAgente: conAgente, redactar: conRedaccion, texto: textoMostrado },
+      // Sin agente son dos saltos (dry-run y consulta); con agente, tres, y
+      // cuatro si además redacta. La corrección agrega dos más y por eso es una
+      // previsión, no una promesa.
+      saltosPrevistos: (conAgente ? 3 : 2) + (conRedaccion ? 1 : 0),
       nota,
     }),
   );
@@ -188,7 +190,7 @@ async function responderRastro(peticion, respuesta, { capa, agente, agenteMotivo
   const inicio = reloj();
   try {
     await ejecutar(
-      { ...peticion, usarAgente: conAgente },
+      { ...peticion, usarAgente: conAgente, redactar: conRedaccion },
       {
         agente,
         capa,
@@ -265,6 +267,9 @@ function peticionDeCuerpo(texto) {
     hasta: campo('hasta'),
     departamento: campo('departamento'),
     usarAgente: datos.usarAgente === true || datos.agente === '1' || datos.agente === 1,
+    // Sólo tiene efecto con `usarAgente`: es un salto MÁS del agente, no un
+    // camino aparte. Sin agente se lee y se ignora (lo decide `ejecutar`).
+    redactar: datos.redactar === true || datos.redactar === '1' || datos.redactar === 1,
   };
 }
 
@@ -291,6 +296,7 @@ function peticionDeUrl(url) {
     // `usarAgente` y no `agente`: el booleano de la URL no es el colaborador
     // `agente` que ejecuta, y llamarlos igual confundía a los dos.
     usarAgente: parametro('agente') === '1',
+    redactar: parametro('redactar') === '1',
   };
 }
 

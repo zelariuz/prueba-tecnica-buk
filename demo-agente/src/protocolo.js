@@ -70,3 +70,37 @@ export function comoJson(texto) {
     return null;
   }
 }
+
+// El prompt de redacción: el segundo momento del mismo modelo. Primero tradujo
+// la pregunta a JSON; ahora, con las filas que la capa devolvió delante, escribe
+// la frase. Es el mismo agente y la misma sesión bifurcada, así que acá sólo
+// hacen falta las palabras: la pregunta original —el mismo texto del salto 1—,
+// las filas y de dónde salieron.
+//
+// Al modelo llegan SÓLO agregados por empresa: la capa no publica filas crudas
+// ni columnas personales (ADR 0002 y el catálogo público), y el prompt lo dice
+// para que se lea en la página quién ve qué.
+const TOPE_DE_FILAS = 50;
+
+export function promptDeRedaccion(pregunta, filas, meta = {}) {
+  const todas = Array.isArray(filas) ? filas : [];
+  const mostradas = todas.slice(0, TOPE_DE_FILAS);
+  // El recorte se declara: una frase escrita sobre 50 de 300 filas es otra cosa
+  // que una escrita sobre todas, y el modelo tiene que saber cuál está viendo.
+  const recorte =
+    todas.length > TOPE_DE_FILAS ? `\n(se muestran ${TOPE_DE_FILAS} de ${todas.length} filas)` : '';
+  const origen = [
+    meta?.servedFrom ? `servedFrom: ${meta.servedFrom}` : null,
+    meta?.asOf ? `asOf: ${meta.asOf}` : null,
+  ]
+    .filter(Boolean)
+    .join(' · ');
+
+  return `La pregunta era:
+${pregunta}
+
+Éstas son las filas que devolvió la capa (agregados por empresa; no hay datos personales):
+${JSON.stringify(mostradas)}${recorte}
+${origen ? `${origen}\n` : ''}
+Responde en español, en texto plano, una o dos frases que contesten la pregunta con los números de las filas tal cual están (no redondees más de dos decimales, no inventes ningún número ni categoría que no esté en las filas, no menciones SQL ni JSON). Si las filas están vacías, dilo. Sin markdown.`;
+}
