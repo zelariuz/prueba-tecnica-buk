@@ -797,7 +797,7 @@ arriba se levanta con `cd demo-agente && npm start` y vive en
 <http://localhost:3100/>.
 
 Cómo levantarla, qué muestra cada salto y cuánto cuesta cada llamada al agente:
-[`demo-agente/README.md`](demo-agente/README.md). El QA de las 8 preguntas (7 en la primera vuelta, más «cuántos empleados hay» tras el ADR 0009) por
+[`demo-agente/README.md`](demo-agente/README.md). El QA de las preguntas preparadas (hoy 12: las 3 del enunciado con su texto literal, las 3 del caso, otras 5 y la trampa) por
 los dos caminos: [`demo-agente/docs/qa.md`](demo-agente/docs/qa.md).
 
 ## Autoría y uso de IA
