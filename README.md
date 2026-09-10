@@ -108,7 +108,11 @@ luego `/login`; `claude --version` debe imprimir un número seguido de
    pide "corre la demo y explícame el caso obligatorio". `CLAUDE.md` trae el
    mapa del repo, los comandos de los caminos A y B y qué mirar; Claude los
    ejecuta y comenta el SQL generado.
-2. **La demo del agente de IA.** Con los contenedores del camino A arriba:
+2. **La demo del agente de IA.** Es distinta de `src/demo.js` (la de consola
+   de los caminos A y B): es una página web con un agente real. El compose no
+   la levanta, sólo levanta lo que ella necesita (el `api` en `:3000` con su
+   base y Redis); la demo corre en el host con `npm start`, porque usa tu
+   sesión de Claude Code. Con los contenedores del camino A arriba:
 
    ```bash
    cd demo-agente && npm install && npm start    # http://localhost:3100
