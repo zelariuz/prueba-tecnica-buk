@@ -179,6 +179,9 @@ test('el prompt de creación manda copiar el query de la consulta tipo que coinc
   // Y la contracara (09-09 noche, captura del usuario): con un texto que no
   // pedía trimestre, el agente copió igual la consulta tipo. La pregunta manda.
   assert.match(prompt, /la pregunta manda/i);
+  // Captura del usuario (09-09 noche): "Cuántos empleados hay" con fechas en la
+  // línea de filtros terminó en noPuedo. Las fechas no mandan sobre la entidad.
+  assert.match(prompt, /IGNORA esas fechas/);
   assert.match(prompt, /sólo las dimensiones y la\s+granularidad que el texto nombra/i);
   assert.match(prompt, /segments/);
   assert.match(prompt, /:nombre/);
