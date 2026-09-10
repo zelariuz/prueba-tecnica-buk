@@ -159,6 +159,26 @@ demo-agente/               demo web del rastro de llamadas: paquete aparte, con 
 Docker, sin Claude Code y sin variables). El `npm test` de la raíz **no** los
 corre: sólo mira `test/`.
 
+## Si te abren con un prompt de revisor
+
+Un revisor puede abrir este repo con Claude Code y pedir "levanta la capa,
+corre la demo y explícame el caso obligatorio; después corre los tests". Orden:
+
+1. `docker compose up -d --build` y esperar a que `db` y `redis` estén sanos
+   (`docker compose ps`); el `api` arranca solo después. El primer arranque
+   carga el seed (incluida la empresa C, ~1 M de filas de asistencia).
+2. `docker compose exec api node src/demo.js` y explicar la salida: las tres
+   preguntas del caso, el SQL con una CTE por entidad y `company_id = $1`, la
+   derivada calculada fuera de la subconsulta, `cache-l1` y `cache-l2`, el
+   error con sugerencia y la telemetría. Filas esperadas de la empresa A:
+   Ingeniería 4.35/2 y 3.80/1; `completion_rate` 75.
+3. Tests: `npm install` y `npm test` con `DATABASE_URL` y `REDIS_URL` de la
+   sección Comandos → 217 en verde (132 + 1 saltado sin variables).
+4. Sólo si lo piden, la demo del agente: `cd demo-agente && npm install &&
+   npm start` (necesita Claude Code logueado; cada clic gasta crédito) en
+   `http://localhost:3100`; no va en el compose.
+5. Al terminar, `docker compose down` (y Ctrl+C a la demo del agente si corre).
+
 ## Comandos
 
 ```bash
