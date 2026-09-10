@@ -80,7 +80,7 @@ Convención de la columna Resultado: **OK (auto)** = verificado con tests, demo 
 
 | # | Qué mirar | Resultado |
 |---|---|---|
-| M1 | `npm run demo`: las tres preguntas se leen y los números coinciden con el seed | Pendiente |
+| M1 | `npm run demo`: las tres preguntas se leen y los números coinciden con el seed | OK (10-09): corrida con `docker compose exec api node src/demo.js`; los 10 números de las tres preguntas coinciden con los literales del seed; live → cache-l1 → cache-l2, error a propósito con sugerencia y telemetría consistentes |
 | M2 | README: se puede seguir de arriba abajo y correr todo sin conocimiento previo | Pendiente |
 | M3 | Catálogo público (`GET /analytics/catalog`): las descripciones sirven como contexto para un agente | Pendiente |
 | M4 | Mensajes de error: las sugerencias dicen qué hacer, no solo qué falló | Pendiente |
