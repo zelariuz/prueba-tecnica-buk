@@ -28,11 +28,14 @@ export const CONSUMIDORES = [
     // La asistencia del seed chico son junio a agosto de 2025; el resto de las
     // preguntas mira las evaluaciones, que viven en todo 2025. Las dos sobre
     // `employees` van con el rango vacío: esa entidad no tiene dimensión
-    // temporal, así que no hay fecha que precargar (ADR 0009).
+    // temporal, así que no hay fecha que precargar (ADR 0009). La de los
+    // departamentos también: no lleva `timeDimensions` porque no lleva nada
+    // más que la dimensión (ADR 0010).
     rangos: {
       'asistencia-por-departamento': ['2025-06-01', '2025-08-31'],
       'headcount-por-departamento': ['', ''],
       'cuantos-empleados-hay': ['', ''],
+      'cuales-departamentos-hay': ['', ''],
     },
     rangoPorDefecto: ['2025-01-01', '2025-12-31'],
   },
@@ -49,10 +52,12 @@ export const CONSUMIDORES = [
       'advertencia de índice; sus números no están calculados a mano.',
     // Un año entero para todas, asistencia incluida: son 1.062.283 filas y la
     // gracia es justamente pedirle a la capa un rango grande. Las dos preguntas
-    // sobre `employees` van sin rango: no hay dimensión temporal que acotar.
+    // sobre `employees` y la de los departamentos van sin rango: no hay
+    // dimensión temporal que acotar.
     rangos: {
       'headcount-por-departamento': ['', ''],
       'cuantos-empleados-hay': ['', ''],
+      'cuales-departamentos-hay': ['', ''],
     },
     rangoPorDefecto: ['2025-01-01', '2025-12-31'],
   },

@@ -918,6 +918,14 @@ cómo va todo, el evento dice qué acaba de pasar.
   `headcount-por-departamento` deja de ser "solo con token de otra clase" y se
   suma `cuantos-empleados-hay` (`employees.headcount` y `active_headcount`, sin
   dimensiones ni tiempo): son las dos que vienen con el rango precargado vacío.
+- **Consultas sin medidas y 9 preguntas** (09-09 noche, ADR 0010): `measures`
+  dejó de ser obligatorio en la capa, así que "cuáles departamentos hay" tiene
+  traducción. El prompt de creación lo dice —para listar los valores de una
+  dimensión se pide esa dimensión SIN medidas— y se suma la 9ª pregunta
+  preparada `cuales-departamentos-hay` (`{"dimensions":["departments.name"],
+  "order":{"departments.name":"asc"}}`), con rango precargado vacío en las dos
+  empresas: no lleva `timeDimensions`. Antes de esto el agente escribía el JSON
+  correcto y la capa se lo rechazaba con `INVALID_QUERY`.
 - **Regla de operación**: nunca abrir esa sesión de forma interactiva mientras
   el mini back la usa. Es el mismo uuid.
 

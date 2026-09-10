@@ -101,6 +101,11 @@ ${JSON.stringify(catalogo, null, 2)}
 REGLAS DEL VOCABULARIO QUE EL CATÁLOGO NO DICE:
 
 - "measures" y "dimensions" son listas de nombres del catálogo, con su prefijo de entidad.
+- Para listar los valores de una dimensión (por ejemplo, qué departamentos hay, o qué estados
+  de evaluación existen), pide esa dimensión SIN medidas: "measures" puede omitirse. La capa
+  agrupa por las dimensiones que pediste y te devuelve sus valores distintos, sin ningún
+  número al lado. No inventes una medida para poder preguntar. Lo que no existe es la
+  consulta que no pide nada: sin medidas y sin dimensiones no hay consulta.
 - "timeDimensions" es una lista con un objeto
   { "dimension": <la dimensión temporal de la entidad>, "granularity": <una de granularities>,
   "dateRange": [<desde>, <hasta>] }. Va cuando la pregunta pide un corte por tiempo (por mes,

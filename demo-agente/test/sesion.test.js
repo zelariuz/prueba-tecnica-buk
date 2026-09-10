@@ -161,6 +161,19 @@ test('el prompt de creación dice las reglas que el catálogo no dice: granulari
   assert.ok(!prompt.includes('MISSING_TIME_RANGE'), 'el rango ya no se anuncia como obligatorio');
 });
 
+// Desde el ADR 0010 una consulta puede no llevar medidas. El agente no tiene
+// forma de saberlo mirando el catálogo —que publica medidas y dimensiones sin
+// decir cuáles son obligatorias—, así que la regla vive en el prompt: sin ella
+// "cuáles departamentos hay" termina en una medida inventada o en un noPuedo
+// sobre una pregunta que la capa responde.
+test('el prompt de creación dice que para listar los valores de una dimensión no hacen falta medidas', () => {
+  const prompt = promptDeCreacion(catalogoReal);
+
+  assert.match(prompt, /SIN medidas/);
+  assert.match(prompt, /"measures" puede omitirse/);
+  assert.match(prompt, /qué departamentos hay/);
+});
+
 test('el prompt de creación prohíbe el SQL y los miembros inventados', () => {
   const prompt = promptDeCreacion(catalogoReal);
 

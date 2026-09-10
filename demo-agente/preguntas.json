@@ -279,5 +279,20 @@
         "employees.active_headcount"
       ]
     }
+  },
+  {
+    "id": "cuales-departamentos-hay",
+    "titulo": "Cuáles departamentos hay",
+    "texto": "Cuáles departamentos hay.",
+    "filtros": [],
+    "nota": "Una consulta SIN medidas: sólo una dimensión, así que la capa agrupa por ella y devuelve sus valores distintos (ADR 0010). Hasta el 09-09 esto era INVALID_QUERY —`measures` era obligatorio— y el agente no tenía JSON que escribir para una pregunta que el catálogo sabe contestar.",
+    "consulta": {
+      "dimensions": [
+        "departments.name"
+      ],
+      "order": {
+        "departments.name": "asc"
+      }
+    }
   }
 ]

@@ -193,10 +193,11 @@ esa es la diferencia que la demo hace ver. El QA del 09-09 (`docs/qa.md`, 14
 corridas) volvió a dar lo mismo: 3,2-6,2 s y 0,0025-0,0056 USD por llamada al
 agente, 2-17 ms por llamada a la capa.
 
-## Las 8 preguntas preparadas
+## Las 9 preguntas preparadas
 
 Viven en `preguntas.json` (datos, no código). Las 3 del caso, las otras 3
-consultas tipo del catálogo, la trampa y la más simple de todas:
+consultas tipo del catálogo, la trampa, la más simple de todas y la que no
+lleva medidas:
 
 | Pregunta | Qué demuestra |
 | --- | --- |
@@ -208,6 +209,7 @@ consultas tipo del catálogo, la trampa y la más simple de todas:
 | Headcount por departamento | Una consulta sin tiempo: `employees` no publica dimensión temporal ni tiene camino de joins hacia una, así que no hay `timeDimensions` que poner. Hasta el 09-09 la clase `agente` la rechazaba con `MISSING_TIME_RANGE` y sólo respondía con un token de otra clase; desde el **ADR 0009** la ejecuta igual que las demás |
 | Sueldo promedio por departamento | La trampa: `employees.salary_avg` no existe → `UNKNOWN_MEMBER` con sugerencia |
 | Cuántos empleados hay, activos e inactivos | La más simple: sin dimensiones y sin tiempo, una sola fila. Es la pregunta que el rango obligatorio hacía irrespondible (ADR 0009) |
+| Cuáles departamentos hay | Una consulta **sin medidas**: sólo una dimensión, y la capa devuelve sus valores distintos (`GROUP BY` sin agregados). Hasta el 09-09 era `INVALID_QUERY` y el agente no tenía JSON que escribir; desde el **ADR 0010** la ejecuta |
 
 ## Tests
 
@@ -237,7 +239,7 @@ filas, el reintento, la caché, los tiempos y el costo.
 
 ```
 index.js            arranque: configuración, catálogo, sesión y escucha
-preguntas.json      las 8 preguntas preparadas (datos, no código)
+preguntas.json      las 9 preguntas preparadas (datos, no código)
 src/ejecutar.js     el seam: petición → rastro de saltos
 src/sesion.js       el seam: crear/conservar/recrear la sesión, prompt y huella
 src/protocolo.js    las palabras que se cruzan con el agente: prompt del clic,
