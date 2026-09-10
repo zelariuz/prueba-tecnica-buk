@@ -465,8 +465,8 @@ sequenceDiagram
   K->>K: grafo de relaciones · orden topológico de derivadas (sin ciclos)
   K->>K: foto v43 = hash(definiciones + esquema físico)
   K->>RD: PUBLISH catalog:version 43
-  Note over K,RD: cada engine recarga la foto; las peticiones en curso siguen en v42
-  K-->>M: {ok, version:43, warnings:[…]}
+  Note over K,RD: cada engine recarga la foto, las peticiones en curso siguen en v42
+  K-->>M: ok, version 43, warnings
 </pre></div>
 
 <div class="nota verde"><b>Lo que los tres niveles comparten:</b> el consumidor nunca ve tablas ni escribe SQL; el tenant entra por un solo lugar; lo caro se recuerda; y lo que no está en el diccionario no existe.</div>
