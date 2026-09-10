@@ -465,36 +465,6 @@ puede funcionar, y el servicio lo dice con la cabecera en vez de dejar que el
 cliente lo adivine. Quien traduce esos errores es el dialecto, como cualquier
 otro error nativo: el engine no conoce ni un código de socket ni un SQLSTATE.
 
-## Segunda fuente: SQLite
-
-El repo trae un segundo dialecto, `src/dialect/sqlite.js`, sobre el `node:sqlite`
-que Node 24 incluye. **No está para producción**: está para probar que el seam
-del dialecto aguanta. La prueba es que las mismas definiciones (`reviews`,
-`employees`, `departments`), el mismo planificador y el mismo engine responden
-el caso obligatorio contra SQLite con **exactamente las mismas filas** que
-contra Postgres — Ingeniería 2025-01-01 con promedio 4.35 y 2 completadas,
-Ingeniería 2025-04-01 con 3.8 y 1— y `completion_rate` con los mismos 75. Lo
-único que cambia en una definición es una línea: `source: 'sqlite'`.
-
-Todo lo que hubo que mover para que eso funcionara está listado en `CLAUDE.md`
-("Decisiones de la fase B"): eran cuatro cosas que el planificador y el engine
-tenían escritas en dialecto Postgres sin saberlo.
-
-Lo que SQLite **no** puede prometer queda dicho en sus capacidades, no
-escondido: `tiposGarantizados: false` (una incompatibilidad de tipo al registrar
-es advertencia y no error, porque un tipo declarado es afinidad y no
-restricción) y `timeoutDeSentencia: false` (**no hay forma de hacer cumplir el
-presupuesto de tiempo**: SQLite no tiene `statement_timeout`, así que el engine
-no emite ninguna sentencia de sesión contra esta fuente).
-
-Sus tests no necesitan variables de entorno —la base es en memoria y se arma
-desde `test/fixtures/caso-sqlite.sql`, con las mismas 16 evaluaciones del seed—,
-así que corren siempre:
-
-```bash
-node --test test/sqlite.test.js
-```
-
 ## Ver qué se hace, en vivo
 
 La telemetría son contadores agregados: responden *cómo va todo*. Esto responde
@@ -827,6 +797,41 @@ arriba se levanta con `cd demo-agente && npm start` y vive en
 Cómo levantarla, qué muestra cada salto y cuánto cuesta cada llamada al agente:
 [`demo-agente/README.md`](demo-agente/README.md). El QA de las preguntas preparadas (hoy 12: las 3 del enunciado con su texto literal, las 3 del caso, otras 5 y la trampa) por
 los dos caminos: [`demo-agente/docs/qa.md`](demo-agente/docs/qa.md).
+
+## Anexo: fuente alterna (SQLite)
+
+Esta sección va al final porque no es parte del servicio: el `api` corre con
+una sola fuente, Postgres. SQLite entró como **prueba del seam del dialecto**
+(¿aguanta un motor de verdad distinto?) y vive sólo en la suite; se deja aquí
+como referencia de qué hay que escribir para sumar un motor.
+
+El repo trae un segundo dialecto, `src/dialect/sqlite.js`, sobre el `node:sqlite`
+que Node 24 incluye. **No está para producción**: está para probar que el seam
+del dialecto aguanta. La prueba es que las mismas definiciones (`reviews`,
+`employees`, `departments`), el mismo planificador y el mismo engine responden
+el caso obligatorio contra SQLite con **exactamente las mismas filas** que
+contra Postgres — Ingeniería 2025-01-01 con promedio 4.35 y 2 completadas,
+Ingeniería 2025-04-01 con 3.8 y 1— y `completion_rate` con los mismos 75. Lo
+único que cambia en una definición es una línea: `source: 'sqlite'`.
+
+Todo lo que hubo que mover para que eso funcionara está listado en `CLAUDE.md`
+("Decisiones de la fase B"): eran cuatro cosas que el planificador y el engine
+tenían escritas en dialecto Postgres sin saberlo.
+
+Lo que SQLite **no** puede prometer queda dicho en sus capacidades, no
+escondido: `tiposGarantizados: false` (una incompatibilidad de tipo al registrar
+es advertencia y no error, porque un tipo declarado es afinidad y no
+restricción) y `timeoutDeSentencia: false` (**no hay forma de hacer cumplir el
+presupuesto de tiempo**: SQLite no tiene `statement_timeout`, así que el engine
+no emite ninguna sentencia de sesión contra esta fuente).
+
+Sus tests no necesitan variables de entorno —la base es en memoria y se arma
+desde `test/fixtures/caso-sqlite.sql`, con las mismas 16 evaluaciones del seed—,
+así que corren siempre:
+
+```bash
+node --test test/sqlite.test.js
+```
 
 ## Autoría y uso de IA
 
