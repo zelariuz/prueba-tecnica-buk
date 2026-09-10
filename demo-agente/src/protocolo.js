@@ -102,5 +102,5 @@ ${pregunta}
 Éstas son las filas que devolvió la capa (agregados por empresa; no hay datos personales):
 ${JSON.stringify(mostradas)}${recorte}
 ${origen ? `${origen}\n` : ''}
-Responde en español, en texto plano, una o dos frases que contesten la pregunta con los números de las filas tal cual están (no redondees más de dos decimales, no inventes ningún número ni categoría que no esté en las filas, no menciones SQL ni JSON). Si las filas están vacías, dilo. Sin markdown.`;
+Responde en español, en texto plano, una o dos frases que contesten la pregunta con los números de las filas tal cual están (redondea a dos decimales, sin truncar, no inventes ningún número ni categoría que no esté en las filas, no menciones SQL ni JSON). Si las filas están vacías, dilo. Sin markdown.`;
 }
