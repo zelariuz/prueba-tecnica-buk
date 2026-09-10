@@ -746,6 +746,18 @@ caché. `REDIS_URL` es opcional: sin ella el servicio arranca con sólo L1 y lo
 dice en el log. `CACHE_PREFIX` (opcional, por defecto `capa`) es el prefijo de
 las llaves en Redis: uno por ambiente cuando varios comparten el mismo Redis.
 
+**Tamaño de una entrada y límites de Redis.** Redis admite hasta **512 MB por
+valor** (un string, según su documentación); las llaves, 64 KB. Nuestras
+entradas son el JSON de las filas agregadas más `meta`, así que el techo real
+lo pone el presupuesto de filas por clase: unos 100-150 KB para `agent`
+(1 000 filas), 0,5-0,8 MB para `dashboard` (5 000) y 1-1,5 MB para `api`
+(10 000), con filas como las del caso; muchas dimensiones de texto pueden
+duplicarlo. La capa no fija un tope de bytes por entrada: confía en el tope
+de filas. El Redis del `docker-compose.yml` corre sin `maxmemory` y sin
+política de desalojo (las entradas mueren sólo por TTL, 30-60 s); en
+producción va `maxmemory` con `allkeys-lru`, como recomienda la sección de
+riesgos.
+
 Verlo en marcha:
 
 ```bash
