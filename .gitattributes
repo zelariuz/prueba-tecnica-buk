@@ -1,0 +1,4 @@
+# Fin de línea LF en el repo, aunque se edite desde Windows: el 09-09 una
+# herramienta de Windows reescribió dos archivos con CRLF y un revert entró en
+# conflicto solo por eso.
+* text=auto eol=lf
