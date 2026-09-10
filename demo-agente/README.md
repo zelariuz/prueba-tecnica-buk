@@ -15,6 +15,18 @@ Dos caminos, la misma página:
   rechaza lo que escribió, se le devuelve el error con su sugerencia y se
   reintenta una vez.
 
+> **Importante: el camino con agente usa el login activo de Claude Code de
+> esta máquina.** No hay API key ni variable de entorno con credenciales: el
+> mini back ejecuta el binario `claude` en modo no interactivo (`claude -p`),
+> y ese proceso toma las credenciales que dejó el último `claude` / `/login`
+> del usuario que corre la demo. Consecuencias: (1) cada clic se cobra al
+> crédito del Agent SDK de **esa** cuenta (Pro o Max), no a la de quien mira
+> la página; (2) si nadie inició sesión en esta máquina, o el login venció,
+> la casilla "usar agente" aparece apagada con el motivo y la demo sigue por
+> el camino sin agente; (3) para comprobarlo antes de una demo en vivo, en la
+> misma terminal: `claude -p "responde ok"` debe contestar `ok`. Volver a
+> iniciar sesión: `claude` y luego `/login`.
+
 ## Requisitos
 
 - **La capa arriba en Docker**: desde la raíz del repo,
@@ -50,8 +62,9 @@ Para quien clona el repo y nunca vio esto. Cada paso deja algo verificable.
    claude --version     # debe imprimir un número seguido de "(Claude Code)"
    claude               # la primera vez pide iniciar sesión en el navegador
    ```
-   Inicia sesión con una cuenta **Pro o Max** y activa una vez el crédito
-   mensual del Agent SDK en la cuenta (es lo que cubre `claude -p`; sin él,
+   Inicia sesión con una cuenta **Pro o Max** (el login queda guardado en la
+   máquina y es el que la demo usa; ver el aviso de arriba) y activa una vez
+   el crédito mensual del Agent SDK en la cuenta (es lo que cubre `claude -p`; sin él,
    las llamadas se detienen cuando se agota el crédito). Sal de la sesión
    interactiva con `/exit`: la demo va a usar `claude -p` por su cuenta.
    Si te saltas este paso, la demo arranca igual con la casilla del agente
