@@ -37,6 +37,7 @@ responder. *Medio*: el fallo es visible y acotado. *Bajo*: cosmético.
 | Nivel | Riesgo | Mitigación | Dónde |
 |---|---|---|---|
 | Alto | Consulta que no termina | `statement_timeout` por clase de consumidor dentro de la transacción; `LIMIT`; rango temporal obligatorio para la clase que lo exija (ninguna lo exige desde el 09-09: el guardarraíl es reactivo, `QUERY_TIMEOUT` con sugerencia de acotar — ADR 0009) | código |
+| Medio | La base corta la sesión a mitad de consulta (`pg_terminate_backend`, reinicio, caída de socket); sin manejo, el driver emite `error` sin oyente y tumba el proceso entero | El cliente se libera con el error y el pool lo destruye; oyente de `error` en el cliente prestado y `pool.on('error')` para los ociosos; el error se traduce a `SOURCE_UNAVAILABLE` (503 con `Retry-After`); sin reintentos en la capa. Test en `run.test.js` que mata el backend a mitad de consulta; probado contra el contenedor `api` (sin reinicio) | código |
 | Alto | Un rol de base de datos no limita recursos (`statement_timeout` es modificable por la sesión) | El rol limita privilegios (solo lectura); el límite de tiempo lo pone el engine; en producción, límite externo en el pooler | documento |
 | Alto | Memoria: `work_mem` por operación × operaciones × conexiones | Tope global de conexiones con PgBouncer y `work_mem` bajo por rol | documento |
 | Medio | Una empresa grande ocupa el pool | Tope de concurrencia por empresa además de por consumidor; circuit breaker por empresa | evolución |
