@@ -12,8 +12,13 @@ import { prepararTexto } from './preguntas.js';
 // ya no lleva las fechas (antes iban ahí y otra vez acá, y el agente veía dos
 // veces lo mismo), y sin fechas ni departamento la línea entera desaparece. Un
 // rango vacío no es un error desde el ADR 0009: es una consulta sin rango.
+//
+// Texto propio (desenganchado): se manda TAL CUAL, sin línea de filtros. Lo que
+// la persona escribió es exactamente lo que recibe el agente (pedido del
+// usuario, 09-09 noche: las fechas del formulario se le pegaban a su texto).
 export function promptDelClic(pregunta, peticion) {
-  const texto = peticion.texto || prepararTexto(pregunta.texto, peticion);
+  if (peticion.texto) return peticion.texto;
+  const texto = prepararTexto(pregunta.texto, peticion);
   const filtros = [
     peticion.desde ? `desde ${peticion.desde}` : null,
     peticion.hasta ? `hasta ${peticion.hasta}` : null,

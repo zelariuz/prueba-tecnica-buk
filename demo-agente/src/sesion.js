@@ -110,9 +110,6 @@ REGLAS DEL VOCABULARIO QUE EL CATÁLOGO NO DICE:
   período, y déjalo fuera cuando no. Sin rango la capa ejecuta igual, con los límites de tu
   clase: recorta a 1.000 filas y corta a los 10 s, y si eso pasa te devuelve QUERY_TIMEOUT
   con la sugerencia de acotar el tiempo. Las fechas van en formato AAAA-MM-DD.
-- Las fechas de la línea "Filtros:" son una ayuda, no una orden: si la entidad de la
-  pregunta no publica dimensión temporal (por ejemplo, un headcount), IGNORA esas fechas
-  y responde igual, sin "timeDimensions". No es motivo para "noPuedo".
 - "filters" es una lista de { "member": <miembro>, "operator": <operador publicado para ese
   miembro>, "values": [<valores>] }.
 - "segments" es una lista de nombres de segmento del catálogo.

@@ -343,7 +343,7 @@ test('el prompt del clic lleva el texto de la pregunta y la frase fija de filtro
   );
 });
 
-test('el texto editado en el formulario reemplaza al de la pregunta preparada', async () => {
+test('el texto editado en el formulario se manda tal cual, sin la línea de filtros', async () => {
   const capa = capaFalsa([respuestaOk]);
   const agente = agenteFalso([JSON.stringify(consultaDelAgente)]);
 
@@ -353,8 +353,9 @@ test('el texto editado en el formulario reemplaza al de la pregunta preparada', 
     reloj: () => 0,
   });
 
-  assert.match(agente.prompts[0], /^Solo Ventas, por favor\./);
-  assert.match(agente.prompts[0], /Filtros: desde 2025-01-01/);
+  // Pedido del usuario (09-09 noche): lo que escribió es exactamente lo que
+  // recibe el agente; las fechas del formulario no se le pegan.
+  assert.equal(agente.prompts[0], 'Solo Ventas, por favor.');
 });
 
 test('sin departamento la frase de filtros no lo nombra', async () => {

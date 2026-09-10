@@ -322,7 +322,9 @@ function leerFormulario() {
   return {
     pregunta: $('pregunta').value,
     token: $('token').value,
-    texto: $('texto').value,
+    // Enganchado: el back arma el texto preparado + filtros. Desenganchado: va
+    // este texto y nada más.
+    texto: enganchado() ? '' : $('texto').value,
     desde: $('desde').value,
     hasta: $('hasta').value,
     departamento: $('departamento').value,
