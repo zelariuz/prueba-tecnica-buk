@@ -20,7 +20,7 @@ TypeScript, Node 24, `node:test`, node-postgres.
 - `docs/adr/` — decisiones arquitectónicas (0001 tres piezas, 0002 contexto de
   sesión separado, 0003 CTE por entidad con empresa, 0004 derivadas ratio,
   0005 segmentos sin SQL, 0006 medidas de una sola entidad, 0007 vocabulario
-  Cube, 0008 catálogo en dos vistas).
+  Cube, 0008 catálogo en dos vistas, 0009 rango opcional para el agente).
 
 ## Estructura
 
@@ -208,6 +208,9 @@ curl -s -H 'Authorization: Bearer demo-dashboard-empresa-a' \
   y rango temporal obligatorio. Clase desconocida o ausente → `INVALID_CONSUMER`
   (código nuevo, no estaba en el PRD): sin clase no hay presupuesto y sin
   presupuesto no se ejecuta.
+  **Cambiado el 09-09: el rango dejó de ser obligatorio para `agent` (ver ADR
+  0009).** El mecanismo `rangoObligatorio` y `MISSING_TIME_RANGE` siguen en el
+  código para cualquier clase inyectada por `createEngine({ presupuestos })`.
 - Ninguna consulta sale sin `LIMIT`: el límite efectivo es el menor entre el
   pedido y el máximo de la clase; sin `limit` pedido manda el máximo. Por eso
   todos los planes llevan un parámetro más que en la fase 2.

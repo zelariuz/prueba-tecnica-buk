@@ -15,7 +15,9 @@ equivalente en Cube, se indica para facilitar la lectura al equipo.
   del usuario autenticado y pasa al engine *aparte* de la consulta. El
   consumidor no puede expresarlo en el JSON. Equivalente Cube: `securityContext`.
 - **Consumidor**: quien pide datos: `dashboard`, `api` o `agent` (agente de IA).
-  Cada clase tiene un presupuesto (timeout, límite de filas, rango obligatorio).
+  Cada clase tiene un presupuesto (timeout, límite de filas y, si su clase lo
+  exige, rango temporal obligatorio; ninguna de las tres lo exige desde el
+  09-09, ADR 0009).
 
 ## Definiciones semánticas
 

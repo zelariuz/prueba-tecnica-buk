@@ -32,7 +32,7 @@ probado en este repo), **documento** (explicado con su costo/beneficio) o
 
 | Riesgo | Mitigación | Dónde |
 |---|---|---|
-| Consulta que no termina | `statement_timeout` por clase de consumidor dentro de la transacción; `LIMIT`; rango temporal obligatorio en entidades con dimensión de tiempo | código |
+| Consulta que no termina | `statement_timeout` por clase de consumidor dentro de la transacción; `LIMIT`; rango temporal obligatorio para la clase que lo exija (ninguna lo exige desde el 09-09: el guardarraíl es reactivo, `QUERY_TIMEOUT` con sugerencia de acotar — ADR 0009) | código |
 | Un rol de base de datos no limita recursos (`statement_timeout` es modificable por la sesión) | El rol limita privilegios (solo lectura); el límite de tiempo lo pone el engine; en producción, límite externo en el pooler | documento |
 | Memoria: `work_mem` por operación × operaciones × conexiones | Tope global de conexiones con PgBouncer y `work_mem` bajo por rol | documento |
 | Una empresa grande ocupa el pool | Tope de concurrencia por empresa además de por consumidor; circuit breaker por empresa | evolución |

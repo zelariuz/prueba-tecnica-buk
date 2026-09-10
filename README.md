@@ -10,8 +10,9 @@ semánticos. El aislamiento por empresa es del motor, no del consumidor.
 - Vocabulario: `CONTEXT.md`.
 
 Estado actual: **fase 8, la última del plan** — el caso obligatorio de punta a punta, los
-guardarraíles del consumidor (presupuesto por clase: timeout, máximo de filas,
-rango temporal obligatorio), el catálogo como contrato (valida las definiciones
+guardarraíles del consumidor (presupuesto por clase: timeout, máximo de filas y
+rango temporal exigible —ninguna clase lo exige desde el 09-09, ADR 0009—), el
+catálogo como contrato (valida las definiciones
 contra el esquema real, se describe en dos vistas, se versiona por hash y
 registra consultas tipo), las medidas derivadas (razones calculadas sobre
 agregados, con la semántica de filtros escrita y un dry-run que devuelve el plan
