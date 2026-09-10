@@ -95,12 +95,13 @@ export function createEngine({
   }
 
   // Todo se ejecuta dentro de una transacción: el cliente se libera siempre, y
-  // ante un error se hace ROLLBACK antes de soltarlo para que la siguiente
-  // petición no herede una transacción abierta. Qué más hay que decirle a la
-  // sesión antes de la consulta —en Postgres, el `SET LOCAL statement_timeout`
-  // que hace cumplir el presupuesto— lo dice el dialecto: el engine no nombra
-  // ninguna sentencia de ningún motor, y un motor que no ofrece ninguna no
-  // recibe ninguna.
+  // ante un error se hace ROLLBACK antes de soltarlo —y se suelta con el error,
+  // que es lo que hace que el pool lo destruya en vez de reciclarlo— para que
+  // la siguiente petición no herede ni una transacción abierta ni una conexión
+  // muerta. Qué más hay que decirle a la sesión antes de la consulta —en
+  // Postgres, el `SET LOCAL statement_timeout` que hace cumplir el
+  // presupuesto— lo dice el dialecto: el engine no nombra ninguna sentencia de
+  // ningún motor, y un motor que no ofrece ninguna no recibe ninguna.
   async function ejecutar(sql, params, presupuesto, nombreDeFuente) {
     // Contra qué base se ejecuta y quién traduce sus errores sale de la fuente
     // de la entidad de hechos, que resolvió el planificador.
@@ -110,6 +111,10 @@ export function createEngine({
     // consumidor recibiría un 500 sin nombre en vez del código que le dice que
     // vuelva a intentar.
     const cliente = await conectar(poolDeLaFuente, dialecto, presupuesto);
+    // Qué se le pasa a `release` depende de si esto terminó bien o mal, y eso
+    // se sabe en el `catch`: el `finally` lo lee de aquí para que la liberación
+    // siga ocurriendo exactamente una vez, pase lo que pase.
+    let fallo;
     try {
       await cliente.query('BEGIN');
       for (const sentencia of dialecto.sentenciasDeSesion?.(presupuesto) ?? []) {
@@ -119,13 +124,21 @@ export function createEngine({
       await cliente.query('COMMIT');
       return resultado.rows;
     } catch (error) {
+      fallo = error;
       await cliente.query('ROLLBACK').catch(() => {});
       // Qué significa un código nativo del motor lo sabe el dialecto: el engine
       // no conoce ningún código de error de Postgres, y lo que el dialecto no
       // reconoce vuelve tal cual.
       throw dialecto.traducirError(error, presupuesto);
     } finally {
-      cliente.release();
+      // Con el error, el pool destruye la conexión en vez de devolverla a la
+      // fila: si la sesión se murió a mitad de consulta —la mataron desde otra
+      // conexión, se cayó el socket— reciclarla es servirle a la próxima
+      // petición un cliente que ya no existe. El driver hoy la descarta igual
+      // por su cuenta, pero eso es un detalle interno suyo; decirlo aquí hace
+      // que sea nuestra decisión y no su casualidad. Sin error, `release` no
+      // recibe nada y la conexión vuelve al pool como siempre.
+      cliente.release(fallo);
     }
   }
 

@@ -1,6 +1,7 @@
 import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { setTimeout as esperar } from 'node:timers/promises';
 import pg from 'pg';
 
 import { createCatalog } from '../src/catalog.js';
@@ -755,6 +756,119 @@ describe('el origen que se murió', () => {
     assert.equal(contadores.byResult.error, 1);
     assert.equal(contadores.byErrorCode.SOURCE_UNAVAILABLE, 1);
     assert.equal(contadores.byGate.ejecutar, 1);
+  });
+});
+
+// La otra mitad de `SOURCE_UNAVAILABLE`: no la conexión que nunca se pudo
+// abrir, sino la que estaba abierta y se perdió a mitad de consulta. Esto no se
+// puede fingir con un doble —lo que se prueba es qué hace el engine cuando un
+// backend de verdad se muere debajo suyo—, así que va contra Postgres y se
+// salta sin `DATABASE_URL` como el resto.
+describe('la conexión que se murió a mitad de consulta', { ...conBase, timeout: 30_000 }, () => {
+  // Un pool de un solo cliente: el `pg_backend_pid()` que leemos es el del
+  // único backend que el engine puede usar, así que matar ese pid es matar el
+  // suyo y no el de cualquier otro.
+  let pool;
+  let engine;
+  // El que retiene la tabla, para que la consulta del engine quede a mitad de
+  // camino, y el que mira y mata. Son dos y no uno a propósito: ver
+  // `esperarBloqueado`.
+  let bloqueador;
+  let observador;
+
+  const ctx = { companyId: EMPRESA_A, consumer: 'api' };
+
+  before(async () => {
+    pool = new pg.Pool({ connectionString: DATABASE_URL, max: 1 });
+    // Al cliente al que le matan el backend, node-postgres le emite un 'error'
+    // —y mientras está prestado nadie lo escucha: el oyente del pool sólo
+    // vuelve cuando el cliente se libera—. Sin estos dos oyentes, el proceso de
+    // test se cae por un 'error' sin dueño antes de que el engine alcance a
+    // traducir nada.
+    pool.on('error', () => {});
+    pool.on('acquire', (cliente) => cliente.on('error', () => {}));
+    const catalog = createCatalog();
+    for (const definicion of [reviews, employees, departments]) catalog.register(definicion);
+    engine = createEngine({ catalog, pool });
+    bloqueador = new pg.Client({ connectionString: DATABASE_URL });
+    observador = new pg.Client({ connectionString: DATABASE_URL });
+    await bloqueador.connect();
+    await observador.connect();
+  });
+
+  after(async () => {
+    await bloqueador.end();
+    await observador.end();
+    await pool.end();
+  });
+
+  // `pg_stat_activity` se sondea desde una conexión que no está en transacción
+  // a propósito: dentro de una transacción Postgres sirve siempre la misma foto
+  // de la vista, y el sondeo nunca vería al backend cambiar de estado. Por eso
+  // el que retiene el lock —que sí está en transacción— no puede ser el que
+  // mira.
+  async function esperarBloqueado(pid) {
+    for (let intento = 0; intento < 150; intento += 1) {
+      const { rows } = await observador.query(
+        'SELECT state, wait_event_type FROM pg_stat_activity WHERE pid = $1',
+        [pid],
+      );
+      if (rows[0]?.state === 'active' && rows[0]?.wait_event_type === 'Lock') return;
+      await esperar(20);
+    }
+    assert.fail(`el backend ${pid} nunca quedó esperando la tabla: no hay consulta a mitad de camino que matar`);
+  }
+
+  // Cuenta con reintento porque otro archivo de tests corriendo en paralelo
+  // puede estar justo entre su BEGIN y su COMMIT, y eso es `idle in
+  // transaction` por milisegundos. Lo que no puede quedar es una transacción
+  // pegada.
+  async function transaccionesAbiertas() {
+    let abiertas = -1;
+    for (let intento = 0; intento < 100 && abiertas !== 0; intento += 1) {
+      if (intento > 0) await esperar(20);
+      const { rows } = await observador.query(
+        "SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname = current_database() AND state = 'idle in transaction'",
+      );
+      abiertas = rows[0].n;
+    }
+    return abiertas;
+  }
+
+  it('vuelve como SOURCE_UNAVAILABLE y la consulta siguiente por el mismo engine funciona', async () => {
+    const { rows: backend } = await pool.query('SELECT pg_backend_pid() AS pid');
+    const pid = backend[0].pid;
+
+    // Para matarla "a mitad de consulta" hay que tenerla a mitad de consulta:
+    // con la tabla tomada en exclusiva, el SELECT del engine queda esperándola,
+    // que es el único momento en que su conexión está viva, prestada y ocupada.
+    await bloqueador.query('BEGIN');
+    await bloqueador.query('SET LOCAL lock_timeout = 5000');
+    await bloqueador.query('LOCK TABLE performance_reviews IN ACCESS EXCLUSIVE MODE');
+
+    // Sin `await`: la consulta tiene que quedarse esperando mientras la matamos.
+    // El manejador va enganchado desde ya —`errorAlEsperar` la espera adentro—
+    // para que el rechazo no quede huérfano.
+    const consulta = errorAlEsperar(engine.run(conteoPorEstado, ctx));
+    try {
+      await esperarBloqueado(pid);
+      await observador.query('SELECT pg_terminate_backend($1)', [pid]);
+    } finally {
+      await bloqueador.query('ROLLBACK');
+    }
+
+    const error = await consulta;
+    assert.equal(error.code, 'SOURCE_UNAVAILABLE');
+    assert.match(error.suggestion, /la conexión se perdió/);
+
+    // El pool se repuso solo: el cliente muerto no volvió a la fila y la
+    // consulta siguiente abre uno nuevo y responde los literales del seed.
+    const { rows } = await engine.run(conteoPorEstado, ctx);
+    assert.deepEqual(porEstado(rows), { completed: 5, pending: 4, calibrated: 2 });
+  });
+
+  it('no deja ninguna conexión con una transacción abierta', async () => {
+    assert.equal(await transaccionesAbiertas(), 0);
   });
 });
 

@@ -278,7 +278,7 @@ export const postgres = {
       return new SemanticError({
         code: 'SOURCE_UNAVAILABLE',
         suggestion:
-          'La base de esta fuente no está respondiendo: no se pudo abrir una conexión. No es un problema de la consulta; reintenta más tarde.',
+          'La base de esta fuente no está respondiendo: la conexión se perdió o no se pudo abrir. No es un problema de la consulta; reintenta más tarde.',
       });
     }
     if (error?.code === '57014') {
