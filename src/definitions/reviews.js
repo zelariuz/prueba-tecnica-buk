@@ -28,7 +28,13 @@ export const reviews = {
     avg_score: {
       type: 'avg',
       column: 'score',
-      description: 'Score promedio de las evaluaciones, en la escala de 1 a 5 del módulo.',
+      // 10-09 (decisión del usuario, ADR implícito en la descripción): el
+      // "score de desempeño" se lee sobre evaluaciones completadas. La regla va
+      // en la descripción porque es lo que un agente lee del catálogo.
+      description:
+        'Score promedio de las evaluaciones, en la escala de 1 a 5 del módulo. Como medida de ' +
+        'desempeño se lee sobre evaluaciones completadas: combinar con el segmento `completed` ' +
+        '(una evaluación pendiente o calibrada todavía no es desempeño).',
     },
     completed_count: {
       type: 'count',
