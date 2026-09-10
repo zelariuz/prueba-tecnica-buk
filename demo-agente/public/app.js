@@ -120,6 +120,10 @@ async function arrancar() {
     sincronizarRango();
     sincronizarTexto();
   }
+
+  // El estado de la capa al abrir: presupuestos y contadores de este proceso,
+  // aunque todavía no se haya ejecutado nada.
+  cargarTelemetria();
 }
 
 async function pedir(ruta) {
@@ -441,6 +445,10 @@ function manejarLinea(evento) {
   if (evento.tipo === 'fin') {
     quitarEnCurso();
     pintarResumen(evento.totalMs);
+    // El rastro acaba de sumar consultas a los contadores del proceso: el panel
+    // del pie se refresca acá y no con un temporizador, para que lo que muestre
+    // sea exactamente el efecto de lo que se ve arriba.
+    cargarTelemetria();
     return;
   }
   if (evento.tipo === 'error') {
@@ -778,4 +786,173 @@ function texto(etiqueta, contenido, clase = null) {
   nodo.textContent = contenido;
   if (clase) nodo.className = clase;
   return nodo;
+}
+
+// ---------- telemetría y presupuestos de la capa ----------
+//
+// El pie de la página: lo que la capa dice de sí misma. Sale de
+// `GET /api/telemetria`, que el mini back pide a `GET /analytics/telemetry` con
+// el token INTERNO de la empresa elegida —la capa no se la entrega a un token
+// de clase agente—. Se carga al abrir, se refresca al terminar cada rastro y con
+// el botón "Actualizar", y NUNCA con un temporizador: un refresco de fondo
+// mientras se lee el rastro ensuciaría los contadores que el rastro acaba de
+// producir.
+
+const CLASES_PRESUPUESTO = ['dashboard', 'api', 'agent'];
+const NOTA_DEL_DRY_RUN =
+  'el dry-run de esta demo va con la sesión interna (clase api): por eso su plan.budget muestra ' +
+  '15 s / 10.000; la consulta real va con la clase del token elegido.';
+
+$('actualizar-telemetria').addEventListener('click', cargarTelemetria);
+
+async function cargarTelemetria() {
+  const estadoTexto = $('telemetria-estado');
+  const cuerpo = $('telemetria-cuerpo');
+  const token = $('token').value;
+  estadoTexto.textContent = 'pidiendo…';
+  try {
+    const respuesta = await fetch(`/api/telemetria?token=${encodeURIComponent(token)}`);
+    const datos = await respuesta.json();
+    if (!respuesta.ok) throw new Error(datos.error ?? `HTTP ${respuesta.status}`);
+    const encendido = Math.round((datos.process?.uptimeMs ?? 0) / 1000);
+    estadoTexto.textContent =
+      `GET /analytics/telemetry con el token interno de ${token} · proceso encendido hace ` +
+      `${encendido.toLocaleString('es-CL')} s (desde ${datos.process?.startedAt ?? '?'}) · ` +
+      `leído a las ${new Date().toLocaleTimeString('es-CL')}`;
+    cuerpo.replaceChildren(
+      bloqueDePresupuestos(datos.budgets ?? {}),
+      bloqueDeConsumidores(datos.telemetry ?? {}),
+      detallesCrudos(datos),
+    );
+  } catch (error) {
+    estadoTexto.textContent = `No se pudo: ${error.message}`;
+    cuerpo.replaceChildren();
+  }
+}
+
+// La tabla de `src/budgets.js` tal cual la publica la capa: es lo que explica
+// por qué a una clase se le recorta la salida y a otra no.
+function bloqueDePresupuestos(budgets) {
+  const caja = document.createElement('div');
+  caja.className = 'bloque-telemetria';
+  caja.append(texto('h3', 'Presupuesto por clase', 'etiqueta'));
+
+  const clases = [...CLASES_PRESUPUESTO, ...Object.keys(budgets).filter((c) => !CLASES_PRESUPUESTO.includes(c))];
+  const propia = consumidorElegido()?.clase ?? null;
+  const filas = [];
+  for (const clase of clases) {
+    const presupuesto = budgets[clase];
+    if (!presupuesto) continue;
+    filas.push({
+      destacada: clase === propia,
+      celdas: [
+        { valor: clase, mono: true },
+        { valor: numero(presupuesto.timeoutMs / 1000), numerica: true },
+        { valor: numero(presupuesto.maxFilas), numerica: true },
+        { valor: presupuesto.rangoObligatorio ? 'sí' : 'no' },
+        { valor: numero(presupuesto.cacheTtlMs / 1000), numerica: true },
+      ],
+    });
+  }
+  caja.append(
+    tablaDeDatos(['clase', 'timeout (s)', 'filas máximas', 'rango obligatorio', 'TTL de caché (s)'], filas),
+  );
+  caja.append(texto('p', NOTA_DEL_DRY_RUN, 'nota'));
+  return caja;
+}
+
+// Los contadores del proceso: primero la línea de totales, después el desglose
+// por consumidor y las dos listas de rechazos.
+function bloqueDeConsumidores(telemetry) {
+  const caja = document.createElement('div');
+  caja.className = 'bloque-telemetria';
+  caja.append(texto('h3', 'Por consumidor', 'etiqueta'));
+
+  const cache = telemetry.cache ?? { hits: 0, misses: 0, hitRatio: 0, porNivel: {} };
+  const base = telemetry.database ?? { count: 0, totalMs: 0 };
+  const linea = document.createElement('div');
+  linea.className = 'resumen';
+  linea.append(dato('total', numero(telemetry.total ?? 0)));
+  linea.append(dato('ok', numero(telemetry.byResult?.ok ?? 0)));
+  linea.append(dato('error', numero(telemetry.byResult?.error ?? 0)));
+  linea.append(dato('hit ratio', `${(cache.hitRatio * 100).toFixed(1)} % (${numero(cache.hits)}/${numero(cache.hits + cache.misses)})`));
+  linea.append(dato('hits por nivel', mapaCorto(cache.porNivel)));
+  linea.append(dato('errores de caché', mapaCorto(telemetry.cacheErrors)));
+  linea.append(
+    dato(
+      'base',
+      `${numero(base.count)} consultas · ${base.totalMs.toFixed(1)} ms · ${
+        base.count ? (base.totalMs / base.count).toFixed(1) : '0.0'
+      } ms promedio`,
+    ),
+  );
+  caja.append(linea);
+
+  const clientGone = telemetry.clientGone ?? {};
+  const filas = Object.entries(telemetry.byConsumer ?? {}).map(([consumidor, contadores]) => ({
+    destacada: false,
+    celdas: [
+      { valor: consumidor, mono: true },
+      { valor: numero(contadores.ok), numerica: true },
+      { valor: numero(contadores.error), numerica: true },
+      { valor: numero(contadores.cacheHits), numerica: true },
+      { valor: numero(contadores.cacheMisses), numerica: true },
+      { valor: numero(clientGone[consumidor] ?? 0), numerica: true },
+    ],
+  }));
+  caja.append(
+    filas.length
+      ? tablaDeDatos(['consumidor', 'ok', 'error', 'hits', 'misses', 'clientGone'], filas)
+      : texto('p', 'Todavía no pasó ninguna consulta por este proceso.', 'nota'),
+  );
+
+  caja.append(texto('p', `por código de error: ${mapaCorto(telemetry.byErrorCode)}`, 'medicion'));
+  caja.append(texto('p', `por puerta: ${mapaCorto(telemetry.byGate)}`, 'medicion'));
+  return caja;
+}
+
+// El JSON entero, tal cual lo devolvió la capa: lo de arriba es una lectura, y
+// una lectura sin el original al lado es una afirmación que no se puede
+// comprobar.
+function detallesCrudos(datos) {
+  const detalles = document.createElement('details');
+  const cabecera = document.createElement('summary');
+  cabecera.textContent = 'crudo';
+  detalles.append(cabecera, texto('pre', JSON.stringify(datos, null, 2)));
+  return detalles;
+}
+
+function tablaDeDatos(encabezados, filas) {
+  const tabla = document.createElement('table');
+  tabla.className = 'tabla-datos';
+  const cabecera = document.createElement('tr');
+  for (const titulo of encabezados) cabecera.append(texto('th', titulo));
+  const thead = document.createElement('thead');
+  thead.append(cabecera);
+  const tbody = document.createElement('tbody');
+  for (const fila of filas) {
+    const tr = document.createElement('tr');
+    if (fila.destacada) tr.className = 'destacada';
+    for (const celda of fila.celdas) {
+      const clases = [celda.numerica ? 'numero' : null, celda.mono || celda.numerica ? 'mono' : null]
+        .filter(Boolean)
+        .join(' ');
+      tr.append(texto('td', celda.valor, clases || null));
+    }
+    tbody.append(tr);
+  }
+  tabla.append(thead, tbody);
+  return tabla;
+}
+
+// Un mapa `{ clave: cuenta }` en una línea. Vacío se dice, no se deja en blanco:
+// "ninguno" es un dato y una celda vacía es una duda.
+function mapaCorto(mapa) {
+  const pares = Object.entries(mapa ?? {});
+  if (!pares.length) return 'ninguno';
+  return pares.map(([clave, cuenta]) => `${clave} ${numero(cuenta)}`).join(' · ');
+}
+
+function numero(valor) {
+  return Number(valor).toLocaleString('es-CL');
 }

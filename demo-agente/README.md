@@ -101,7 +101,7 @@ diagnosticar en vivo, no un 500. Un `claude` que no contesta antes de
 
 El front es **HTML, CSS y JavaScript puro** en `public/` —sin frameworks, sin
 librerías y sin paso de build—; el mini back lo sirve como estático y, aparte,
-publica cuatro endpoints:
+publica estos endpoints:
 
 | Endpoint | Qué devuelve |
 | --- | --- |
@@ -109,6 +109,7 @@ publica cuatro endpoints:
 | `GET /api/consumidores` | los tokens de demo elegibles: nombre, etiqueta y rangos precargados. Ningún valor de token — el mini back es el único que los conoce |
 | `GET /api/sesion` | la sesión del agente y los dos prompts completos |
 | `GET /api/rastro?…` | el rastro como **NDJSON en streaming** |
+| `GET /api/telemetria?token=…` | los presupuestos y los contadores de la capa. El mini back se los pide a `GET /analytics/telemetry` con el token **interno** de la empresa de ese token; 400 si el token de demo no existe, 502 si la capa no contesta |
 
 `/api/rastro` responde `application/x-ndjson` con `Transfer-Encoding: chunked` y
 una línea por evento: `inicio` (la petición como la entendió el back y cuántos
@@ -128,6 +129,33 @@ y el error (`code`, `member`, `suggestion`) tal cual en "recibido", y la
 consulta se intenta igual para ver el mismo error por las dos clases de token.
 `rechazo` es 4xx —el consumidor pidió mal, y por eso hay corrección posible—;
 un 5xx es `fallo`: ahí no hay JSON que corregir.
+
+## Presupuestos y telemetría de la capa
+
+Al pie del rastro, un panel con lo que la capa dice de sí misma. Sale de
+`GET /api/telemetria`, que el mini back le pide a `GET /analytics/telemetry`
+con el token **interno** de la empresa elegida: la capa entrega esa ruta sólo a
+una sesión interna y a un token de clase `agente` le responde 403.
+
+- **Presupuesto por clase** — la tabla de `src/budgets.js` tal cual: timeout,
+  filas máximas, rango obligatorio y TTL de caché de `dashboard`, `api` y
+  `agent`. La fila de la clase del token elegido va resaltada con la franja del
+  actor agente. La nota al pie explica el desajuste que se ve en el rastro: el
+  dry-run del salto 2 va con la sesión interna (clase `api`), así que su
+  `plan.budget` muestra 15 s / 10.000, mientras la consulta real del salto 3 va
+  con la clase del token elegido.
+- **Por consumidor** — total, ok, error, hit ratio de caché, hits por nivel,
+  errores de caché y el tiempo de base (consultas, total y promedio); debajo,
+  una fila por consumidor con ok, error, hits, misses y `clientGone`, y las
+  listas cortas "por código de error" y "por puerta". El JSON completo queda a
+  un clic, en `crudo`.
+
+Se carga al abrir la página, se refresca al terminar cada rastro y con el botón
+"Actualizar". **Sin refresco por temporizador**: un pedido de fondo mientras se
+lee el rastro ensuciaría los contadores que ese mismo rastro acaba de producir.
+El dry-run no cuenta en la telemetría (no responde a nadie ni toca la base), así
+que la clase que aparece en `byConsumer` es la del token elegido y no la
+interna.
 
 ## La sesión del agente
 
@@ -249,7 +277,7 @@ src/consumidores.js los pares de tokens de demo (uno por empresa), sus etiquetas
                     y los rangos precargados; y el mapa nombre → valor del .env
 src/agente.js       efectos de Claude Code: spawn, flags, .sesion.json, versión
 src/capa.js         efectos de la capa: fetch, token por nombre, milisegundos
-src/servidor.js     estáticos de public/ y los cuatro endpoints; el rastro sale
+src/servidor.js     estáticos de public/ y los endpoints JSON; el rastro sale
                     como NDJSON, una línea por salto
 public/index.html   la página: cabecera, formulario y la línea de tiempo
 public/app.js       el front: consume el NDJSON y pinta cada salto al llegar

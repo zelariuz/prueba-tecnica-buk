@@ -19,6 +19,11 @@ export const CONSUMIDORES = [
     empresa: 'A',
     agente: 'demo-agente-empresa-a',
     interno: 'demo-interno-empresa-a',
+    // La clase de consumidor con la que la capa presupuesta la consulta real.
+    // Es la del token agente; el interno es de clase `api` y sólo hace el
+    // dry-run. La página la usa para resaltar su fila en la tabla de
+    // presupuestos.
+    clase: 'agent',
     etiqueta: 'demo-agente-empresa-a — clase agente · Empresa A (seed chico, números verificables)',
     variables: { agente: 'TOKEN_AGENTE_A', interno: 'TOKEN_INTERNO_A' },
     // Compatibilidad: el `.env` de antes de la empresa C tenía un solo par de
@@ -44,6 +49,7 @@ export const CONSUMIDORES = [
     empresa: 'C',
     agente: 'demo-agente-empresa-c',
     interno: 'demo-interno-empresa-c',
+    clase: 'agent',
     etiqueta: 'demo-agente-empresa-c — clase agente · Empresa C (1 millón de filas de asistencia)',
     variables: { agente: 'TOKEN_AGENTE_C', interno: 'TOKEN_INTERNO_C' },
     compatibles: null,
@@ -73,9 +79,10 @@ export function consumidorPorId(id) {
 // Lo que baja al navegador: nombres, etiquetas y rangos precargados. Ningún
 // valor de token, porque acá no hay ninguno.
 export function consumidoresPublicos() {
-  return CONSUMIDORES.map(({ id, empresa, etiqueta, nota, rangos, rangoPorDefecto }) => ({
+  return CONSUMIDORES.map(({ id, empresa, clase, etiqueta, nota, rangos, rangoPorDefecto }) => ({
     id,
     empresa,
+    clase,
     etiqueta,
     nota,
     rangos,

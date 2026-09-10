@@ -43,6 +43,10 @@ export function crearServidor({
   // Pide el catálogo a la capa AHORA (para compararlo con el que aprendió la
   // sesión). Opcional: sin él la ruta /api/catalogo devuelve el del arranque.
   pedirCatalogoEnVivo = null,
+  // Pide la telemetría de la capa con el token INTERNO que se le pase. Es una
+  // función y no una URL para que el mini back siga siendo el único que conoce
+  // los valores de los tokens.
+  pedirTelemetria = null,
   claudeCode = null,
   modelo = null,
   reloj = () => performance.now(),
@@ -72,6 +76,27 @@ export function crearServidor({
         });
       } catch (error) {
         responderJson(respuesta, 502, { error: `la capa no respondió el catálogo: ${error.message}` });
+      }
+      return;
+    }
+    // La telemetría de la capa, para el panel del pie. El navegador manda el
+    // NOMBRE del token de consumidor elegido; acá se cambia por el token
+    // INTERNO de esa misma empresa, que es el único al que la capa le contesta
+    // esta ruta (los de clase agente reciben 403). El valor nunca baja al
+    // front, igual que en el resto de la demo.
+    if (url.pathname === '/api/telemetria') {
+      const consumidor = consumidorPorId(url.searchParams.get('token') || CONSUMIDOR_POR_DEFECTO.id);
+      if (!consumidor) {
+        responderJson(respuesta, 400, {
+          error: `no existe el token de demo "${url.searchParams.get('token')}"; los conocidos son ${CONSUMIDORES.map((uno) => uno.id).join(', ')}`,
+        });
+        return;
+      }
+      try {
+        if (!pedirTelemetria) throw new Error('el mini back arrancó sin acceso a la telemetría');
+        responderJson(respuesta, 200, await pedirTelemetria(consumidor.interno));
+      } catch (error) {
+        responderJson(respuesta, 502, { error: `la capa no respondió la telemetría: ${error.message}` });
       }
       return;
     }

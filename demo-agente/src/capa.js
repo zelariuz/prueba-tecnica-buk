@@ -37,6 +37,26 @@ export async function pedirCatalogo({ url, tokens, token = CONSUMIDOR_POR_DEFECT
   return respuesta.json();
 }
 
+// La telemetría del servicio: contadores del proceso, tabla de presupuestos por
+// clase y uptime. La capa la sirve **sólo a una sesión interna** (la misma marca
+// del token que abre el SQL del dry-run), así que acá se pide siempre con el
+// token INTERNO de la empresa elegida, nunca con el de clase agente — ése
+// recibiría 403.
+export async function pedirTelemetria({ url, tokens, token }) {
+  const respuesta = await fetch(`${url}/analytics/telemetry`, {
+    headers: { Authorization: `Bearer ${valorDelToken(tokens, token)}` },
+  });
+  // El cuerpo se lee igual cuando falla: la capa contesta el error estructurado
+  // y su `code` dice mucho más que el número solo.
+  const json = await respuesta.json().catch(() => null);
+  if (!respuesta.ok) {
+    throw new Error(
+      `la capa contestó ${respuesta.status}${json?.code ? ` ${json.code}` : ''} a la telemetría`,
+    );
+  }
+  return json;
+}
+
 function valorDelToken(tokens, nombre) {
   const valor = tokens[nombre];
   if (!valor) throw new Error(`No hay valor configurado para el token "${nombre}".`);

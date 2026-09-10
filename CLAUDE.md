@@ -141,8 +141,9 @@ demo-agente/               demo web del rastro de llamadas: paquete aparte, con 
                            creación y huella del catálogo
   src/protocolo.js         las palabras del agente: prompt del clic, prompt de
                            corrección y lectura del JSON que devuelve
-  src/servidor.js          estáticos de public/ y los tres endpoints; el rastro
-                           sale como NDJSON, una línea por salto
+  src/servidor.js          estáticos de public/ y los endpoints JSON (incluida
+                           la telemetría de la capa); el rastro sale como
+                           NDJSON, una línea por salto
   public/                  el front estático: index.html, app.js, estilo.css y
                            sesion.html (sin frameworks, sin build)
   docs/qa.md               QA del 09-09: las 7 preguntas × 2 caminos, de verdad
@@ -928,6 +929,20 @@ cómo va todo, el evento dice qué acaba de pasar.
   "order":{"departments.name":"asc"}}`), con rango precargado vacío en las dos
   empresas: no lleva `timeDimensions`. Antes de esto el agente escribía el JSON
   correcto y la capa se lo rechazaba con `INVALID_QUERY`.
+- **Panel de presupuestos y telemetría** (09-09 noche): al pie del rastro,
+  alimentado por `GET /api/telemetria?token=<nombre del token de consumidor>`
+  del mini back (`src/servidor.js`), que llama a `GET /analytics/telemetry` de
+  la capa con el token **interno** de esa empresa —la capa se la niega a un
+  token de clase `agente` con 403— por `pedirTelemetria` (`src/capa.js`),
+  cableado en `index.js`. Token de demo desconocido → 400; capa que no responde
+  → 502. Dos tablas: "Presupuesto por clase" (timeout, filas, rango obligatorio
+  y TTL de las tres clases, con la fila de la clase del token elegido resaltada
+  —`clase: 'agent'` es un campo nuevo de `src/consumidores.js`—) y "Por
+  consumidor" (ok, error, hits, misses, clientGone) con una línea de totales
+  encima y el JSON crudo en un `<details>`. Se carga al abrir, se refresca al
+  llegar el evento `fin` del rastro y con el botón "Actualizar"; **sin
+  temporizador**: un refresco de fondo ensuciaría los contadores que el rastro
+  acaba de producir. Todo con `textContent`, como el resto del front.
 - **Regla de operación**: nunca abrir esa sesión de forma interactiva mientras
   el mini back la usa. Es el mismo uuid.
 

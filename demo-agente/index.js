@@ -4,7 +4,7 @@
 import { fileURLToPath } from 'node:url';
 
 import { crearAgente, crearClaude, crearEstadoEnDisco, versionDeClaudeCode } from './src/agente.js';
-import { crearCapa, pedirCatalogo } from './src/capa.js';
+import { crearCapa, pedirCatalogo, pedirTelemetria } from './src/capa.js';
 import { tokensDelEntorno } from './src/consumidores.js';
 import { asegurarSesion, NOMBRE_POR_DEFECTO } from './src/sesion.js';
 import { crearServidor } from './src/servidor.js';
@@ -60,6 +60,9 @@ if (!agente) console.error(`Aviso: sin agente — ${agenteMotivo}.`);
 crearServidor({
   capa: crearCapa({ url, tokens }),
   pedirCatalogoEnVivo: () => pedirCatalogo({ url, tokens }),
+  // El panel del pie: la telemetría se pide con el token interno de la empresa
+  // elegida, que es el único al que la capa se la entrega.
+  pedirTelemetria: (interno) => pedirTelemetria({ url, tokens, token: interno }),
   agente,
   agenteMotivo,
   sesion,

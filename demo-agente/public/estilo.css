@@ -695,3 +695,78 @@ dialog::backdrop {
 .nota code {
   font-size: 12px;
 }
+
+/* ---------- telemetría y presupuestos (pie de la página) ---------- */
+
+.telemetria {
+  margin-top: 1.25rem;
+  display: grid;
+  gap: 0.75rem;
+}
+
+.telemetria-cabecera {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.telemetria-cabecera .etiqueta {
+  margin-bottom: 0;
+}
+
+.bloque-telemetria {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.tabla-datos {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.tabla-datos th {
+  text-align: left;
+  font-weight: 500;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--apagado);
+  padding: 0.3rem 0.6rem;
+  border-bottom: 1px solid var(--borde);
+  white-space: nowrap;
+}
+
+.tabla-datos td {
+  padding: 0.3rem 0.6rem;
+  border-bottom: 1px solid var(--borde);
+}
+
+.tabla-datos tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.tabla-datos td.mono {
+  font-family: var(--mono);
+}
+
+.tabla-datos td.numero {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* La clase del token elegido, con la franja del actor agente: es la misma señal
+   de color que usa el rastro para decir quién habla. */
+.tabla-datos tr.destacada {
+  background: var(--agente-suave);
+  box-shadow: inset 3px 0 0 var(--agente);
+}
+
+.tabla-datos tr.destacada td:first-child {
+  color: var(--agente-texto);
+}
+
+.telemetria .resumen {
+  margin-bottom: 0;
+}
