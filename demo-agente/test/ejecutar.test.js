@@ -133,6 +133,47 @@ test('un departamento vacío deja intactos los demás filtros de la consulta', a
   assert.deepEqual(rastro[1].enviado.timeDimensions[0].dateRange, ['2025-01-01', '2025-12-31']);
 });
 
+// ADR 0009: la clase agente ya no exige rango, así que las fechas del
+// formulario se pueden vaciar. La dimensión temporal se queda —el corte por
+// trimestre es lo que la pregunta pidió— y lo que se va es el `dateRange`.
+test('sin fechas la consulta preparada conserva la dimensión temporal y va sin dateRange', async () => {
+  const capa = capaFalsa([respuestaOk]);
+
+  const rastro = await ejecutar(peticion({ desde: '', hasta: '' }), {
+    agente: null,
+    capa,
+    reloj: () => 0,
+  });
+
+  const [temporal] = rastro[1].enviado.timeDimensions;
+  assert.deepEqual(temporal, { dimension: 'reviews.period', granularity: 'quarter' });
+  assert.equal('dateRange' in temporal, false);
+});
+
+// Una sola fecha no es un rango: mandar [<vacío>, 2025-12-31] sería un rango
+// inválido con forma de rango.
+test('con una sola de las dos fechas la consulta preparada tampoco lleva dateRange', async () => {
+  const capa = capaFalsa([respuestaOk]);
+
+  const rastro = await ejecutar(peticion({ hasta: '' }), { agente: null, capa, reloj: () => 0 });
+
+  assert.equal('dateRange' in rastro[1].enviado.timeDimensions[0], false);
+});
+
+// La pregunta que el rango obligatorio dejaba fuera: ni dimensiones ni tiempo.
+test('la pregunta por cuántos empleados hay viaja sin timeDimensions', async () => {
+  const capa = capaFalsa([respuestaOk]);
+
+  const rastro = await ejecutar(
+    peticion({ pregunta: 'cuantos-empleados-hay', desde: '', hasta: '', departamento: '' }),
+    { agente: null, capa, reloj: () => 0 },
+  );
+
+  assert.deepEqual(rastro[1].enviado, {
+    measures: ['employees.headcount', 'employees.active_headcount'],
+  });
+});
+
 const errorUnknownMember = {
   status: 400,
   json: {
@@ -323,6 +364,51 @@ test('sin departamento la frase de filtros no lo nombra', async () => {
   await ejecutar(peticion({ usarAgente: true, departamento: '' }), { agente, capa, reloj: () => 0 });
 
   assert.match(agente.prompts[0], /Filtros: desde 2025-01-01, hasta 2025-12-31\./);
+});
+
+// Las fechas van UNA sola vez, en la línea de filtros: el texto de la pregunta
+// ya no las lleva. Antes iban en los dos sitios y el agente veía dos veces lo
+// mismo.
+test('el texto de la pregunta no repite las fechas de la línea de filtros', async () => {
+  const capa = capaFalsa([respuestaOk]);
+  const agente = agenteFalso([JSON.stringify(consultaDelAgente)]);
+
+  await ejecutar(peticion({ usarAgente: true }), { agente, capa, reloj: () => 0 });
+
+  const [texto, filtros] = agente.prompts[0].split('\n\nFiltros: ');
+  assert.ok(!texto.includes('2025-01-01'), 'el texto de la pregunta no nombra las fechas');
+  assert.equal(filtros, 'desde 2025-01-01, hasta 2025-12-31, departamento Ingeniería.');
+});
+
+test('sin fechas la línea de filtros no las nombra', async () => {
+  const capa = capaFalsa([respuestaOk]);
+  const agente = agenteFalso([JSON.stringify(consultaDelAgente)]);
+
+  await ejecutar(peticion({ usarAgente: true, desde: '', hasta: '' }), {
+    agente,
+    capa,
+    reloj: () => 0,
+  });
+
+  assert.match(agente.prompts[0], /Filtros: departamento Ingeniería\.$/);
+});
+
+test('sin ningún filtro el prompt del clic es el texto de la pregunta y nada más', async () => {
+  const capa = capaFalsa([respuestaOk]);
+  const agente = agenteFalso([JSON.stringify(consultaDelAgente)]);
+
+  await ejecutar(
+    peticion({
+      pregunta: 'cuantos-empleados-hay',
+      usarAgente: true,
+      desde: '',
+      hasta: '',
+      departamento: '',
+    }),
+    { agente, capa, reloj: () => 0 },
+  );
+
+  assert.equal(agente.prompts[0], 'Cuántos empleados hay en total y cuántos de ellos están activos.');
 });
 
 test('un noPuedo del agente es el único salto del rastro y la capa no se llama', async () => {

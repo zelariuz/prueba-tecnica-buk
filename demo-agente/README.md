@@ -60,7 +60,9 @@ que el mini back no conoce se rechaza con 400.
 Cada empresa trae sus **rangos precargados**: la A abre la asistencia en junio a
 agosto de 2025 (los meses que tiene el seed chico) y todo lo demás en 2025
 entero; la C abre todo en 2025 entero, asistencia incluida, porque tiene los dos
-años completos.
+años completos. Las **fechas son opcionales** (ADR 0009): vaciarlas manda la
+consulta sin `dateRange`, y las dos preguntas sobre `employees` —que no tiene
+dimensión temporal— vienen ya con el rango vacío.
 
 La **sesión del agente es una sola** para las dos: el catálogo público no depende
 del consumidor (ADR 0008), así que cambiar de token cambia la empresa de los
@@ -191,10 +193,10 @@ esa es la diferencia que la demo hace ver. El QA del 09-09 (`docs/qa.md`, 14
 corridas) volvió a dar lo mismo: 3,2-6,2 s y 0,0025-0,0056 USD por llamada al
 agente, 2-17 ms por llamada a la capa.
 
-## Las 7 preguntas preparadas
+## Las 8 preguntas preparadas
 
 Viven en `preguntas.json` (datos, no código). Las 3 del caso, las otras 3
-consultas tipo del catálogo y la trampa:
+consultas tipo del catálogo, la trampa y la más simple de todas:
 
 | Pregunta | Qué demuestra |
 | --- | --- |
@@ -202,9 +204,10 @@ consultas tipo del catálogo y la trampa:
 | Completitud por departamento | Medida derivada (ratio) |
 | Asistencia por departamento y mes | Otra entidad, otra dimensión temporal |
 | Empleados que completaron por trimestre | La medida trae puesto su segmento |
-| Conteo de evaluaciones por estado | La clase `agente` exige rango: la demo se lo agrega |
-| Headcount por departamento | **No es ejecutable por la clase `agente`**: `employees` no publica dimensión temporal ni tiene camino de joins hacia una, así que no hay `timeDimensions` posible y la consulta termina en `MISSING_TIME_RANGE`. El dry-run interno sí pasa —el token interno no tiene rango obligatorio—, y por eso el rastro muestra el plan y el SQL de algo que la consulta real después rechaza. Con agente se ve entero: JSON correcto → rechazo → corrección → `noPuedo` ("la entidad employees no publica una dimensión temporal") |
+| Conteo de evaluaciones por estado | La consulta tipo no lleva rango y la demo se lo agrega igual; desde el ADR 0009 se puede vaciar |
+| Headcount por departamento | Una consulta sin tiempo: `employees` no publica dimensión temporal ni tiene camino de joins hacia una, así que no hay `timeDimensions` que poner. Hasta el 09-09 la clase `agente` la rechazaba con `MISSING_TIME_RANGE` y sólo respondía con un token de otra clase; desde el **ADR 0009** la ejecuta igual que las demás |
 | Sueldo promedio por departamento | La trampa: `employees.salary_avg` no existe → `UNKNOWN_MEMBER` con sugerencia |
+| Cuántos empleados hay, activos e inactivos | La más simple: sin dimensiones y sin tiempo, una sola fila. Es la pregunta que el rango obligatorio hacía irrespondible (ADR 0009) |
 
 ## Tests
 
@@ -227,14 +230,14 @@ El front estático, el `spawn` de `claude`, el adaptador `fetch` y el arranque n
 tienen tests: son efectos, y se verifican mirando la página.
 
 Lo que sí se verificó a mano, contra la capa real y Claude Code real, está en
-**[`docs/qa.md`](docs/qa.md)**: las 7 preguntas por los dos caminos, con las
+**[`docs/qa.md`](docs/qa.md)**: las 7 preguntas de la primera vuelta por los dos caminos, con las
 filas, el reintento, la caché, los tiempos y el costo.
 
 ## Los archivos
 
 ```
 index.js            arranque: configuración, catálogo, sesión y escucha
-preguntas.json      las 7 preguntas preparadas (datos, no código)
+preguntas.json      las 8 preguntas preparadas (datos, no código)
 src/ejecutar.js     el seam: petición → rastro de saltos
 src/sesion.js       el seam: crear/conservar/recrear la sesión, prompt y huella
 src/protocolo.js    las palabras que se cruzan con el agente: prompt del clic,

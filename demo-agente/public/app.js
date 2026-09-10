@@ -183,9 +183,10 @@ function llenarSelector(preguntas) {
   }
 }
 
-// El rango es obligatorio —la clase `agente` no ejecuta sin `dateRange`, y todos
-// los JSON preparados llevan los marcadores—, así que cada pregunta trae uno que
-// da filas con el seed de su empresa. Los precargados salen de
+// El rango es opcional desde el ADR 0009, pero sigue precargado: cada pregunta
+// trae uno que da filas con el seed de su empresa, y vaciarlo a mano manda la
+// consulta sin `dateRange`. Las preguntas sobre `employees` —que no tiene
+// dimensión temporal— vienen con el rango vacío. Los precargados salen de
 // `/api/consumidores`: dependen de la empresa (la asistencia de la A son tres
 // meses; la de la C, el año entero). Se precarga al cambiar de pregunta o de
 // token y deja de tocarse en cuanto el usuario escribe una fecha a mano.
@@ -757,9 +758,10 @@ function comparacionDelAgente() {
 }
 
 // Réplica exacta de `src/preguntas.js`: departamento vacío no manda un filtro
-// vacío, le saca el filtro a la consulta.
+// vacío, le saca el filtro a la consulta; fechas vacías le sacan el `dateRange`
+// a la dimensión temporal y le dejan la granularidad.
 function prepararConsulta(pregunta, { desde, hasta, departamento }) {
-  const consulta = sinFiltroVacio(pregunta.consulta, departamento);
+  const consulta = sinRangoVacio(sinFiltroVacio(pregunta.consulta, departamento), desde, hasta);
   return sustituir(consulta, {
     ':desde': desde,
     ':hasta': hasta,
@@ -767,11 +769,17 @@ function prepararConsulta(pregunta, { desde, hasta, departamento }) {
   });
 }
 
-function prepararTexto(texto, { desde, hasta, departamento }) {
-  return texto
-    .replaceAll(':desde', desde ?? '')
-    .replaceAll(':hasta', hasta ?? '')
-    .replaceAll(':departamento', departamento || 'todos los departamentos');
+function prepararTexto(texto, { departamento }) {
+  return texto.replaceAll(':departamento', departamento || 'todos los departamentos');
+}
+
+function sinRangoVacio(consulta, desde, hasta) {
+  if (desde && hasta) return consulta;
+  if (!Array.isArray(consulta.timeDimensions)) return consulta;
+  return {
+    ...consulta,
+    timeDimensions: consulta.timeDimensions.map(({ dateRange: _fuera, ...resto }) => resto),
+  };
 }
 
 function sinFiltroVacio(consulta, departamento) {

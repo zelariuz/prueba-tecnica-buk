@@ -5,12 +5,21 @@
 import { prepararTexto } from './preguntas.js';
 
 // El prompt del clic: el texto de la pregunta —el editado si lo hay— más la
-// frase fija de filtros. El agente traduce esa frase a `timeDimensions` y
-// `filters`; la demo no le pasa el JSON preparado nunca.
+// línea de filtros. El agente traduce esa línea a `timeDimensions` y `filters`;
+// la demo no le pasa el JSON preparado nunca.
+//
+// Cada filtro se nombra UNA sola vez y sólo si existe: el texto de la pregunta
+// ya no lleva las fechas (antes iban ahí y otra vez acá, y el agente veía dos
+// veces lo mismo), y sin fechas ni departamento la línea entera desaparece. Un
+// rango vacío no es un error desde el ADR 0009: es una consulta sin rango.
 export function promptDelClic(pregunta, peticion) {
   const texto = peticion.texto || prepararTexto(pregunta.texto, peticion);
-  const departamento = peticion.departamento ? `, departamento ${peticion.departamento}` : '';
-  return `${texto}\n\nFiltros: desde ${peticion.desde}, hasta ${peticion.hasta}${departamento}.`;
+  const filtros = [
+    peticion.desde ? `desde ${peticion.desde}` : null,
+    peticion.hasta ? `hasta ${peticion.hasta}` : null,
+    peticion.departamento ? `departamento ${peticion.departamento}` : null,
+  ].filter(Boolean);
+  return filtros.length > 0 ? `${texto}\n\nFiltros: ${filtros.join(', ')}.` : texto;
 }
 
 // El prompt de corrección: el error tal cual lo publica la capa. La sugerencia

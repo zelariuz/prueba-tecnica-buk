@@ -17,17 +17,37 @@ export function preguntaPorId(id) {
 // llamado ":departamento", que no existe y devolvería cero filas — justo lo
 // que no queremos mostrar.
 export function prepararConsulta(pregunta, { desde, hasta, departamento }) {
-  const consulta = estructuraSinFiltroVacio(pregunta.consulta, departamento);
+  const consulta = sinRangoVacio(
+    estructuraSinFiltroVacio(pregunta.consulta, departamento),
+    desde,
+    hasta,
+  );
   return sustituir(consulta, { ':desde': desde, ':hasta': hasta, [MARCADOR_DEPARTAMENTO]: departamento });
 }
 
-// El texto en lenguaje natural lleva los mismos marcadores; sin departamento
-// la frase dice "todos los departamentos" en vez de dejar el marcador crudo.
-export function prepararTexto(texto, { desde, hasta, departamento }) {
-  return texto
-    .replaceAll(':desde', desde ?? '')
-    .replaceAll(':hasta', hasta ?? '')
-    .replaceAll(MARCADOR_DEPARTAMENTO, departamento || 'todos los departamentos');
+// El texto en lenguaje natural lleva el marcador del departamento; sin
+// departamento la frase dice "todos los departamentos" en vez de dejar el
+// marcador crudo. Las fechas NO están en el texto: van una sola vez, en la
+// línea de filtros de `promptDelClic`.
+export function prepararTexto(texto, { departamento }) {
+  return texto.replaceAll(MARCADOR_DEPARTAMENTO, departamento || 'todos los departamentos');
+}
+
+// Sin fechas no hay `dateRange`: la dimensión temporal se queda con su
+// granularidad, que la capa acepta desde el ADR 0009 (ninguna clase exige
+// rango). Se le quita el rango, y no la dimensión entera, porque el corte por
+// tiempo es lo que la pregunta pidió: "por trimestre" sigue siendo por
+// trimestre aunque no se acote el período.
+//
+// Basta con que falte UNA de las dos fechas: un `dateRange` es un par, y
+// mandar [<vacío>, 2025-12-31] sería un rango inválido con forma de rango.
+function sinRangoVacio(consulta, desde, hasta) {
+  if (desde && hasta) return consulta;
+  if (!Array.isArray(consulta.timeDimensions)) return consulta;
+  return {
+    ...consulta,
+    timeDimensions: consulta.timeDimensions.map(({ dateRange: _fuera, ...resto }) => resto),
+  };
 }
 
 function estructuraSinFiltroVacio(consulta, departamento) {

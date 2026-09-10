@@ -147,12 +147,18 @@ test('el prompt de creación fija el contrato de salida: solo JSON, o noPuedo', 
   assert.match(prompt, /ÚNICAMENTE un objeto JSON/);
 });
 
-test('el prompt de creación dice las reglas que el catálogo no dice: rango y granularidad obligatorios', () => {
+// Desde el ADR 0009 el rango no es obligatorio para la clase agente, y el
+// prompt es lo único que el agente sabe: si siguiera diciendo que la capa
+// responde MISSING_TIME_RANGE, el agente inventaría fechas para preguntas que
+// no las tienen.
+test('el prompt de creación dice las reglas que el catálogo no dice: granularidad obligatoria, rango opcional', () => {
   const prompt = promptDeCreacion(catalogoReal);
 
   assert.match(prompt, /timeDimensions/);
-  assert.match(prompt, /dateRange/);
   assert.match(prompt, /granularity/);
+  assert.match(prompt, /"dateRange"\) es OPCIONAL/);
+  assert.match(prompt, /QUERY_TIMEOUT/);
+  assert.ok(!prompt.includes('MISSING_TIME_RANGE'), 'el rango ya no se anuncia como obligatorio');
 });
 
 test('el prompt de creación prohíbe el SQL y los miembros inventados', () => {

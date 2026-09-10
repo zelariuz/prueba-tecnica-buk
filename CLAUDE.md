@@ -889,6 +889,18 @@ cómo va todo, el evento dice qué acaba de pasar.
   consumidor (ADR 0008), así que no hay sesión por empresa. `/api/sesion` lo
   dice (`catalogoUnicoParaTodasLasEmpresas`, `motivoCatalogoUnico`) y la tarjeta
   "Antes de todo" lo muestra cuando el token elegido no es el de la A.
+- **Fechas opcionales y 8 preguntas** (09-09 noche, ADR 0009): el rango dejó de
+  ser obligatorio para la clase `agent`, así que `desde` y `hasta` ya no son
+  `required` en el formulario —siguen precargadas por pregunta y se pueden
+  vaciar— y `prepararConsulta` deja la `timeDimension` con su granularidad pero
+  sin `dateRange` cuando falta cualquiera de las dos fechas (un rango es un par).
+  El prompt de creación dice que el rango es opcional y que el límite real es
+  `QUERY_TIMEOUT` con su sugerencia; ya no nombra `MISSING_TIME_RANGE`. Las
+  fechas viajan **una sola vez**: el texto de la pregunta ya no las lleva y la
+  línea "Filtros:" las agrega sólo si existen (sin ningún filtro, no hay línea).
+  `headcount-por-departamento` deja de ser "solo con token de otra clase" y se
+  suma `cuantos-empleados-hay` (`employees.headcount` y `active_headcount`, sin
+  dimensiones ni tiempo): son las dos que vienen con el rango precargado vacío.
 - **Regla de operación**: nunca abrir esa sesión de forma interactiva mientras
   el mini back la usa. Es el mismo uuid.
 

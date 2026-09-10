@@ -52,13 +52,18 @@
             <div class="fila">
               <label class="campo">
                 <span class="etiqueta">Desde</span>
-                <input type="date" id="desde" name="desde" value="2025-06-01" required />
+                <input type="date" id="desde" name="desde" value="2025-06-01" />
               </label>
               <label class="campo">
                 <span class="etiqueta">Hasta</span>
-                <input type="date" id="hasta" name="hasta" value="2025-08-31" required />
+                <input type="date" id="hasta" name="hasta" value="2025-08-31" />
               </label>
             </div>
+            <p class="nota">
+              Las fechas son opcionales (ADR 0009): vacíalas las dos y la consulta sale sin
+              <code>dateRange</code>. La capa la ejecuta igual, con el tope de 1.000 filas y los
+              10 s de la clase <code>agente</code>.
+            </p>
 
             <label class="campo">
               <span class="etiqueta">Departamento</span>

@@ -101,10 +101,15 @@ ${JSON.stringify(catalogo, null, 2)}
 REGLAS DEL VOCABULARIO QUE EL CATÁLOGO NO DICE:
 
 - "measures" y "dimensions" son listas de nombres del catálogo, con su prefijo de entidad.
-- TODA consulta lleva "timeDimensions": una lista con un objeto
+- "timeDimensions" es una lista con un objeto
   { "dimension": <la dimensión temporal de la entidad>, "granularity": <una de granularities>,
-  "dateRange": [<desde>, <hasta>] }. El rango es obligatorio para tu clase: sin él la capa
-  responde MISSING_TIME_RANGE. Las fechas van en formato AAAA-MM-DD.
+  "dateRange": [<desde>, <hasta>] }. Va cuando la pregunta pide un corte por tiempo (por mes,
+  por trimestre, por año) o nombra fechas o un período; si la pones, "granularity" es
+  obligatorio. Hay entidades que no publican dimensión temporal: ahí no va ninguna.
+- El rango de fechas ("dateRange") es OPCIONAL: ponlo cuando la pregunta nombre fechas o un
+  período, y déjalo fuera cuando no. Sin rango la capa ejecuta igual, con los límites de tu
+  clase: recorta a 1.000 filas y corta a los 10 s, y si eso pasa te devuelve QUERY_TIMEOUT
+  con la sugerencia de acotar el tiempo. Las fechas van en formato AAAA-MM-DD.
 - "filters" es una lista de { "member": <miembro>, "operator": <operador publicado para ese
   miembro>, "values": [<valores>] }.
 - "segments" es una lista de nombres de segmento del catálogo.
