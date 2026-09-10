@@ -29,6 +29,16 @@ if (!DATABASE_URL) {
 // traduce el fallo a SOURCE_UNAVAILABLE y el consumidor recibe un 503 con
 // Retry-After en vez de una respuesta que nunca llega.
 const pool = new pg.Pool({ connectionString: DATABASE_URL, connectionTimeoutMillis: 2000 });
+// Una conexión que se muere mientras espera en el pool —la base se reinició,
+// alguien la mató desde otra sesión— emite su 'error' en el pool, y un 'error'
+// sin oyente en Node tumba el proceso: el servicio se caería por una conexión
+// ociosa que ni siquiera estaba sirviendo a nadie. El pool la descarta y abre
+// otra cuando haga falta; acá sólo queda la línea que lo cuenta. La conexión
+// que se muere mientras está prestada la maneja el engine, que es quien la
+// tiene.
+pool.on('error', (error) => {
+  console.warn(`[pool] conexión ociosa caída: ${error.code ?? error.message}`);
+});
 const tokens = tokensDeDemo(process.env);
 
 const snapshot = await postgres.introspect(pool);
