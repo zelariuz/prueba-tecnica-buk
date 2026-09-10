@@ -12,5 +12,12 @@ export const departments = {
       description: 'Nombre del departamento tal como lo nombra la empresa.',
     },
   },
-  measures: {},
+  measures: {
+    // Agregada el 09-09: era la única entidad sin medida de conteo, y "cuántos
+    // departamentos hay" no tenía traducción (el agente respondía noPuedo).
+    count: {
+      type: 'count',
+      description: 'Cantidad de departamentos.',
+    },
+  },
 };

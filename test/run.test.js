@@ -63,6 +63,17 @@ describe('conteo de evaluaciones por estado', conBase, () => {
     assert.ok(meta.queryId.length > 0, 'meta.queryId identifica la forma de la consulta');
   });
 
+  // 09-09: `departments` era la única entidad sin medida de conteo, y "cuántos
+  // departamentos hay" no tenía traducción. Literales del seed: 2 y 2.
+  it('departments.count cuenta los departamentos de la empresa del contexto', async () => {
+    const consulta = { measures: ['departments.count'] };
+    const a = await engine.run(consulta, { companyId: EMPRESA_A, consumer: 'api' });
+    const b = await engine.run(consulta, { companyId: 2, consumer: 'api' });
+
+    assert.deepEqual(a.rows, [{ 'departments.count': 2 }]);
+    assert.deepEqual(b.rows, [{ 'departments.count': 2 }]);
+  });
+
   it('la misma consulta para la empresa B devuelve los números de la empresa B', async () => {
     const { rows } = await engine.run(conteoPorEstado, {
       companyId: EMPRESA_B,
