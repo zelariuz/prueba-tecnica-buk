@@ -28,6 +28,69 @@ Dos caminos, la misma página:
   apagada con el motivo a la vista y `agente=1` en la URL se ignora con una nota:
   **el camino sin agente es el respaldo y no necesita nada de Claude Code**.
 
+## Paso a paso desde cero
+
+Para quien clona el repo y nunca vio esto. Cada paso deja algo verificable.
+
+1. **La capa arriba.** Desde la raíz del repo:
+   ```bash
+   docker compose up -d --build
+   curl -s -H 'Authorization: Bearer demo-agente-empresa-a' http://localhost:3000/analytics/catalog | head -c 200
+   ```
+   Debe devolver JSON con `"version"`. La primera vez el seed tarda ~10 s
+   (la empresa C son 1 062 283 filas); `docker compose ps` muestra `db`,
+   `redis` y `api` sanos.
+2. **Node 24.** `node -v` debe decir `v24.x`; si no, la instalación está en el
+   README de la raíz (sección Requisitos, `nvm install 24`). La demo no tiene
+   dependencias: no hay `npm install` que correr aquí.
+3. **Claude Code, sólo para el camino con agente.** Instalación oficial
+   (macOS, Linux, WSL):
+   ```bash
+   curl -fsSL https://claude.ai/install.sh | bash
+   claude --version     # debe imprimir un número seguido de "(Claude Code)"
+   claude               # la primera vez pide iniciar sesión en el navegador
+   ```
+   Inicia sesión con una cuenta **Pro o Max** y activa una vez el crédito
+   mensual del Agent SDK en la cuenta (es lo que cubre `claude -p`; sin él,
+   las llamadas se detienen cuando se agota el crédito). Sal de la sesión
+   interactiva con `/exit`: la demo va a usar `claude -p` por su cuenta.
+   Si te saltas este paso, la demo arranca igual con la casilla del agente
+   apagada y el motivo a la vista.
+4. **Configuración.** Desde la raíz:
+   ```bash
+   cp demo-agente/.env.example demo-agente/.env
+   ```
+   Los valores por defecto calzan con el `docker-compose.yml` del repo
+   (capa en `:3000`, tokens de demo de las empresas A y C, modelo
+   `claude-sonnet-5`, puerto `3100`). Sólo hay que tocarlo si cambiaste
+   puertos o tokens.
+5. **Arrancar.**
+   ```bash
+   cd demo-agente && npm start
+   ```
+   El log dice tres cosas: que leyó el catálogo (versión y huella), qué pasó
+   con la sesión del agente (`creada`, `reutilizada` o `creada (el catálogo
+   cambió)`; crearla tarda unos 10 s y es una sola llamada a Claude Code), y
+   que escucha en <http://localhost:3100/>. Si la capa no responde, muere
+   diciendo qué levantar.
+6. **Primer clic.** Abre <http://localhost:3100/>, deja el token
+   `demo-agente-empresa-a`, elige "Enunciado 3 · Tasa de asistencia por
+   departamento" y pulsa Ejecutar sin marcar "usar agente": dos saltos en
+   milisegundos y las filas del seed (Ingeniería 92,59 y Ventas 91,55).
+   Después marca "usar agente" y repite: aparece el salto 1 con lo que
+   escribió Claude Code, 3 a 7 s. F5 sobre la misma URL muestra `cache-l1`.
+7. **Reset.** Para empezar con la sesión del agente limpia (por ejemplo,
+   antes de una demo en vivo): parar el mini back, borrar
+   `demo-agente/.sesion.json` y volver a `npm start`. Si cambia el catálogo
+   (una definición nueva), no hace falta: el mini back lo detecta por la
+   huella y crea la sesión solo.
+
+Qué puede salir mal y qué significa: casilla del agente apagada = `claude`
+no está en el PATH o no está logueado (el motivo está al lado); un salto al
+agente en `fallo` con "timeout" = Claude Code tardó más de `AGENTE_TIMEOUT_MS`
+(60 s); `502` en el panel de telemetría = la capa se cayó (`docker compose
+ps`); `400` al ejecutar = token que el mini back no conoce (revisar `.env`).
+
 ## Dos comandos
 
 ```bash
