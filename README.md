@@ -309,6 +309,51 @@ sólo el departamento. Agregar `granularity: 'month'` devuelve la tendencia mes 
 mes, que es la otra pregunta. Una `timeDimension` **sin** `dateRange` y **sin**
 `granularity` es `INVALID_QUERY`: no filtra ni agrupa, así que no dice nada.
 
+### Una serie sin huecos: `fillMissing`
+
+Una serie agregada sólo trae los buckets que **tienen filas**, así que un
+gráfico de líneas salta los días sin datos y dibuja una curva que miente.
+`fillMissing: true` en la dimensión temporal devuelve **todos** los buckets del
+rango (ADR 0012). Exige `granularity` y `dateRange`: sin los dos no hay serie
+que generar.
+
+```js
+await engine.run(
+  {
+    measures: ['attendance.count', 'attendance.attendance_rate'],
+    dimensions: ['departments.name'],
+    timeDimensions: [
+      {
+        dimension: 'attendance.date',
+        granularity: 'day',
+        dateRange: ['2025-08-08', '2025-08-14'],
+        fillMissing: true,
+      },
+    ],
+    order: { 'departments.name': 'asc', 'attendance.date': 'asc' },
+  },
+  { companyId: 1, consumer: 'dashboard' },
+);
+// Ventas no registra asistencia después del 10 de agosto. Sin la bandera, esos
+// cuatro días simplemente no salen; con ella:
+// → [ …,
+//    { 'departments.name': 'Ventas', 'attendance.date': '2025-08-10', 'attendance.count': 1, 'attendance.attendance_rate': 0 },
+//    { 'departments.name': 'Ventas', 'attendance.date': '2025-08-11', 'attendance.count': 0, 'attendance.attendance_rate': null },
+//    { 'departments.name': 'Ventas', 'attendance.date': '2025-08-12', 'attendance.count': 0, 'attendance.attendance_rate': null }, … ]
+```
+
+**Qué se rellena con qué lo decide el tipo de la medida**, no la consulta: un
+`count`, un `count_distinct` y un `sum` valen **0** en un bucket vacío, porque
+hubo cero eventos. Un `avg` y una razón quedan **nulos**: promediar cero valores
+no da cero, da nada, y un 0 ahí hunde la línea del gráfico con un número falso.
+
+La bandera vive en la consulta y no en la definición del módulo porque una serie
+densa la necesita quien dibuja, no la entidad: el mismo módulo alimenta un
+gráfico que la quiere y una exportación que no. El SQL está en
+`test/snapshots/relleno-de-serie.sql`. Requiere que el dialecto de la fuente
+declare la capacidad `serieDeFechas`: Postgres la declara, SQLite no, y pedirla
+sobre SQLite sale con `UNSUPPORTED_OPERATOR` (400) y una sugerencia.
+
 ## Medidas derivadas: razones sobre agregados
 
 `completion_rate` no se declara como una fórmula: se declara como la razón entre

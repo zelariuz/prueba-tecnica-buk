@@ -24,7 +24,8 @@ TypeScript, Node 24, `node:test`, node-postgres.
   sesión separado, 0003 CTE por entidad con empresa, 0004 derivadas ratio,
   0005 segmentos sin SQL, 0006 medidas de una sola entidad, 0007 vocabulario
   Cube, 0008 catálogo en dos vistas, 0009 rango opcional para el agente,
-  0010 consultas sin medida, 0011 rango sin granularidad).
+  0010 consultas sin medida, 0011 rango sin granularidad, 0012 relleno de
+  series densas).
 
 ## Estructura
 
@@ -39,16 +40,18 @@ src/
   definitions/index.js       composición: qué módulos y qué consultas tipo
                              existen, y `registrarModulos(catalog, snapshot)`
   dialect/postgres.js        el motor, entero: sintaxis (dateTrunc,
-                             agregadoFiltrado, aNumerico, tablaFisica,
-                             sentenciasDeSesion y capacidades), introspección del
-                             esquema, mapa de tipos físicos → semánticos y
-                             traducción de errores nativos
+                             serieDeFechas, agregadoFiltrado, aNumerico,
+                             tablaFisica, sentenciasDeSesion y capacidades),
+                             introspección del esquema, mapa de tipos físicos →
+                             semánticos y traducción de errores nativos
   dialect/sqlite.js          el segundo motor, con las mismas cuatro
                              responsabilidades sobre `node:sqlite`: dateTrunc con
                              strftime/printf, introspección por PRAGMA, tipos por
                              afinidad y errores por texto. Declara lo que no
                              puede prometer (tiposGarantizados: false,
-                             timeoutDeSentencia: false)
+                             timeoutDeSentencia: false, serieDeFechas: false —
+                             sin generate_series no hay serie que calce con
+                             dateTrunc en las cinco granularidades, ADR 0012)
   dialect/sqlite-pool.js     adaptador de DatabaseSync al contrato mínimo de pool
                              (connect → { query, release }); traduce los
                              parámetros posicionales $n a los nombrados de SQLite
@@ -122,6 +125,9 @@ test/
   snapshots/rango-sin-granularidad.sql  SQL esperado del rango que sólo filtra:
                              el dateRange en la CTE y sin la fecha en el
                              SELECT ni en el GROUP BY (ADR 0011)
+  snapshots/relleno-de-serie.sql  SQL esperado del relleno de serie densa: las
+                             CTE serie, ejes y agregada, el CROSS JOIN y el
+                             LEFT JOIN por bucket (ADR 0012)
   fixtures/snapshot.json     foto del esquema generada desde la base del caso
   fixtures/caso-sqlite.sql   el mismo esquema y las mismas 16 evaluaciones,
                              escritos para SQLite
@@ -226,6 +232,31 @@ curl -s -H 'Authorization: Bearer demo-dashboard-empresa-a' \
 - Repo público: sin datos personales ni nombres reales en seeds ni ejemplos.
 
 ## Estado
+
+Relleno de series densas (11-09, ADR 0012): una `timeDimension` con
+`granularity`, `dateRange` y `fillMissing: true` devuelve **todos** los buckets
+del rango, también los vacíos, para que un gráfico no salte días. La bandera vive
+en la consulta y no en la definición del módulo: la serie densa la necesita quien
+dibuja, no la entidad. Qué se rellena con qué lo decide el **tipo de la medida**:
+`count`, `count_distinct` y `sum` → `COALESCE(…, 0)`; `avg` y `ratio` quedan
+**nulos** (un promedio de cero valores no es cero). Las derivadas se siguen
+calculando afuera, sobre el resultado ya denso, y su denominador rellenado en 0
+las anula solo por el `NULLIF` que ya estaba. El SQL agrega tres CTE —`serie`,
+`ejes` y `agregada`— y afuera `serie CROSS JOIN ejes LEFT JOIN agregada`; sin
+dimensiones no temporales no hay `ejes` ni `CROSS JOIN`. Rellenar **no agrega ni
+un parámetro**: la serie usa los mismos `$2`/`$3` que ya filtran la CTE.
+Capacidad nueva del dialecto `serieDeFechas`: Postgres la declara y la emite con
+`generate_series` truncando el inicio (si no, un rango que parte el 15 de enero
+con granularidad `month` daría 15/01, 15/02…); SQLite la declara `false` y pedir
+`fillMissing` sobre esa fuente sale con `UNSUPPORTED_OPERATOR` (400). La raíz
+corre **230 tests en verde** con `DATABASE_URL` y `REDIS_URL`, y **142 sin nada**
+(1 se salta). Snapshot nuevo `test/snapshots/relleno-de-serie.sql`; los cinco
+anteriores byte por byte iguales. Verificado contra Postgres real: la asistencia
+de la empresa A entre el 8 y el 14 de agosto pasa de 10 filas a 14, con los
+cuatro días sin registro de Ventas en `count: 0` y `attendance_rate: null`.
+Riesgo nuevo registrado en `docs/riesgos.md`: densificar multiplica filas contra
+el tope de la clase (medido en la empresa C, por día × departamento sobre dos
+años: de 4.392 filas con 12 departamentos a las 5.000 del tope con 7).
 
 Rango sin granularidad (10-09 madrugada, ADR 0011): una `timeDimension` con
 `dateRange` y sin `granularity` sólo filtra por fecha. La raíz corre **217 tests
