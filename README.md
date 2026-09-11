@@ -400,6 +400,73 @@ muestra en qué quedó:
 }
 ```
 
+### Comparar períodos: `compareDateRange`
+
+"Este mes contra el mes pasado", en una sola petición. `compareDateRange` va en
+la dimensión temporal **en lugar de** `dateRange`, con la lista de rangos a
+comparar (ADR 0015). Cada rango es un par de fechas **o una frase del
+vocabulario de arriba**, que es el caso de uso real:
+
+```jsonc
+// POST /analytics/query
+{ "measures": ["attendance.count"],
+  "dimensions": ["departments.name"],
+  "timeDimensions": [{ "dimension": "attendance.date", "granularity": "month",
+                       "compareDateRange": ["this month", "last month"] }] }
+```
+
+La respuesta trae **un resultado por rango**, en el orden pedido (con hoy =
+15-08-2025):
+
+```jsonc
+{ "results": [
+    { "dateRange": ["2025-08-01", "2025-08-15"],
+      "dateRangeExpression": "this month",
+      "rows": [ { "departments.name": "Ingeniería", "attendance.date": "2025-08-01", "attendance.count": 15 },
+                { "departments.name": "Ventas",     "attendance.date": "2025-08-01", "attendance.count": 10 } ],
+      "meta": { "servedFrom": "live", "asOf": "2025-08-15T12:00:00.000Z",
+                "queryId": "abf79906593cc5e4", "warnings": [] } },
+
+    { "dateRange": ["2025-07-01", "2025-07-31"],
+      "dateRangeExpression": "last month",
+      "rows": [ { "departments.name": "Ingeniería", "attendance.date": "2025-07-01", "attendance.count": 31 },
+                { "departments.name": "Ventas",     "attendance.date": "2025-07-01", "attendance.count": 31 } ],
+      "meta": { "servedFrom": "cache-l1", "asOf": "2025-08-15T12:00:00.000Z",
+                "queryId": "5c3af4cd1829e72e", "warnings": [] } } ] }
+```
+
+Salida real de la base del repo, con el reloj fijo en ese instante y un tablero
+que ya había mirado el mes pasado por su cuenta.
+
+Lo que hay que leer ahí: cada elemento dice **a qué ventana corresponde, ya
+resuelta**, con la frase al lado para poder rotular el gráfico; y cada uno trae
+su propio `meta`, porque **cada rango es una consulta entera**, con su `queryId`
+y su entrada de caché. En el ejemplo el mes pasado sale de la caché y el mes en
+curso no: eso es el diseño funcionando. El mes pasado ya no va a cambiar nunca;
+este mes cambia todo el rato.
+
+Ésa es la razón por la que la capa **no** resuelve esto con un `UNION ALL`: los
+dos rangos compartirían una llave de caché y un TTL, y la mitad estable se
+recalcularía en cada consulta. La segunda razón es el contrato: `UNION ALL`
+obligaría a una columna que dijera de qué rango viene cada fila, y esa columna no
+sería un miembro declarado por ninguna entidad. Medido contra la base del repo:
+la misma comparación tarda **95,4 ms** la primera vez y **1,1 ms** la segunda; si
+se cambia **sólo un rango**, 26,1 ms — el otro sigue saliendo de caché.
+
+Una consulta **sin** `compareDateRange` devuelve exactamente la respuesta de
+siempre, `{ rows, meta }`: la forma la decide la presencia de la propiedad, y por
+eso `compareDateRange: ["last month"]` —un solo rango— también devuelve
+`results`, con un elemento. Lo demás funciona por rango sin nada que aprender:
+`fillMissing` rellena cada serie por separado, `total: true` cuenta las filas de
+cada una, y el dry-run devuelve un plan por rango.
+
+Se rechaza con `INVALID_QUERY`: traer `dateRange` y `compareDateRange` en la
+misma dimensión temporal (declaran lo mismo), una lista vacía, **más de cuatro
+rangos** —cada rango es una consulta contra la base; de cinco en adelante lo que
+se quiere es una serie con `granularity`—, dos dimensiones temporales comparando
+a la vez, y cualquier rango que no sea un `dateRange` válido. El rechazo de un
+rango señala la posición que se escribió: `timeDimensions[0].compareDateRange[1]`.
+
 ### Una serie sin huecos: `fillMissing`
 
 Una serie agregada sólo trae los buckets que **tienen filas**, así que un

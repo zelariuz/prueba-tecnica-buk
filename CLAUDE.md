@@ -26,7 +26,7 @@ TypeScript, Node 24, `node:test`, node-postgres.
   Cube, 0008 catálogo en dos vistas, 0009 rango opcional para el agente,
   0010 consultas sin medida, 0011 rango sin granularidad, 0012 relleno de
   series densas, 0013 truncado visible y total de filas, 0014 rangos relativos
-  con vocabulario cerrado).
+  con vocabulario cerrado, 0015 comparación de períodos con varias consultas).
 
 ## Estructura
 
@@ -73,6 +73,10 @@ src/
                              esquema físico y tipos), fuente por entidad,
                              resolución de miembros, vistas pública e interna,
                              versión y consultas tipo
+  comparacion.js             `compareDateRange`: valida la comparación de
+                             períodos y la expande en las N consultas normales
+                             en que se descompone, una por rango (ADR 0015). No
+                             planifica ni ejecuta nada
   rangos-relativos.js        el vocabulario cerrado de rangos relativos
                              (`last 6 months`, `this quarter`) y su resolución a
                              un par de fechas en la zona pedida; valida la zona
@@ -85,7 +89,10 @@ src/
                              el plan lógico). Única pieza que escribe SQL
   engine.js                  plan() y run(): dry-run y ejecución transaccional con
                              SET LOCAL statement_timeout, más las puertas
-                             buscarEnCache y guardarEnCache
+                             buscarEnCache y guardarEnCache. Decide también
+                             cuántas consultas hay: una comparación de períodos
+                             es una vuelta por rango, con un solo tic del reloj
+                             para todas (ADR 0015)
   errors.js                  SemanticError { code, member, suggestion }
   telemetry.js               contadores en memoria por resultado, código, puerta,
                              consumidor, hits/misses de caché (hits por nivel),
@@ -118,6 +125,11 @@ test/
   redis.test.js              caché L2 contra Redis de verdad: dos instancias,
                              llaves con empresa por SCAN y Redis inalcanzable;
                              se salta sin REDIS_URL
+  comparacion.test.js        compareDateRange por los seams engine.plan y
+                             engine.run: la forma de la respuesta y su orden, las
+                             validaciones y el tope de rangos, el relleno y el
+                             total por rango, y la caché por rango comprobada
+                             ejecutando (contra Postgres)
   rangos-relativos.test.js   el vocabulario forma por forma con reloj fijo, los
                              bordes de mes/trimestre/año, las zonas, y la prueba
                              que más importa: dos "hoy" distintos dan queryId
@@ -192,7 +204,7 @@ corre la demo y explícame el caso obligatorio; después corre los tests". Orden
    error con sugerencia y la telemetría. Filas esperadas de la empresa A:
    Ingeniería 4.35/2 y 3.80/1; `completion_rate` 75.
 3. Tests: `npm install` y `npm test` con `DATABASE_URL` y `REDIS_URL` de la
-   sección Comandos → 251 en verde (153 + 1 saltado sin variables).
+   sección Comandos → 283 en verde (177 + 1 saltado sin variables).
 4. La demo del agente, si el prompt la pide (el del README la pide):
    `cd demo-agente && npm install && npm start` en segundo plano, con la capa
    arriba; no va en el compose. Di la URL (`http://localhost:3100`), que usa la
@@ -241,6 +253,49 @@ curl -s -H 'Authorization: Bearer demo-dashboard-empresa-a' \
 - Repo público: sin datos personales ni nombres reales en seeds ni ejemplos.
 
 ## Estado
+
+Comparación de períodos (11-09, ADR 0015): `compareDateRange` en una dimensión
+temporal, **en lugar de** `dateRange`, con la lista de rangos a comparar —cada
+uno un par de fechas o una frase del vocabulario del ADR 0014—. `["this month",
+"last month"]` es el caso de uso real. **Decisión central: varias consultas, no
+un `UNION ALL`.** Dos razones: (1) cada rango tiene su propia vida de caché —el
+mes pasado ya no cambia y este mes cambia todo el rato; con una sola sentencia
+compartirían llave y TTL y la mitad estable se recalcularía siempre—, y (2)
+`UNION ALL` obligaría a una columna discriminadora que no sería un miembro
+declarado, rompiendo la invariante de que toda columna de salida tiene nombre
+semántico. Así que **una planificación y una ejecución por rango**, cada una con
+su `queryId`, su entrada de caché y su `meta`, reutilizando el camino que ya
+existe: `src/comparacion.js` sólo valida y expande, y quien llama es el engine
+(la pregunta "cuántas consultas hay" es anterior a planificar). La respuesta
+cambia de forma **sólo** para esta consulta: `{ results: [{ dateRange,
+dateRangeExpression?, rows, meta }] }`, en el orden pedido siempre; sin
+`compareDateRange` sale lo de siempre, `{ rows, meta }`, byte por byte, y hay
+tests que lo fijan. **Tope de cuatro rangos** (Cube usa tres en sus ejemplos):
+cubre las comparaciones reales —un período contra el anterior, los cuatro
+trimestres, un mes contra el mismo mes de tres años— y deja el peor caso del
+tablero en 4 × 5 s; de cinco en adelante lo que se pide es una serie con
+`granularity`. Un solo rango se acepta (la forma la decide la propiedad, no el
+largo); la lista vacía no. **El presupuesto NO se reparte**: cada rango recibe el
+de su clase entero —repartir el tope de filas haría que el resultado de una
+ventana cambiara según con cuántas se la compara, y repartir el timeout haría
+fallar dentro de una comparación a una consulta que sola funciona—; lo que acota
+el gasto es el tope de rangos. **Un solo tic del reloj para toda la
+comparación** (`planificar(query, ctx, { ahora })`): sin eso, el 31 de agosto a
+las 23:59 `this month` y `last month` podrían resolver los dos a agosto. Los
+rangos se ejecutan **en serie**, no en paralelo: N conexiones del pool por
+petición desplazarían a otros consumidores. `fillMissing`, `total` y el chequeo
+de buckets del ADR 0013 funcionan por rango sin una línea nueva; el dry-run
+devuelve un plan por rango y el SQL se sigue escondiendo en cada uno. Un rechazo
+de rango señala lo que el consumidor escribió
+(`timeDimensions[0].compareDateRange[1]`), no el `dateRange` que la capa fabricó
+al expandir. La raíz corre **283 tests en verde** con `DATABASE_URL` y
+`REDIS_URL`, y **178 sin nada** (1 se salta). Los seis SQL de referencia de
+`test/snapshots/` quedaron byte por byte iguales. Comprobado ejecutando contra
+Postgres: la misma comparación tarda 95,4 ms la primera vez y 1,1 ms la segunda
+(las dos entradas en `cache-l1`); cambiando **sólo un rango**, 26,1 ms, con el
+otro todavía en caché y con su `queryId` de antes. Evoluciones anotadas en el
+ADR: los rangos en paralelo si alguna vez la latencia duele, y enseñarle
+`compareDateRange` al agente en el prompt de creación de la demo.
 
 Rangos relativos (11-09, ADR 0014): el `dateRange` de una dimensión temporal
 acepta, además del par de fechas, **una frase de un vocabulario cerrado** que la
