@@ -1505,3 +1505,77 @@ test('un extremo del rango que no es una fecha ISO no se rechaza por el conteo',
 
   assert.match(engineApretado().plan(raro, APRETADO).sql, /serie AS \(/);
 });
+
+// --- `total: true`: la segunda sentencia que cuenta las filas del resultado
+// ignorando límite y desplazamiento. Estos tests entran por `engine.plan`, que
+// no toca la base: es justamente lo que se quiere comprobar del dry-run.
+const conTotal = { ...conteoPorEstado, total: true };
+
+test('el total se arma sobre el cuerpo ya escrito, sin ORDER BY y sin LIMIT', () => {
+  const { params, total } = engineDePrueba().plan({ ...conTotal, order: { 'reviews.count': 'desc' } }, CTX);
+
+  // El mismo WITH y el mismo cuerpo de la consulta, envueltos en un COUNT(*).
+  assert.match(total.sql, /^WITH reviews AS \(/);
+  assert.match(total.sql, /SELECT COUNT\(\*\) AS total FROM \(\n/);
+  assert.match(total.sql, /\n\) AS t$/);
+  assert.ok(!total.sql.includes('ORDER BY'), 'ordenar filas que sólo se cuentan no sirve de nada');
+  assert.ok(!total.sql.includes('LIMIT'), 'el total es el resultado completo: por eso sirve para paginar');
+  assert.ok(total.sql.includes('GROUP BY reviews.status'), 'cuenta los mismos grupos que devuelve la consulta');
+
+  // Sus parámetros son los del cuerpo, sin el del LIMIT: la numeración de los
+  // $n no se mueve, porque el total se arma antes de pedir ese parámetro.
+  assert.deepEqual(params, [EMPRESA, 10000]);
+  assert.deepEqual(total.params, [EMPRESA]);
+});
+
+test('el dry-run no ejecuta el total: devuelve la sentencia y el plan la nombra', () => {
+  // `engineDePrueba` no recibe pool: cualquier ejecución reventaría aquí. Que el
+  // dry-run responda es la prueba de que contar filas no se hizo.
+  const { plan, total } = engineDePrueba().plan(conTotal, CTX);
+
+  assert.equal(plan.total, true, 'el plan dice que se entendió el total…');
+  assert.ok(total.sql.includes('COUNT(*)'), '…y entrega la sentencia para poder leerla antes de correrla');
+});
+
+test('sin la propiedad no hay segunda sentencia y el plan lo dice', () => {
+  const { plan, total } = engineDePrueba().plan(conteoPorEstado, CTX);
+
+  assert.equal(total, undefined);
+  assert.equal(plan.total, false);
+});
+
+test('total que no es booleano se rechaza con INVALID_QUERY', () => {
+  for (const valor of ['true', 1, null, {}]) {
+    const error = errorDe(() => engineDePrueba().plan({ ...conteoPorEstado, total: valor }, CTX));
+
+    assert.equal(error.code, 'INVALID_QUERY', JSON.stringify(valor));
+    assert.equal(error.member, 'total');
+    assert.match(error.suggestion, /true o false/);
+  }
+});
+
+test('con relleno el total cuenta la rejilla, porque cuenta el mismo cuerpo', () => {
+  const { total } = engineConTodosLosModulos().plan({ ...asistenciaPorDiaRellenada, total: true }, TABLERO);
+
+  // Las tres CTE del relleno y el producto de la serie por los ejes están
+  // adentro del COUNT(*): no hay un camino aparte que tenga que saber contar
+  // buckets, y por eso el número sale bien sin una sola regla propia.
+  assert.match(total.sql, /serie AS \(/);
+  assert.match(total.sql, /ejes AS \(/);
+  assert.match(total.sql, /FROM serie\n {2}CROSS JOIN ejes/, 'el cuerpo entero, indentado dentro del COUNT');
+  assert.ok(!total.sql.includes('LIMIT'));
+});
+
+test('pedir el total no cambia ni un byte del SQL que devuelve las filas', () => {
+  const engine = engineConTodosLosModulos();
+
+  // El caso del snapshot del relleno, con y sin la propiedad: la consulta de
+  // filas tiene que salir idéntica, porque el total es una sentencia aparte y
+  // no un cambio en la primera. Es lo que garantiza que los seis archivos de
+  // `test/snapshots/` sigan describiendo lo que la capa emite.
+  const sinTotal = engine.plan(asistenciaPorDiaRellenada, TABLERO);
+  const conElTotal = engine.plan({ ...asistenciaPorDiaRellenada, total: true }, TABLERO);
+
+  assert.equal(conElTotal.sql, sinTotal.sql);
+  assert.deepEqual(conElTotal.params, sinTotal.params);
+});

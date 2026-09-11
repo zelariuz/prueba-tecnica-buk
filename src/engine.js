@@ -52,10 +52,17 @@ export function createEngine({
     const comienzo = performance.now();
     const registro = {};
     try {
-      const { sql, params, logico } = planificar(query, ctx);
+      const { sql, params, logico, total } = planificar(query, ctx);
       registro.logico = logico;
       registro.sql = sql;
-      return { sql, params, plan: logico };
+      // El dry-run NO ejecuta el conteo, ni siquiera cuando la consulta pidió
+      // `total: true`: un dry-run es el plan sin tocar la base (historia 25), y
+      // contar filas es tocarla —tan caro como la consulta misma, porque recorre
+      // lo mismo sin el `LIMIT` que la acota—. Pedir el plan para revisar una
+      // consulta antes de gastar la base no puede gastar la base. Lo que sale es
+      // la segunda sentencia, para que se pueda leer antes de correrla, y el
+      // plan lógico diciendo `total: true`.
+      return { sql, params, plan: logico, ...(total === undefined ? {} : { total }) };
     } catch (error) {
       registro.error = error;
       registro.gate = error?.gate;
@@ -102,7 +109,14 @@ export function createEngine({
   // Postgres, el `SET LOCAL statement_timeout` que hace cumplir el
   // presupuesto— lo dice el dialecto: el engine no nombra ninguna sentencia de
   // ningún motor, y un motor que no ofrece ninguna no recibe ninguna.
-  async function ejecutar(sql, params, presupuesto, nombreDeFuente) {
+  //
+  // `total` —la segunda sentencia, la que cuenta las filas sin límite— viaja en
+  // la MISMA transacción que la consulta: así cuenta sobre la misma foto de los
+  // datos que devolvió las filas (de otro modo, una escritura entre las dos
+  // daría un total que no corresponde a lo que el consumidor tiene en la mano),
+  // gasta una conexión y no dos, y queda cubierta por el mismo
+  // `statement_timeout` de la clase.
+  async function ejecutar({ sql, params, total }, presupuesto, nombreDeFuente) {
     // Contra qué base se ejecuta y quién traduce sus errores sale de la fuente
     // de la entidad de hechos, que resolvió el planificador.
     const { pool: poolDeLaFuente, dialecto } = fuentesDelEngine[nombreDeFuente];
@@ -138,8 +152,12 @@ export function createEngine({
         await cliente.query(sentencia);
       }
       const resultado = await cliente.query(sql, params);
+      // `COUNT(*)` es un int8 y node-postgres lo entrega como texto, igual que
+      // cualquier otra medida: sale como número, como todo lo que el consumidor
+      // recibe de esta capa.
+      const conteo = total ? Number(await cliente.query(total.sql, total.params).then(unSoloValor)) : undefined;
       await cliente.query('COMMIT');
-      return resultado.rows;
+      return { filas: resultado.rows, total: conteo };
     } catch (error) {
       // El error de la consulta manda sobre el que haya anotado el oyente: es
       // el que se traduce y el que el consumidor va a leer.
@@ -189,7 +207,7 @@ export function createEngine({
       registro.gate = error?.gate;
       throw error;
     }
-    const { sql, params, medidas, presupuesto, advertencias, fuente, filas: tope } = plan;
+    const { sql, params, medidas, presupuesto, advertencias, fuente, filas: tope, total } = plan;
     registro.logico = plan.logico;
     // El SQL del plan, sin la marca de comentario: el `queryId` que la marca
     // repite ya viaja como campo propio del evento.
@@ -203,8 +221,21 @@ export function createEngine({
     // consultas distintas y no pueden compartir entrada. La empresa dentro del
     // hash hace imposible que una entrada de A sirva a B, y la versión del
     // catálogo invalida todo al cambiar una definición.
+    //
+    // Con `total: true` lo que se ejecuta son DOS sentencias, y la segunda entra
+    // al hash: el SQL de las filas es idéntico se haya pedido o no el conteo, así
+    // que sin ella una consulta con total y otra sin él compartirían entrada de
+    // caché y la segunda en llegar recibiría una respuesta a la que le falta —o
+    // le sobra— el campo. La clave sólo aparece cuando hay segunda sentencia, así
+    // que el `queryId` de todas las consultas de siempre no se movió ni un bit.
     const catalogVersion = catalog.version();
-    const queryId = identificarConsulta({ sql, params, companyId: ctx.companyId, catalogVersion });
+    const queryId = identificarConsulta({
+      sql,
+      sqlTotal: total?.sql,
+      params,
+      companyId: ctx.companyId,
+      catalogVersion,
+    });
     registro.queryId = queryId;
 
     // La llave con la que la caché guarda es el `queryId` con su procedencia
@@ -238,6 +269,14 @@ export function createEngine({
           asOf: guardado.asOf,
           queryId,
           warnings: guardado.warnings,
+          // El total viaja GUARDADO con la entrada, no se recalcula al servirla.
+          // Recalcularlo sería ir a la base justo en el camino que existe para no
+          // ir, y además daría un número de ahora pegado a filas de antes: dos
+          // instantes distintos en la misma respuesta. Guardado, el total es tan
+          // viejo como el `asOf` que está ahí al lado, que es lo honesto. Y no
+          // puede faltar: el `queryId` distingue la consulta con total de la que
+          // no lo pidió, así que una entrada de una nunca sirve a la otra.
+          ...(guardado.total === undefined ? {} : { total: guardado.total }),
         },
       };
     }
@@ -246,18 +285,30 @@ export function createEngine({
     // entrada guardada conserva su propio asOf.
     const asOf = new Date(reloj()).toISOString();
     const comienzo = performance.now();
-    let filas;
+    let ejecutado;
     try {
-      filas = await ejecutar(marcado(sql, queryId, ctx), params, presupuesto, fuente);
+      ejecutado = await ejecutar(
+        {
+          sql: marcado(sql, queryId, ctx),
+          params,
+          ...(total === undefined ? {} : { total: { sql: marcado(total.sql, queryId, ctx), params: total.params } }),
+        },
+        presupuesto,
+        fuente,
+      );
     } catch (error) {
       telemetria.registrarError({ consumer: ctx?.consumer, code: error?.code, gate: 'ejecutar' });
       registro.gate = 'ejecutar';
       throw error;
     }
+    // El tiempo de las dos sentencias, porque las dos son esta consulta contra
+    // la base: contarlas aparte partiría en dos lo que el consumidor esperó una
+    // sola vez. Por eso el conteo no estrena contador propio en la telemetría —
+    // ya se ve donde tiene que verse, en `dbMs`—.
     const dbMs = performance.now() - comienzo;
     telemetria.registrarOk({ consumer: ctx?.consumer, dbMs });
 
-    const rows = aNumeros(filas, medidas);
+    const rows = aNumeros(ejecutado.filas, medidas);
     // Las advertencias del plan son lo que se pudo saber antes de ejecutar; el
     // truncado sólo se sabe después, contando lo que volvió. Las dos viajan
     // juntas en `meta.warnings` porque para quien lee la respuesta son lo mismo:
@@ -271,7 +322,11 @@ export function createEngine({
     // Puerta · Guardar en caché. Sólo lo que se ejecutó en vivo: un resultado
     // servido desde la caché no se vuelve a guardar, así que su TTL cuenta
     // desde la ejecución real y una entrada no se renueva sola para siempre.
-    await guardarEnCache(llave, { rows, asOf, warnings: avisos }, presupuesto.cacheTtlMs);
+    await guardarEnCache(
+      llave,
+      { rows, asOf, warnings: avisos, ...(ejecutado.total === undefined ? {} : { total: ejecutado.total }) },
+      presupuesto.cacheTtlMs,
+    );
 
     return {
       rows,
@@ -282,6 +337,10 @@ export function createEngine({
         // Siempre presente, aunque esté vacía: quien la lee no tiene que
         // preguntarse si el campo existe.
         warnings: avisos,
+        // `total` sí es condicional, y al revés que `warnings`: sólo está si la
+        // consulta lo pidió. Un `total: undefined` en toda respuesta obligaría a
+        // distinguir "no lo pedí" de "salió cero".
+        ...(ejecutado.total === undefined ? {} : { total: ejecutado.total }),
       },
     };
   }
@@ -448,6 +507,13 @@ function nivelDe(guardado) {
   return guardado.nivel ?? 'cache-l1';
 }
 
+// El único valor de una sentencia que devuelve una sola fila y una sola columna
+// —el `COUNT(*)` del total—. Se lee por posición y no por nombre para que el
+// engine no tenga que conocer el alias con el que el planificador la escribió.
+function unSoloValor(resultado) {
+  return Object.values(resultado.rows[0])[0];
+}
+
 // Postgres devuelve int8 y numeric como texto para no perder precisión; las
 // medidas vuelven al consumidor como números.
 function aNumeros(filas, medidas) {
@@ -473,9 +539,9 @@ function aNumeros(filas, medidas) {
 // pueda servir a otra empresa aunque el SQL se pareciera; la versión, para que
 // el mismo SQL sobre otro contrato de datos no se confunda con la misma
 // consulta. La serialización es canónica: el orden de las claves no lo cambia.
-function identificarConsulta({ sql, params, companyId, catalogVersion }) {
+function identificarConsulta({ sql, sqlTotal, params, companyId, catalogVersion }) {
   return createHash('sha256')
-    .update(canonica({ sql, params, companyId, catalogVersion }))
+    .update(canonica({ sql, ...(sqlTotal === undefined ? {} : { sqlTotal }), params, companyId, catalogVersion }))
     .digest('hex')
     .slice(0, 16);
 }

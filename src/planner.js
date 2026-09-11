@@ -161,6 +161,13 @@ function validarForma(query) {
     );
   }
 
+  // `total` es la propiedad de Cube que pide el número de filas del resultado
+  // **ignorando límite y desplazamiento**, para poder paginar. No es el gran
+  // total de ninguna medida: es un conteo de filas.
+  if (query.total !== undefined && typeof query.total !== 'boolean') {
+    throw formaInvalida('total', `total es true o false; recibí ${JSON.stringify(query.total)}.`);
+  }
+
   if (query.limit !== undefined && !(Number.isInteger(query.limit) && query.limit >= 1)) {
     throw formaInvalida(
       'limit',
@@ -187,12 +194,13 @@ export function crearPlanificador({ catalog, fuentes, presupuestos }) {
   return function planificar(query, ctx) {
     let paso = { catalog, fuentes, presupuestos, query, ctx };
     for (const puerta of puertas) paso = anotandoLaPuerta(puerta, paso);
-    const { sql, params, medidas, presupuesto, advertencias, logico, fuente, filas } = paso;
+    const { sql, params, medidas, presupuesto, advertencias, logico, fuente, filas, total } = paso;
     // `filas` —el LIMIT efectivo que se emitió— sale del planificador porque el
     // engine no puede recalcularlo sin repetir la regla: quien lo decide es
     // quien lo escribió en el SQL. Lo necesita para saber si la respuesta llegó
     // al tope y puede venir cortada.
-    return { sql, params, medidas, presupuesto, advertencias, logico, fuente, filas };
+    // `total` es la segunda sentencia, o nada si la consulta no la pidió.
+    return { sql, params, medidas, presupuesto, advertencias, logico, fuente, filas, total };
   };
 }
 
@@ -678,18 +686,36 @@ function emitirSql(paso) {
       };
 
   const orden = ordenDeSalida(query, dimensiones, medidas);
+  const con = `WITH ${[...cte, ...ctesDelRelleno].join(',\n')}`;
+
+  // El conteo total se arma **sobre el cuerpo ya escrito**, envuelto y sin
+  // `ORDER BY` ni `LIMIT`: `SELECT COUNT(*) FROM (<cuerpo>) AS t`. Es lo que lo
+  // hace correcto sin una sola regla propia —con relleno cuenta la rejilla
+  // `buckets × ejes`, con derivadas cuenta las filas de la etapa de afuera, y
+  // sin nada cuenta los grupos—, porque cuenta exactamente lo que la consulta
+  // devolvería si no tuviera techo. Un camino aparte que "supiera" contar
+  // grupos tendría que aprender de nuevo cada una de esas formas, y se
+  // equivocaría justo en la que se agregue después.
+  //
+  // Se arma ANTES de pedir el parámetro del `LIMIT`: así sus `$n` son los mismos
+  // del cuerpo, sin el último, y la numeración no se mueve.
+  const total =
+    query.total === true
+      ? { sql: [con, `SELECT COUNT(*) AS total FROM (\n${indentar(cuerpo.join('\n'))}\n) AS t`].join('\n'), params: [...paso.params] }
+      : undefined;
+
   // Ninguna consulta sale sin LIMIT: el pedido nunca supera el máximo de la
   // clase de consumidor, y si no pide, manda ese máximo.
   const filas = limiteEfectivo(query, presupuesto);
 
   const sql = [
-    `WITH ${[...cte, ...ctesDelRelleno].join(',\n')}`,
+    con,
     ...cuerpo,
     ...(orden.length ? [`ORDER BY ${orden.join(', ')}`] : []),
     `LIMIT ${parametro(filas)}`,
   ].join('\n');
 
-  return { ...paso, sql, filas };
+  return { ...paso, sql, filas, total };
 }
 
 // Relleno de serie densa (ADR 0012): las tres etapas que convierten el
@@ -862,6 +888,11 @@ function describirPlan(paso) {
         .map((m) => [m.miembro, filtrosDeMedida(paso, m).map(copiaDeFiltro)]),
     ),
     budget: { consumer: ctx.consumer, ...presupuesto, rowLimit: paso.filas },
+    // Que la consulta pidió el conteo de filas se dice en el plan, pero el plan
+    // no lo ejecuta: un dry-run no toca la base, y contar sí la tocaría (ver
+    // `engine.plan`). Es la mitad honesta de responder "sí, te entendí el
+    // total" sin cobrar por él.
+    total: paso.query.total === true,
     warnings: paso.advertencias,
   };
 

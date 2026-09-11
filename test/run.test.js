@@ -1464,3 +1464,105 @@ describe('aviso de resultado truncado', conBase, () => {
     assert.equal(segunda.meta.warnings.length, 1);
   });
 });
+
+// --- `total: true`: el número de filas del resultado ignorando límite y
+// desplazamiento, que es lo que hace falta para paginar. No es el gran total de
+// ninguna medida: es un conteo de filas.
+describe('total de filas para paginar', conBase, () => {
+  let pool;
+  let catalog;
+  let engine;
+
+  before(() => {
+    pool = new pg.Pool({ connectionString: DATABASE_URL });
+    catalog = createCatalog();
+    registrarModulos(catalog);
+    engine = createEngine({ catalog, pool });
+  });
+
+  after(async () => {
+    await pool.end();
+  });
+
+  const TABLERO = { companyId: EMPRESA_A, consumer: 'dashboard' };
+
+  // La misma semana con hueco del relleno: del 8 al 14 de agosto, Ingeniería
+  // tiene los siete días y Ventas sólo el 08, el 09 y el 10.
+  const asistenciaPorDia = {
+    measures: ['attendance.count'],
+    dimensions: ['departments.name'],
+    timeDimensions: [
+      { dimension: 'attendance.date', granularity: 'day', dateRange: ['2025-08-08', '2025-08-14'] },
+    ],
+    order: { 'departments.name': 'asc', 'attendance.date': 'asc' },
+  };
+
+  it('sin relleno cuenta las filas que la consulta devolvería sin techo', async () => {
+    const { rows, meta } = await engine.run({ ...asistenciaPorDia, total: true }, TABLERO);
+
+    // Siete días de Ingeniería y tres de Ventas: los mismos diez que ya devuelve
+    // la consulta sin relleno del seed.
+    assert.equal(rows.length, 10);
+    assert.equal(meta.total, 10);
+  });
+
+  it('con relleno el total es buckets × ejes, sin ninguna regla aparte', async () => {
+    const { rows, meta } = await engine.run(
+      {
+        ...asistenciaPorDia,
+        total: true,
+        timeDimensions: [{ ...asistenciaPorDia.timeDimensions[0], fillMissing: true }],
+      },
+      TABLERO,
+    );
+
+    // Siete buckets del rango por los dos departamentos de la empresa A. Sale
+    // solo porque el conteo se hace sobre el mismo cuerpo que produce las filas.
+    assert.equal(rows.length, 14);
+    assert.equal(meta.total, 14);
+  });
+
+  it('el total ignora el límite: es lo que permite pedir la página siguiente', async () => {
+    const { rows, meta } = await engine.run({ ...asistenciaPorDia, total: true, limit: 3 }, TABLERO);
+
+    assert.equal(rows.length, 3, 'la página pedida');
+    assert.equal(meta.total, 10, 'y el resultado completo, para saber cuántas páginas faltan');
+    // Y como la página llegó justo al techo, la respuesta además advierte que
+    // puede venir cortada: las dos mitades del mismo problema.
+    assert.equal(meta.warnings.length, 1);
+    assert.equal(meta.warnings[0].member, 'limit');
+  });
+
+  it('sin la propiedad no hay campo total: no se cuenta lo que nadie pidió', async () => {
+    const { meta } = await engine.run(asistenciaPorDia, TABLERO);
+
+    assert.ok(!('total' in meta), 'un total en cada respuesta sería una consulta más por consulta');
+  });
+
+  it('el total sale guardado con la entrada de caché, no se recalcula', async () => {
+    const conCache = createEngine({ catalog, pool, cache: crearMemoryStore() });
+    const consulta = { ...asistenciaPorDia, total: true };
+
+    const primera = await conCache.run(consulta, TABLERO);
+    const segunda = await conCache.run(consulta, TABLERO);
+
+    assert.equal(primera.meta.servedFrom, 'live');
+    assert.equal(segunda.meta.servedFrom, 'cache-l1');
+    assert.equal(segunda.meta.total, 10, 'el mismo total, tan viejo como el asOf que lo acompaña');
+    assert.equal(segunda.meta.asOf, primera.meta.asOf);
+  });
+
+  it('la consulta con total y la misma sin total no comparten entrada de caché', async () => {
+    const conCache = createEngine({ catalog, pool, cache: crearMemoryStore() });
+
+    const conTotal = await conCache.run({ ...asistenciaPorDia, total: true }, TABLERO);
+    const sinTotal = await conCache.run(asistenciaPorDia, TABLERO);
+
+    // El SQL de las filas es idéntico en las dos; lo que las distingue es la
+    // segunda sentencia, y por eso entra al queryId. Si compartieran llave, la
+    // segunda recibiría una respuesta con un campo que no pidió, o al revés.
+    assert.notEqual(sinTotal.meta.queryId, conTotal.meta.queryId);
+    assert.equal(sinTotal.meta.servedFrom, 'live');
+    assert.ok(!('total' in sinTotal.meta));
+  });
+});
