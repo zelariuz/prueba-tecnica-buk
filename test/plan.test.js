@@ -1218,3 +1218,175 @@ test('la entidad de un rango que sólo filtra entra al camino de joins como cual
   assert.equal(error.code, 'NO_JOIN_PATH');
   assert.equal(error.member, 'reviews');
 });
+
+// --- ADR 0012: relleno de series densas. Una dimensión temporal puede traer
+// `fillMissing: true` y entonces el resultado devuelve TODOS los buckets del
+// rango, incluso los que no tienen ninguna fila, para que un gráfico no salte
+// días. La bandera es del consumidor —la necesita quien dibuja, no la entidad—,
+// así que viaja en la consulta y nunca en la definición del módulo.
+
+const asistenciaPorDiaRellenada = {
+  measures: ['attendance.count', 'attendance.attendance_rate'],
+  dimensions: ['departments.name'],
+  timeDimensions: [
+    {
+      dimension: 'attendance.date',
+      granularity: 'day',
+      dateRange: ['2025-06-01', '2025-06-30'],
+      fillMissing: true,
+    },
+  ],
+  order: { 'departments.name': 'asc', 'attendance.date': 'asc' },
+};
+
+test('el SQL del relleno con dimensión y tiempo es el del snapshot del repo', () => {
+  const { sql, params } = engineConTodosLosModulos().plan(asistenciaPorDiaRellenada, TABLERO);
+
+  // Sexto snapshot legible del repo: las tres etapas del relleno una debajo de
+  // otra —la serie de buckets, los ejes no temporales y la agregada de
+  // siempre— y afuera el producto de las dos primeras con el LEFT JOIN.
+  const esperado = readFileSync(new URL('./snapshots/relleno-de-serie.sql', import.meta.url), 'utf8');
+  assert.equal(sql, esperado.trimEnd());
+
+  // Rellenar no agrega ni un parámetro: la serie se genera con los mismos $2 y
+  // $3 que ya filtran la CTE, así que la numeración es la de siempre.
+  assert.deepEqual(params, [EMPRESA, '2025-06-01', '2025-06-30', true, 5000]);
+  assert.match(sql, /DATE_TRUNC\('day', \$2::date\)/);
+  assert.ok(!sql.includes(String(EMPRESA)), 'la empresa viaja como parámetro');
+});
+
+test('el conteo se rellena con cero y la razón queda nula: lo decide el tipo de la medida', () => {
+  const { sql } = engineConTodosLosModulos().plan(asistenciaPorDiaRellenada, TABLERO);
+
+  // `count` sobre un bucket sin filas vale 0 de verdad: hubo cero eventos.
+  assert.match(sql, /COALESCE\(agregada\."attendance\.count", 0\) AS "attendance\.count"/);
+  // La razón NO se rellena: se calcula afuera sobre el resultado ya denso y su
+  // denominador en 0 la anula sola por el NULLIF que ya estaba.
+  assert.match(
+    sql,
+    /NULLIF\(COALESCE\(agregada\."attendance\.count", 0\), 0\) \* 100 AS "attendance\.attendance_rate"/,
+  );
+  assert.ok(
+    !/COALESCE\([^)]*attendance_rate/.test(sql),
+    'una razón rellenada con cero sería un número falso',
+  );
+});
+
+test('sin dimensiones no temporales el relleno no arma ejes ni CROSS JOIN', () => {
+  const { sql } = engineConTodosLosModulos().plan(
+    {
+      measures: ['attendance.count'],
+      timeDimensions: [
+        {
+          dimension: 'attendance.date',
+          granularity: 'month',
+          dateRange: ['2025-01-15', '2025-06-30'],
+          fillMissing: true,
+        },
+      ],
+      order: { 'attendance.date': 'asc' },
+    },
+    TABLERO,
+  );
+
+  // Sin eje que multiplicar, la serie sola es el esqueleto del resultado.
+  assert.ok(!sql.includes('ejes'), 'no hay dimensión no temporal que distinguir');
+  assert.ok(!sql.includes('CROSS JOIN'), 'sin ejes no hay producto que armar');
+  assert.match(sql, /FROM serie\nLEFT JOIN agregada ON agregada\."attendance\.date" = serie\.bucket\n/);
+  // El inicio del rango se trunca antes de generar: un rango que parte el 15 de
+  // enero con granularidad `month` tiene que dar 01/01, 01/02…, no 15/01, 15/02.
+  assert.match(sql, /DATE_TRUNC\('month', \$2::date\)/);
+});
+
+test('la bandera en false o ausente emite exactamente el mismo SQL de siempre', () => {
+  const engine = engineConTodosLosModulos();
+  const sinBandera = {
+    measures: ['attendance.count'],
+    dimensions: ['departments.name'],
+    timeDimensions: [
+      { dimension: 'attendance.date', granularity: 'day', dateRange: ['2025-06-01', '2025-06-30'] },
+    ],
+  };
+  const conBanderaEnFalse = {
+    ...sinBandera,
+    timeDimensions: [{ ...sinBandera.timeDimensions[0], fillMissing: false }],
+  };
+
+  const { sql, params } = engine.plan(sinBandera, TABLERO);
+  assert.deepEqual(engine.plan(conBanderaEnFalse, TABLERO).sql, sql);
+  assert.deepEqual(engine.plan(conBanderaEnFalse, TABLERO).params, params);
+  // Y ese SQL es el de siempre: una sola etapa, sin ninguna de las tres del
+  // relleno. Los snapshots de arriba son la otra mitad de esta comprobación.
+  for (const etapa of ['serie AS (', 'ejes AS (', 'agregada AS (']) {
+    assert.ok(!sql.includes(etapa), `sin fillMissing no existe la etapa ${etapa}`);
+  }
+});
+
+test('fillMissing sin granularidad, sin rango o con un valor no booleano se rechaza', () => {
+  const casos = [
+    [
+      { dimension: 'attendance.date', dateRange: ['2025-06-01', '2025-06-30'], fillMissing: true },
+      /granularity y dateRange/,
+    ],
+    [{ dimension: 'attendance.date', granularity: 'day', fillMissing: true }, /granularity y dateRange/],
+    [
+      {
+        dimension: 'attendance.date',
+        granularity: 'day',
+        dateRange: ['2025-06-01', '2025-06-30'],
+        fillMissing: 'true',
+      },
+      /true o false/,
+    ],
+  ];
+
+  for (const [temporal, sugerencia] of casos) {
+    const error = errorDe(() =>
+      engineConTodosLosModulos().plan(
+        { measures: ['attendance.count'], timeDimensions: [temporal] },
+        TABLERO,
+      ),
+    );
+
+    assert.equal(error.code, 'INVALID_QUERY', JSON.stringify(temporal));
+    assert.equal(error.member, 'timeDimensions[0].fillMissing', JSON.stringify(temporal));
+    assert.match(error.suggestion, sugerencia);
+  }
+});
+
+test('una fuente cuyo dialecto no declara serieDeFechas rechaza el relleno', () => {
+  // El mismo dialecto de Postgres con la capacidad apagada: lo que se prueba es
+  // que el planificador la mira antes de emitir, no qué motor hay abajo.
+  const sinSerie = {
+    ...dialectoPostgres,
+    name: 'sin-serie',
+    capabilities: { ...dialectoPostgres.capabilities, serieDeFechas: false },
+  };
+  const fuentes = { plana: { dialecto: sinSerie, pool: {} } };
+  const catalog = createCatalog({ fuentes });
+  for (const definicion of [reviews, employees, departments]) {
+    catalog.register({ ...definicion, source: 'plana' });
+  }
+
+  const error = errorDe(() =>
+    createEngine({ catalog, fuentes }).plan(
+      {
+        measures: ['reviews.count'],
+        timeDimensions: [
+          {
+            dimension: 'reviews.period',
+            granularity: 'month',
+            dateRange: ['2025-01-01', '2025-12-31'],
+            fillMissing: true,
+          },
+        ],
+      },
+      TABLERO,
+    ),
+  );
+
+  // Es un 400 y no un 500: el consumidor puede arreglarlo quitando la bandera.
+  assert.equal(error.code, 'UNSUPPORTED_OPERATOR');
+  assert.equal(error.member, 'reviews.period');
+  assert.match(error.suggestion, /fillMissing/);
+});

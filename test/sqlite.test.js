@@ -560,3 +560,78 @@ describe('rango sin granularidad contra SQLite', () => {
     assert.match(sql, /AND period >= \$2\n {4}AND period <= \$3/);
   });
 });
+
+// --- ADR 0012: el relleno de series densas necesita que el dialecto sepa
+// generar la serie de buckets del rango. SQLite no lo promete, y lo declara.
+describe('el relleno de series densas no está disponible en SQLite', () => {
+  let pool;
+  let engine;
+
+  before(async () => {
+    pool = baseDelCaso();
+    ({ engine } = await armar(pool));
+  });
+  after(() => pool.cerrar());
+
+  it('la capacidad dice que no, sin que haya que deducirlo del SQL', () => {
+    assert.equal(sqlite.capabilities.serieDeFechas, false);
+  });
+
+  it('pedir fillMissing sobre esta fuente es un error del consumidor, no del servidor', () => {
+    let error;
+    try {
+      engine.plan(
+        {
+          measures: ['reviews.count'],
+          timeDimensions: [
+            {
+              dimension: 'reviews.period',
+              granularity: 'month',
+              dateRange: ['2025-01-01', '2025-12-31'],
+              fillMissing: true,
+            },
+          ],
+        },
+        { companyId: EMPRESA_A, consumer: 'api' },
+      );
+    } catch (fallo) {
+      error = fallo;
+    }
+
+    // 400 y no 500: quien consulta puede arreglarlo quitando la bandera, y la
+    // sugerencia le dice exactamente eso. Es la misma respuesta que da el
+    // vocabulario cuando un operador válido todavía no tiene SQL en la fuente.
+    assert.equal(error?.code, 'UNSUPPORTED_OPERATOR');
+    assert.equal(error.member, 'reviews.period');
+    assert.match(error.suggestion, /fillMissing/);
+  });
+
+  it('la misma consulta sin la bandera sí responde contra SQLite', async () => {
+    const { rows } = await engine.run(
+      {
+        measures: ['reviews.count'],
+        timeDimensions: [
+          {
+            dimension: 'reviews.period',
+            granularity: 'month',
+            dateRange: ['2025-01-01', '2025-12-31'],
+          },
+        ],
+        order: { 'reviews.period': 'asc' },
+      },
+      { companyId: EMPRESA_A, consumer: 'api' },
+    );
+
+    // Literales del fixture: la empresa 1 evalúa en marzo, junio y septiembre de
+    // 2025. Los meses sin evaluaciones no salen, que es justamente lo que el
+    // relleno resolvería si esta fuente pudiera generarlo.
+    assert.deepEqual(
+      rows.map((fila) => [fila['reviews.period'], fila['reviews.count']]),
+      [
+        ['2025-03-01', 3],
+        ['2025-06-01', 3],
+        ['2025-09-01', 1],
+      ],
+    );
+  });
+});

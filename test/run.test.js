@@ -1251,3 +1251,150 @@ describe('rango sin granularidad', conBase, () => {
     ]);
   });
 });
+
+// --- ADR 0012: relleno de series densas. Con `fillMissing: true` el resultado
+// trae todos los buckets del rango, también los que no tienen ninguna fila, y
+// qué se rellena con qué lo decide el tipo de la medida.
+describe('relleno de series densas', conBase, () => {
+  let pool;
+  let engine;
+
+  before(() => {
+    pool = new pg.Pool({ connectionString: DATABASE_URL });
+    const catalog = createCatalog();
+    registrarModulos(catalog);
+    engine = createEngine({ catalog, pool });
+  });
+
+  after(async () => {
+    await pool.end();
+  });
+
+  // Literales del seed (docker/init/02-seed.sql), asistencia de la empresa 1 en
+  // agosto de 2025. El hueco es del seed, no fabricado para este test:
+  //   Ingeniería (empleado 100): del 01 al 20; ausente el 04, 11, 18 y 20
+  //   Ventas     (empleado 102): del 01 al 10; ausente el 02, 04, 06, 08 y 10
+  // Entre el 08 y el 14, Ventas deja de tener filas a partir del 11: cuatro
+  // buckets vacíos que sin relleno simplemente no salen en el resultado.
+  const SEMANA_CON_HUECO = ['2025-08-08', '2025-08-14'];
+
+  const porDia = {
+    measures: ['attendance.count', 'attendance.attendance_rate'],
+    dimensions: ['departments.name'],
+    timeDimensions: [
+      { dimension: 'attendance.date', granularity: 'day', dateRange: SEMANA_CON_HUECO },
+    ],
+    order: { 'departments.name': 'asc', 'attendance.date': 'asc' },
+  };
+
+  it('sin relleno los días sin filas no aparecen: la serie viene con huecos', async () => {
+    const { rows } = await engine.run(porDia, { companyId: EMPRESA_A, consumer: 'dashboard' });
+
+    const ventas = rows.filter((fila) => fila['departments.name'] === 'Ventas');
+    assert.deepEqual(
+      ventas.map((fila) => fila['attendance.date']),
+      ['2025-08-08', '2025-08-09', '2025-08-10'],
+    );
+    assert.equal(rows.length, 10, 'siete días de Ingeniería y tres de Ventas');
+  });
+
+  it('con relleno salen los siete días de los dos departamentos', async () => {
+    const { rows } = await engine.run(
+      {
+        ...porDia,
+        timeDimensions: [{ ...porDia.timeDimensions[0], fillMissing: true }],
+      },
+      { companyId: EMPRESA_A, consumer: 'dashboard' },
+    );
+
+    assert.equal(rows.length, 14, 'siete buckets por cada uno de los dos ejes');
+
+    // Los cuatro buckets vacíos de Ventas: conteo en 0 —hubo cero días
+    // registrados— y tasa NULA, porque un porcentaje sobre cero días no es 0:
+    // no existe. La razón se anula sola, por el NULLIF de su denominador.
+    assert.deepEqual(
+      rows.filter(
+        (fila) => fila['departments.name'] === 'Ventas' && fila['attendance.date'] > '2025-08-10',
+      ),
+      [
+        { 'departments.name': 'Ventas', 'attendance.date': '2025-08-11', 'attendance.count': 0, 'attendance.attendance_rate': null },
+        { 'departments.name': 'Ventas', 'attendance.date': '2025-08-12', 'attendance.count': 0, 'attendance.attendance_rate': null },
+        { 'departments.name': 'Ventas', 'attendance.date': '2025-08-13', 'attendance.count': 0, 'attendance.attendance_rate': null },
+        { 'departments.name': 'Ventas', 'attendance.date': '2025-08-14', 'attendance.count': 0, 'attendance.attendance_rate': null },
+      ],
+    );
+
+    // Y los buckets que sí tienen datos siguen dando lo mismo que sin relleno:
+    // el 11 de agosto el empleado 100 está ausente, así que Ingeniería marca 0 %
+    // sobre un día registrado. Ese 0 es un dato, no un relleno.
+    assert.deepEqual(
+      rows.find(
+        (fila) =>
+          fila['departments.name'] === 'Ingeniería' && fila['attendance.date'] === '2025-08-11',
+      ),
+      { 'departments.name': 'Ingeniería', 'attendance.date': '2025-08-11', 'attendance.count': 1, 'attendance.attendance_rate': 0 },
+    );
+  });
+
+  it('un promedio sobre un bucket vacío queda nulo, nunca en cero', async () => {
+    const { rows } = await engine.run(
+      {
+        measures: ['reviews.count', 'reviews.avg_score'],
+        timeDimensions: [
+          {
+            dimension: 'reviews.period',
+            granularity: 'quarter',
+            dateRange: ['2025-01-01', '2025-12-31'],
+            fillMissing: true,
+          },
+        ],
+        order: { 'reviews.period': 'asc' },
+      },
+      { companyId: EMPRESA_A, consumer: 'dashboard' },
+    );
+
+    // Literales del seed: la empresa 1 tiene evaluaciones en los tres primeros
+    // trimestres de 2025 y ninguna en el cuarto. Promediar cero scores no da 0,
+    // y un 0 en un gráfico de scores es un número falso que hunde la línea.
+    assert.deepEqual(
+      rows.map((fila) => [fila['reviews.period'], fila['reviews.count'], fila['reviews.avg_score']]),
+      [
+        ['2025-01-01', 3, 4.066666666666666],
+        ['2025-04-01', 3, 3.2333333333333334],
+        ['2025-07-01', 1, 5],
+        ['2025-10-01', 0, null],
+      ],
+    );
+  });
+
+  it('el relleno no cruza empresas: los ejes salen de las filas de la propia', async () => {
+    const { rows } = await engine.run(
+      {
+        measures: ['attendance.count'],
+        dimensions: ['departments.name'],
+        timeDimensions: [
+          {
+            dimension: 'attendance.date',
+            granularity: 'day',
+            dateRange: ['2025-08-03', '2025-08-05'],
+            fillMissing: true,
+          },
+        ],
+        order: { 'departments.name': 'asc', 'attendance.date': 'asc' },
+      },
+      { companyId: EMPRESA_B, consumer: 'dashboard' },
+    );
+
+    // La empresa 2 sólo registra asistencia en Ingeniería (empleado 200, del 01
+    // al 04 de agosto): Ventas no es un eje suyo aunque exista con ese nombre en
+    // la empresa 1, y el día 05 queda relleno en 0.
+    assert.deepEqual(
+      rows.map((fila) => [fila['departments.name'], fila['attendance.date'], fila['attendance.count']]),
+      [
+        ['Ingeniería', '2025-08-03', 1],
+        ['Ingeniería', '2025-08-04', 1],
+        ['Ingeniería', '2025-08-05', 0],
+      ],
+    );
+  });
+});
