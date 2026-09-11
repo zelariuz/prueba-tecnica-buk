@@ -42,6 +42,21 @@ const DIRECCIONES = new Set(['asc', 'desc']);
 
 const GRANULARIDADES_VALIDAS = new Set(GRANULARIDADES);
 
+// Qué se rellena con cero y qué queda nulo cuando un bucket no tiene filas lo
+// decide el TIPO de la medida, que el catálogo ya conoce, y nunca la consulta.
+// Un bucket sin filas tuvo cero eventos: un `count`, un `count_distinct` y un
+// `sum` valen 0 de verdad ahí. Un `avg` sobre cero filas no vale 0: no existe.
+// Rellenar un promedio con cero inventa un número y hunde la línea del gráfico
+// justo donde no hubo datos, que es exactamente el error que esta capa evita
+// (ADR 0012). Las razones tampoco se rellenan: se calculan afuera sobre el
+// resultado ya denso, y su denominador en 0 las anula solo por `NULLIF`.
+const AGREGADOS_QUE_VALEN_CERO_SIN_FILAS = new Set(['count', 'count_distinct', 'sum']);
+
+// Nombres de las dos etapas que sólo existen cuando hay relleno: la serie de
+// buckets del rango y los valores distintos de las dimensiones no temporales.
+const ALIAS_SERIE = 'serie';
+const ALIAS_EJES = 'ejes';
+
 // Desde el ADR 0011 una dimensión temporal puede venir sin `granularity`: con
 // `dateRange` sola, la fecha únicamente filtra. La que agrupa es la que trae
 // granularidad, y sólo esa produce una columna de salida.
@@ -104,6 +119,31 @@ function validarForma(query) {
     throw formaInvalida(
       `timeDimensions[${indice}].granularity`,
       `Una dimensión temporal se agrupa por una granularidad de la lista: ${GRANULARIDADES.join(', ')}, o lleva dateRange sin granularity para sólo filtrar por fecha.`,
+    );
+  });
+
+  // `fillMissing` es una necesidad del consumidor —un gráfico que no debe saltar
+  // días— y no una propiedad de la entidad, así que viaja en la dimensión
+  // temporal de la consulta y no en la definición del módulo (ADR 0012). Se
+  // valida en un recorrido aparte del de arriba, porque aquél corta antes con
+  // `return` en los casos que a éste sí le importan.
+  (query.timeDimensions ?? []).forEach((temporal, indice) => {
+    if (temporal?.fillMissing === undefined) return;
+    if (typeof temporal.fillMissing !== 'boolean') {
+      throw formaInvalida(
+        `timeDimensions[${indice}].fillMissing`,
+        `fillMissing es true o false; recibí ${JSON.stringify(temporal.fillMissing)}.`,
+      );
+    }
+    if (temporal.fillMissing === false) return;
+    // Sin granularidad no hay bucket que repetir y sin rango no hay desde dónde
+    // ni hasta dónde: en cualquiera de los dos casos no existe la serie que
+    // rellenar. Se rechaza en vez de ignorar la bandera en silencio, que dejaría
+    // al consumidor creyendo que su gráfico ya viene denso.
+    if (GRANULARIDADES_VALIDAS.has(temporal.granularity) && temporal.dateRange !== undefined) return;
+    throw formaInvalida(
+      `timeDimensions[${indice}].fillMissing`,
+      `fillMissing necesita granularity y dateRange en la misma dimensión temporal: sin los dos no hay serie de buckets que generar. Declara granularity con una de ${GRANULARIDADES.join(', ')} y dateRange con el rango cerrado a rellenar.`,
     );
   });
 
@@ -225,6 +265,11 @@ function resolverMiembros(paso) {
   // Sin granularidad (ADR 0011) queda sólo el rango: la fecha filtra dentro de
   // la CTE y no produce columna, así que no se suma a las dimensiones.
   const condiciones = new Map();
+  // La dimensión temporal que pidió relleno, si alguna lo pidió, con los
+  // marcadores de sus extremos: la serie se genera con LOS MISMOS parámetros que
+  // ya filtran la CTE, así que rellenar no agrega ni un `$n` más ni reordena
+  // ninguno (ADR 0012).
+  let relleno;
   for (const temporal of query.timeDimensions ?? []) {
     const { entidad, columna } = catalog.dimension(temporal.dimension);
     if (agrupaPorTiempo(temporal)) {
@@ -235,17 +280,44 @@ function resolverMiembros(paso) {
         expresion: dialect.dateTrunc(temporal.granularity, `${entidad}.${columna}`),
       });
     }
-    if (!temporal.dateRange) continue;
-    const [desde, hasta] = temporal.dateRange;
-    // Rango cerrado en ambos extremos, como el dateRange de Cube.
-    condiciones.set(entidad, [
-      ...(condiciones.get(entidad) ?? []),
-      `${columna} >= ${parametro(desde)}`,
-      `${columna} <= ${parametro(hasta)}`,
-    ]);
+    let desdeSql;
+    let hastaSql;
+    if (temporal.dateRange) {
+      const [desde, hasta] = temporal.dateRange;
+      desdeSql = parametro(desde);
+      hastaSql = parametro(hasta);
+      // Rango cerrado en ambos extremos, como el dateRange de Cube.
+      condiciones.set(entidad, [
+        ...(condiciones.get(entidad) ?? []),
+        `${columna} >= ${desdeSql}`,
+        `${columna} <= ${hastaSql}`,
+      ]);
+    }
+    if (temporal.fillMissing !== true) continue;
+    exigirSerieDeFechas(dialect, fuente, temporal.dimension);
+    relleno = { miembro: temporal.dimension, granularidad: temporal.granularity, desdeSql, hastaSql };
   }
 
-  return { ...paso, raiz, fuente, dialect, medidas, derivadas, dimensiones, condiciones };
+  return { ...paso, raiz, fuente, dialect, medidas, derivadas, dimensiones, condiciones, relleno };
+}
+
+// Si la fuente no sabe generar la serie de buckets, no hay relleno que emitir.
+// El código es `UNSUPPORTED_OPERATOR`, el mismo que ya usa el vocabulario para
+// "esto es parte del contrato, pero esta fuente no lo sabe escribir": es un 400
+// porque el consumidor sí puede arreglarlo —quitando la bandera—, y no un 500
+// porque el servidor no está roto. No se inventa un código nuevo; el que hay
+// está mapeado en `src/http/codigos.js` y significa exactamente esto.
+//
+// La comprobación no vive en la puerta `validar` a propósito: esa puerta es la
+// que rechaza sin mirar el catálogo, y qué dialecto traduce la consulta recién
+// se sabe aquí, cuando la entidad de hechos ya nombró su fuente.
+function exigirSerieDeFechas(dialect, fuente, miembro) {
+  if (dialect.capabilities?.serieDeFechas === true) return;
+  throw new SemanticError({
+    code: 'UNSUPPORTED_OPERATOR',
+    member: miembro,
+    suggestion: `La fuente ${fuente} no sabe generar la serie de fechas que necesita fillMissing: quita fillMissing de la dimensión temporal y rellena los buckets vacíos en el consumidor.`,
+  });
 }
 
 // De qué entidad sale el SQL. Con medidas es la entidad de la primera, y las
@@ -406,7 +478,7 @@ function resolverAgregacion(paso) {
       if (formulas.has(dependencia)) return `(${formulas.get(dependencia)})`;
       const base = catalog.measure(`${raiz}.${dependencia}`);
       bases.set(base.miembro, base);
-      return `"${base.miembro}"`;
+      return referenciaDeBase(paso, base);
     };
     const razon = `${paso.dialect.aNumerico(parte(numerator))} / NULLIF(${parte(denominator)}, 0)`;
     formulas.set(nombre, scale === undefined ? razon : `${razon} * ${scale}`);
@@ -477,19 +549,29 @@ function emitirSql(paso) {
   // derivadas, la agregación pasa a ser la etapa de adentro y la fórmula se
   // escribe afuera, sobre sus alias: así solo puede ver valores ya agregados y
   // las bases que el consumidor no pidió no llegan a las filas (ADR 0004).
-  const cuerpo = derivadas.length
-    ? [
-        `SELECT ${[
-          ...dimensiones.map((d) => `"${d.miembro}"`),
-          ...medidas.map((m) =>
-            m.definicion.type === 'ratio'
-              ? `${formulas.get(m.nombre)} AS "${m.miembro}"`
-              : `"${m.miembro}"`,
-          ),
-        ].join(', ')}`,
-        `FROM (\n${indentar(agregada.join('\n'))}\n) AS ${ALIAS_AGREGADA}`,
-      ]
-    : agregada;
+  //
+  // Con relleno la agregación también pasa a ser una etapa de adentro, pero con
+  // nombre propio y dos hermanas, porque afuera hay que unirla con la serie de
+  // buckets. Sin `fillMissing` no se toca nada de esto: el SQL emitido es el
+  // mismo de siempre, byte por byte.
+  const { ctesDelRelleno, cuerpo } = paso.relleno
+    ? etapasDelRelleno(paso, agregada, joins)
+    : {
+        ctesDelRelleno: [],
+        cuerpo: derivadas.length
+          ? [
+              `SELECT ${[
+                ...dimensiones.map((d) => `"${d.miembro}"`),
+                ...medidas.map((m) =>
+                  m.definicion.type === 'ratio'
+                    ? `${formulas.get(m.nombre)} AS "${m.miembro}"`
+                    : `"${m.miembro}"`,
+                ),
+              ].join(', ')}`,
+              `FROM (\n${indentar(agregada.join('\n'))}\n) AS ${ALIAS_AGREGADA}`,
+            ]
+          : agregada,
+      };
 
   const orden = ordenDeSalida(query, dimensiones, medidas);
   // Ninguna consulta sale sin LIMIT: el pedido nunca supera el máximo de la
@@ -497,13 +579,79 @@ function emitirSql(paso) {
   const filas = Math.min(query.limit ?? presupuesto.maxFilas, presupuesto.maxFilas);
 
   const sql = [
-    `WITH ${cte.join(',\n')}`,
+    `WITH ${[...cte, ...ctesDelRelleno].join(',\n')}`,
     ...cuerpo,
     ...(orden.length ? [`ORDER BY ${orden.join(', ')}`] : []),
     `LIMIT ${parametro(filas)}`,
   ].join('\n');
 
   return { ...paso, sql, filas };
+}
+
+// Relleno de serie densa (ADR 0012): las tres etapas que convierten el
+// resultado disperso de siempre en uno con TODOS los buckets del rango.
+//
+//   serie    los buckets del rango, uno por fila, en el mismo formato de texto
+//            que `dateTrunc`, para que el JOIN calce por igualdad.
+//   ejes     los valores distintos de las dimensiones NO temporales, tomados de
+//            los mismos datos filtrados: se rellena el tiempo de los ejes que
+//            existen, no se inventan departamentos que nadie tiene.
+//   agregada exactamente la etapa que emite el camino normal, sin un cambio.
+//
+// Afuera, el producto `serie × ejes` es la rejilla completa y el `LEFT JOIN`
+// trae lo que haya. Sin dimensiones no temporales no hay rejilla que armar: no
+// se emite `ejes` ni el `CROSS JOIN`, y la serie sola es el esqueleto.
+function etapasDelRelleno(paso, agregada, joins) {
+  const { dialect, dimensiones, medidas, formulas, raiz, relleno } = paso;
+
+  const ejes = dimensiones.filter((d) => d.miembro !== relleno.miembro);
+
+  const ctesDelRelleno = [
+    `${ALIAS_SERIE} AS (\n${indentar(
+      dialect.serieDeFechas(relleno.granularidad, relleno.desdeSql, relleno.hastaSql),
+    )}\n)`,
+  ];
+  if (ejes.length) {
+    ctesDelRelleno.push(
+      `${ALIAS_EJES} AS (\n${indentar(
+        [
+          `SELECT DISTINCT ${ejes.map((d) => `${d.expresion} AS "${d.miembro}"`).join(', ')}`,
+          `FROM ${raiz}${joins.join('')}`,
+        ].join('\n'),
+      )}\n)`,
+    );
+  }
+  ctesDelRelleno.push(`${ALIAS_AGREGADA} AS (\n${indentar(agregada.join('\n'))}\n)`);
+
+  // Las columnas salen en el mismo orden en que la consulta las pidió: la
+  // temporal rellenada viene de la serie y las demás del eje, para que un bucket
+  // sin filas igual traiga el nombre del departamento y no un nulo.
+  const columnas = [
+    ...dimensiones.map((d) =>
+      d.miembro === relleno.miembro
+        ? `${ALIAS_SERIE}.bucket AS "${d.miembro}"`
+        : `${ALIAS_EJES}."${d.miembro}" AS "${d.miembro}"`,
+    ),
+    ...medidas.map((m) =>
+      m.definicion.type === 'ratio'
+        ? `${formulas.get(m.nombre)} AS "${m.miembro}"`
+        : `${rellenoDeMedida(m, `${ALIAS_AGREGADA}."${m.miembro}"`)} AS "${m.miembro}"`,
+    ),
+  ];
+
+  const condicion = [
+    `${ALIAS_AGREGADA}."${relleno.miembro}" = ${ALIAS_SERIE}.bucket`,
+    ...ejes.map((d) => `${ALIAS_AGREGADA}."${d.miembro}" = ${ALIAS_EJES}."${d.miembro}"`),
+  ];
+
+  return {
+    ctesDelRelleno,
+    cuerpo: [
+      `SELECT ${columnas.join(', ')}`,
+      `FROM ${ALIAS_SERIE}${ejes.length ? `\nCROSS JOIN ${ALIAS_EJES}` : ''}`,
+      `LEFT JOIN ${ALIAS_AGREGADA} ON ${condicion.join('\n  AND ')}`,
+    ],
+  };
 }
 
 // El filtro de empresa vive dentro de la CTE, en el único lugar donde se nombra
@@ -614,6 +762,26 @@ function describirPlan(paso) {
   };
 
   return { ...paso, logico };
+}
+
+// Cómo nombra una fórmula derivada a la medida base que ya se agregó. Sin
+// relleno es el alias de la etapa de adentro. Con relleno es la columna de la
+// CTE `agregada` **ya rellenada**, porque la razón se sigue calculando afuera,
+// sobre el resultado denso: en un bucket vacío el denominador queda en 0, el
+// `NULLIF` que ya estaba lo vuelve nulo y la razón sale vacía sola, sin una
+// sola regla nueva (ADR 0012).
+function referenciaDeBase(paso, base) {
+  if (!paso.relleno) return `"${base.miembro}"`;
+  return rellenoDeMedida(base, `${ALIAS_AGREGADA}."${base.miembro}"`);
+}
+
+// Una medida base leída desde la etapa agregada en un bucket que puede no
+// existir. El `COALESCE` lo decide el tipo, nunca la consulta: ver
+// `AGREGADOS_QUE_VALEN_CERO_SIN_FILAS`.
+function rellenoDeMedida(medida, expresion) {
+  return AGREGADOS_QUE_VALEN_CERO_SIN_FILAS.has(medida.definicion.type)
+    ? `COALESCE(${expresion}, 0)`
+    : expresion;
 }
 
 // El agregado de una medida base, con el filtro de su segmento si lo tiene.
