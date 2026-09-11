@@ -25,7 +25,8 @@ TypeScript, Node 24, `node:test`, node-postgres.
   0005 segmentos sin SQL, 0006 medidas de una sola entidad, 0007 vocabulario
   Cube, 0008 catálogo en dos vistas, 0009 rango opcional para el agente,
   0010 consultas sin medida, 0011 rango sin granularidad, 0012 relleno de
-  series densas, 0013 truncado visible y total de filas).
+  series densas, 0013 truncado visible y total de filas, 0014 rangos relativos
+  con vocabulario cerrado).
 
 ## Estructura
 
@@ -72,12 +73,16 @@ src/
                              esquema físico y tipos), fuente por entidad,
                              resolución de miembros, vistas pública e interna,
                              versión y consultas tipo
+  rangos-relativos.js        el vocabulario cerrado de rangos relativos
+                             (`last 6 months`, `this quarter`) y su resolución a
+                             un par de fechas en la zona pedida; valida la zona
+                             con `Intl` (ADR 0014)
   suggest.js                 distancia de edición y sugerencia del nombre más parecido
   vocabulary.js              operadores por tipo de dimensión y granularidades
-  planner.js                 el planificador: pipeline de puertas (validar, resolver
-                             miembros, filtros, joins, agregación y derivadas,
-                             emitir SQL, describir el plan lógico). Única pieza
-                             que escribe SQL
+  planner.js                 el planificador: pipeline de puertas (resolver rangos
+                             relativos, validar, resolver miembros, filtros,
+                             joins, agregación y derivadas, emitir SQL, describir
+                             el plan lógico). Única pieza que escribe SQL
   engine.js                  plan() y run(): dry-run y ejecución transaccional con
                              SET LOCAL statement_timeout, más las puertas
                              buscarEnCache y guardarEnCache
@@ -113,6 +118,10 @@ test/
   redis.test.js              caché L2 contra Redis de verdad: dos instancias,
                              llaves con empresa por SCAN y Redis inalcanzable;
                              se salta sin REDIS_URL
+  rangos-relativos.test.js   el vocabulario forma por forma con reloj fijo, los
+                             bordes de mes/trimestre/año, las zonas, y la prueba
+                             que más importa: dos "hoy" distintos dan queryId
+                             distintos y no comparten caché (contra Postgres)
   sqlite.test.js             la segunda fuente por los seams engine.run,
                              engine.plan y catalog.register; base en memoria, sin
                              variables de entorno
@@ -232,6 +241,41 @@ curl -s -H 'Authorization: Bearer demo-dashboard-empresa-a' \
 - Repo público: sin datos personales ni nombres reales en seeds ni ejemplos.
 
 ## Estado
+
+Rangos relativos (11-09, ADR 0014): el `dateRange` de una dimensión temporal
+acepta, además del par de fechas, **una frase de un vocabulario cerrado** que la
+capa resuelve a ese par. Quince formas, en minúsculas y escritas exactamente
+así: `today`, `yesterday`, `this week|month|quarter|year`,
+`last week|month|quarter|year` y `last N days|weeks|months|quarters|years` (N
+entero positivo, unidad siempre en plural). **No hay intérprete de lenguaje
+natural** —Cube usa Chrono; aquí no—: cualquier otra cadena es `INVALID_QUERY`
+con `member` `timeDimensions[i].dateRange` y la lista entera en la sugerencia,
+por la misma razón por la que las granularidades son una lista cerrada. Un rango
+mal interpretado no falla: devuelve los datos de otro período con un 200.
+**Definición elegida y escrita: `last month` es el mes calendario anterior
+COMPLETO**, no los últimos 30 días, y ninguna frase `last …` incluye hoy (las
+formas cortas son el caso N=1 de las largas); las `this …` van del comienzo del
+período en curso **a hoy**. La semana empieza el lunes, como el
+`DATE_TRUNC('week')` de Postgres y como `bucketsDelRango`. La zona es
+`timezone`, propiedad **de la consulta** (como en Cube), por defecto `UTC`,
+validada con la API `Intl` del runtime y no con una lista propia; **no reabre el
+supuesto v1**: las columnas siguen siendo `DATE` y la capa no convierte nada, la
+zona sólo decide qué día es hoy. **Lo crítico es cuándo se resuelve**: en la
+**primera puerta** del planificador, antes de validar la forma, antes de que las
+fechas entren como parámetros `$n` y, por lo tanto, antes del `queryId` —que
+nace del SQL ejecutado y sus parámetros—. Comprobado ejecutando, no razonando:
+la misma frase `last 7 days` con "hoy" en agosto y en septiembre da
+`ada38a495c69039d` y `d5ae1b4eefe8ebe6`, las dos `live`, mientras con el mismo
+"hoy" la segunda sale `cache-l1` con el mismo id (test con TTL inmenso inyectado
+para que un vencimiento no pueda ser la explicación alternativa). El "hoy" sale
+del **reloj inyectable que el engine ya tenía** para el `asOf` y el TTL, leído
+una sola vez por consulta. El plan lógico del dry-run estrena `timeDimensions`
+—con el rango ya resuelto y la frase original en `dateRangeExpression`— y
+`timezone`. La raíz corre **266 tests en verde** con `DATABASE_URL` y
+`REDIS_URL`, y **167 sin nada** (1 se salta). Los seis SQL de referencia de
+`test/snapshots/` quedaron byte por byte iguales. Evoluciones anotadas en el
+ADR: publicar el vocabulario por `describe()` y enseñárselo al agente en el
+prompt de creación de la demo.
 
 Truncado visible y total de filas (11-09, ADR 0013): cierra la evolución que el
 ADR 0012 había dejado anotada. Tres cosas. **(1)** Cuando las filas devueltas
