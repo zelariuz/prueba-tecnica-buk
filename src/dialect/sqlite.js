@@ -76,6 +76,11 @@ export const sqlite = {
     // obligatorio) sí, porque lo aplica el planificador. La capacidad está para
     // que eso se pueda leer en un catálogo y no se descubra midiendo.
     timeoutDeSentencia: false,
+    // Tampoco puede generar la serie de buckets de un rango: el porqué está
+    // escrito entero sobre `serieDeFechas`, más abajo. Declararlo aquí es lo que
+    // permite que el planificador rechace `fillMissing` sobre esta fuente con un
+    // error del consumidor (ADR 0012) en vez de descubrirlo en la base.
+    serieDeFechas: false,
   },
 
   // --- 1. Sintaxis SQL ------------------------------------------------------
@@ -107,6 +112,27 @@ export const sqlite = {
   // sigue preguntando al dialecto.
   agregadoFiltrado(agregado, condicion) {
     return `${agregado} FILTER (WHERE ${condicion})`;
+  },
+
+  // SQLite **no** ofrece la serie de fechas, y la capacidad lo dice. No es una
+  // limitación insalvable, es una que no se puede prometer con garantías:
+  // `generate_series` es una extensión opcional que `node:sqlite` no trae, así
+  // que habría que armar la serie con una CTE recursiva que avance bucket a
+  // bucket desde un inicio truncado. Y el inicio truncado de este dialecto no
+  // siempre es una fecha: para el trimestre, `dateTrunc` devuelve el texto de un
+  // `PRINTF`, sobre el que `DATE(..., '+3 months')` no opera. El contrato del
+  // relleno es que la serie calce **carácter por carácter** con `dateTrunc` en
+  // las cuatro granularidades; una serie que no calza no falla, devuelve todos
+  // los buckets vacíos, que es la peor forma de fallar.
+  //
+  // Este throw es la cerradura, no el camino normal: el planificador mira la
+  // capacidad antes de llamar y corta con un error estructurado. Llegar aquí es
+  // un error del servidor, y por eso es un `Error` pelado, igual que la
+  // granularidad no soportada de `dateTrunc`.
+  serieDeFechas() {
+    throw new Error(
+      'El dialecto sqlite no declara la capacidad serieDeFechas: no hay serie de fechas que emitir.',
+    );
   },
 
   // Forzar aritmética real. En Postgres es `::numeric`; aquí, un CAST estándar.
