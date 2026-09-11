@@ -58,10 +58,9 @@ export function crearServidor({
       // ruta sería tener la regla en un solo lado. Sólo una sesión interna lo
       // recibe, y `internal` viene del token —lo pone el servidor— y nunca de la
       // consulta.
-      const { sql, params, plan } = engine.plan(consulta, sesion);
       return {
         estado: 200,
-        cuerpo: { params, plan, ...(sesion.internal === true ? { sql } : {}) },
+        cuerpo: cuerpoDelPlan(engine.plan(consulta, sesion), sesion.internal === true),
       };
     }
 
@@ -193,6 +192,27 @@ function interpretar(texto) {
 
 // Sólo los tres campos del error estructurado (CONTEXT.md). Nunca el mensaje ni
 // la pila: lo que sale al consumidor es lo que puede usar para corregirse.
+// El cuerpo del dry-run. Una comparación de períodos trae un plan por rango
+// (ADR 0015) y una consulta normal el de siempre, byte por byte: la única
+// diferencia es cuántos planes hay que vestir. Lo que nunca sale es el SQL —
+// nombra tablas y columnas físicas, que la vista pública esconde (ADR 0008)—
+// salvo para una sesión interna, y la regla de esconderlo vive en un solo lugar.
+function cuerpoDelPlan(planificado, interno) {
+  if (planificado.results === undefined) return cuerpoDeUnPlan(planificado, interno);
+  return { results: planificado.results.map((resultado) => cuerpoDeUnPlan(resultado, interno)) };
+}
+
+// `total` tampoco sale: es la segunda sentencia, y una sentencia es SQL.
+function cuerpoDeUnPlan({ sql, params, plan, dateRange, dateRangeExpression }, interno) {
+  return {
+    ...(dateRange === undefined ? {} : { dateRange }),
+    ...(dateRangeExpression === undefined ? {} : { dateRangeExpression }),
+    params,
+    plan,
+    ...(interno ? { sql } : {}),
+  };
+}
+
 function cuerpoDeError({ code, member, suggestion }) {
   return {
     code,

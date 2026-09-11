@@ -197,8 +197,13 @@ export function crearPlanificador({ catalog, fuentes, presupuestos, reloj = Date
     describirPlan,
   ];
 
-  return function planificar(query, ctx) {
-    let paso = { catalog, fuentes, presupuestos, reloj, query, ctx };
+  // `ahora` es opcional y sólo lo pasa quien necesita que VARIAS planificaciones
+  // caigan en el mismo "hoy": la comparación de períodos planifica una consulta
+  // por rango, y si el día cambiara entre una y otra, `this month` y `last
+  // month` podrían resolver al mismo mes (ADR 0015). Sin él, cada consulta lee
+  // el reloj una vez, como siempre.
+  return function planificar(query, ctx, { ahora } = {}) {
+    let paso = { catalog, fuentes, presupuestos, reloj, ahora, query, ctx };
     for (const puerta of puertas) paso = anotandoLaPuerta(puerta, paso);
     const { sql, params, medidas, presupuesto, advertencias, logico, fuente, filas, total } = paso;
     // `filas` —el LIMIT efectivo que se emitió— sale del planificador porque el
@@ -255,7 +260,10 @@ function resolverRangosRelativos(paso) {
   // frases tienen que caer en el mismo "hoy" aunque el reloj avance entre una y
   // otra —si no, un cambio de día a medio resolver daría dos ventanas que no
   // corresponden a ningún instante.
-  const ahora = reloj();
+  // Y un solo tic para toda una comparación de períodos, si quien llamó lo
+  // impuso: sus rangos son consultas distintas que tienen que hablar del mismo
+  // día (ADR 0015).
+  const ahora = paso.ahora ?? reloj();
   const resueltas = temporales.map((temporal, indice) => {
     if (!esRangoRelativo(temporal?.dateRange)) return temporal;
     frases.set(indice, temporal.dateRange);
