@@ -18,6 +18,12 @@ export const employees = {
       type: 'string',
       description: 'Nombre del empleado tal como lo nombra la empresa.',
     },
+    hire_date: {
+      column: 'hire_date',
+      type: 'date',
+      description:
+        'Fecha de contratación; se agrupa por día, mes, trimestre o año para ver la evolución de las contrataciones.',
+    },
   },
 
   measures: {
