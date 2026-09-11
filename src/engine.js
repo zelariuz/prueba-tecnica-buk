@@ -189,7 +189,7 @@ export function createEngine({
       registro.gate = error?.gate;
       throw error;
     }
-    const { sql, params, medidas, presupuesto, advertencias, fuente } = plan;
+    const { sql, params, medidas, presupuesto, advertencias, fuente, filas: tope } = plan;
     registro.logico = plan.logico;
     // El SQL del plan, sin la marca de comentario: el `queryId` que la marca
     // repite ya viaja como campo propio del evento.
@@ -258,15 +258,20 @@ export function createEngine({
     telemetria.registrarOk({ consumer: ctx?.consumer, dbMs });
 
     const rows = aNumeros(filas, medidas);
+    // Las advertencias del plan son lo que se pudo saber antes de ejecutar; el
+    // truncado sólo se sabe después, contando lo que volvió. Las dos viajan
+    // juntas en `meta.warnings` porque para quien lee la respuesta son lo mismo:
+    // algo que hay que mirar antes de creerle al número.
+    const avisos = [...advertencias, ...avisoDeTruncado(rows.length, tope)];
     registro.servedFrom = 'live';
     registro.rows = rows.length;
     registro.dbMs = dbMs;
-    registro.warnings = advertencias.length;
+    registro.warnings = avisos.length;
 
     // Puerta · Guardar en caché. Sólo lo que se ejecutó en vivo: un resultado
     // servido desde la caché no se vuelve a guardar, así que su TTL cuenta
     // desde la ejecución real y una entrada no se renueva sola para siempre.
-    await guardarEnCache(llave, { rows, asOf, warnings: advertencias }, presupuesto.cacheTtlMs);
+    await guardarEnCache(llave, { rows, asOf, warnings: avisos }, presupuesto.cacheTtlMs);
 
     return {
       rows,
@@ -276,7 +281,7 @@ export function createEngine({
         queryId,
         // Siempre presente, aunque esté vacía: quien la lee no tiene que
         // preguntarse si el campo existe.
-        warnings: advertencias,
+        warnings: avisos,
       },
     };
   }
@@ -343,6 +348,33 @@ export function createEngine({
   }
 
   return { plan, run, telemetry: telemetria.snapshot, identidadDeFuente };
+}
+
+// Un resultado que llega justo al tope de filas de su clase de consumidor puede
+// venir cortado, y hasta aquí cortaba en silencio: el `LIMIT` recorta, la
+// respuesta sale con 200 y un gráfico dibujado con ella **se ve completo**. Un
+// gráfico truncado que parece entero miente peor que uno con huecos, que es la
+// misma razón por la que existe el relleno del ADR 0012.
+//
+// No se puede saber si sobraban filas sin pedirlas —por eso esto es una
+// advertencia y no una certeza—, y no se pide una fila de más para averiguarlo:
+// el tope de la clase es el tope, y gastarse una fila extra en cada consulta
+// para adornar un aviso sería cobrarle a todos el precio de unos pocos. Quien
+// necesite el número exacto lo pide con `total: true`, que lo cuenta ignorando
+// el límite.
+//
+// El aviso es del resultado y no del plan, así que nace aquí y no en el
+// planificador: antes de ejecutar no hay filas que contar. Viaja con la forma
+// que el repo ya usa para la razón anulada —`{ member, warning }` en
+// `meta.warnings`—, así que ningún consumidor tiene que aprender un campo nuevo.
+function avisoDeTruncado(devueltas, tope) {
+  if (tope === undefined || devueltas < tope) return [];
+  return [
+    {
+      member: 'limit',
+      warning: `El resultado trae ${devueltas} filas, que es exactamente el tope de tu clase de consumidor: puede estar truncado y desde la respuesta no hay forma de notarlo. Acota el rango, sube la granularidad o pide menos dimensiones; con total: true sabrás cuántas filas tiene el resultado completo.`,
+    },
+  ];
 }
 
 // El evento que ve el observador: qué se pidió, qué se planificó, de dónde

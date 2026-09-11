@@ -181,8 +181,12 @@ export function crearPlanificador({ catalog, fuentes, presupuestos }) {
   return function planificar(query, ctx) {
     let paso = { catalog, fuentes, presupuestos, query, ctx };
     for (const puerta of puertas) paso = anotandoLaPuerta(puerta, paso);
-    const { sql, params, medidas, presupuesto, advertencias, logico, fuente } = paso;
-    return { sql, params, medidas, presupuesto, advertencias, logico, fuente };
+    const { sql, params, medidas, presupuesto, advertencias, logico, fuente, filas } = paso;
+    // `filas` —el LIMIT efectivo que se emitió— sale del planificador porque el
+    // engine no puede recalcularlo sin repetir la regla: quien lo decide es
+    // quien lo escribió en el SQL. Lo necesita para saber si la respuesta llegó
+    // al tope y puede venir cortada.
+    return { sql, params, medidas, presupuesto, advertencias, logico, fuente, filas };
   };
 }
 

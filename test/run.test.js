@@ -13,6 +13,7 @@ import { reviews } from '../src/definitions/reviews.js';
 import { attendance } from '../src/definitions/attendance.js';
 import { registrarModulos } from '../src/definitions/index.js';
 import { consultasTipo } from '../src/definitions/consultas-tipo.js';
+import { crearMemoryStore } from '../src/cache/store.js';
 
 // La misma foto fija del esquema que usa el resto de los tests del catálogo.
 const SNAPSHOT = JSON.parse(readFileSync(new URL('./fixtures/snapshot.json', import.meta.url), 'utf8'));
@@ -1396,5 +1397,70 @@ describe('relleno de series densas', conBase, () => {
         ['Ingeniería', '2025-08-05', 0],
       ],
     );
+  });
+});
+
+// --- Aviso de resultado truncado. Vale para CUALQUIER consulta, no sólo para
+// las que rellenan: el `LIMIT` de la clase de consumidor recorta en silencio y
+// una respuesta cortada se ve igual de completa que una entera.
+describe('aviso de resultado truncado', conBase, () => {
+  let pool;
+  let catalog;
+
+  before(() => {
+    pool = new pg.Pool({ connectionString: DATABASE_URL });
+    catalog = createCatalog();
+    for (const definicion of [reviews, employees, departments]) catalog.register(definicion);
+  });
+
+  after(async () => {
+    await pool.end();
+  });
+
+  const ctx = { companyId: EMPRESA_A, consumer: 'dashboard' };
+
+  it('la consulta que llega al tope de su clase vuelve con la advertencia', async () => {
+    // La empresa A tiene tres estados en el seed; esta clase sólo puede
+    // devolver dos, así que la tercera fila se pierde sin que se note.
+    const acotado = createEngine({
+      catalog,
+      pool,
+      presupuestos: { dashboard: { timeoutMs: 5_000, maxFilas: 2, rangoObligatorio: false } },
+    });
+
+    const { rows, meta } = await acotado.run(conteoPorEstado, ctx);
+
+    assert.equal(rows.length, 2);
+    assert.equal(meta.warnings.length, 1);
+    assert.equal(meta.warnings[0].member, 'limit');
+    assert.match(meta.warnings[0].warning, /truncado/);
+    assert.match(meta.warnings[0].warning, /total: true/);
+  });
+
+  it('la consulta que no lo alcanza no trae ninguna advertencia', async () => {
+    const engine = createEngine({ catalog, pool });
+
+    const { rows, meta } = await engine.run(conteoPorEstado, ctx);
+
+    assert.equal(rows.length, 3, 'los tres estados del seed, muy por debajo de las 5.000 del tope');
+    assert.deepEqual(meta.warnings, []);
+  });
+
+  it('el aviso viaja con la entrada de caché: la repetida dice lo mismo', async () => {
+    const acotado = createEngine({
+      catalog,
+      pool,
+      cache: crearMemoryStore(),
+      presupuestos: { dashboard: { timeoutMs: 5_000, maxFilas: 2, rangoObligatorio: false, cacheTtlMs: 60_000 } },
+    });
+
+    const primera = await acotado.run(conteoPorEstado, ctx);
+    const segunda = await acotado.run(conteoPorEstado, ctx);
+
+    assert.equal(segunda.meta.servedFrom, 'cache-l1');
+    // Las mismas filas cortadas de la misma manera: la advertencia no puede
+    // depender de si la respuesta salió de la base o de la caché.
+    assert.deepEqual(segunda.meta.warnings, primera.meta.warnings);
+    assert.equal(segunda.meta.warnings.length, 1);
   });
 });
