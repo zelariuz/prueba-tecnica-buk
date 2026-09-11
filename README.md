@@ -182,6 +182,11 @@ mapa de tipos del dialecto justamente para que no se acepten en silencio.
 Evolución: `timestamptz` en base, zona declarada por empresa en el catálogo y
 `AT TIME ZONE` en el dialecto. Detalle en `docs/riesgos.md`.
 
+La propiedad `timezone` de la consulta (ADR 0014) **no reabre este supuesto**:
+no convierte ningún dato ni emite un solo `AT TIME ZONE`. Sirve únicamente para
+saber qué día es "hoy" al resolver un `dateRange` relativo (`last 6 months`) a
+fechas; con un rango absoluto no cambia nada.
+
 ## Cómo se consulta
 
 ```js
@@ -308,6 +313,92 @@ siendo `>= $2 AND <= $3` dentro de la CTE de `attendance`, y el `GROUP BY` lleva
 sólo el departamento. Agregar `granularity: 'month'` devuelve la tendencia mes a
 mes, que es la otra pregunta. Una `timeDimension` **sin** `dateRange` y **sin**
 `granularity` es `INVALID_QUERY`: no filtra ni agrupa, así que no dice nada.
+
+### Un rango relativo: `dateRange` como frase
+
+`dateRange` acepta, además del par de fechas, **una frase de un vocabulario
+cerrado** que la capa resuelve a ese par (ADR 0014). "Los últimos seis meses" se
+escribe una vez y sigue diciendo lo mismo mañana:
+
+```js
+await engine.run(
+  {
+    measures: ['attendance.attendance_rate'],
+    dimensions: ['departments.name'],
+    timeDimensions: [{ dimension: 'attendance.date', dateRange: 'last 6 months' }],
+  },
+  { companyId: 1, consumer: 'dashboard' },
+);
+```
+
+Las quince formas, escritas **exactamente así, en minúsculas**:
+
+| Frase | Ventana (con hoy = viernes 11-09-2020) |
+|---|---|
+| `today` / `yesterday` | `2020-09-11` / `2020-09-10` |
+| `this week` | `2020-09-07` → `2020-09-11` (del lunes a hoy) |
+| `this month` | `2020-09-01` → `2020-09-11` |
+| `this quarter` | `2020-07-01` → `2020-09-11` |
+| `this year` | `2020-01-01` → `2020-09-11` |
+| `last week` | `2020-08-31` → `2020-09-06` |
+| `last month` | `2020-08-01` → `2020-08-31` |
+| `last quarter` | `2020-04-01` → `2020-06-30` |
+| `last year` | `2019-01-01` → `2019-12-31` |
+| `last N days` | `last 7 days` → `2020-09-04` → `2020-09-10` |
+| `last N weeks` | `last 2 weeks` → `2020-08-24` → `2020-09-06` |
+| `last N months` | `last 6 months` → `2020-03-01` → `2020-08-31` |
+| `last N quarters` | `last 3 quarters` → `2019-10-01` → `2020-06-30` |
+| `last N years` | `last 2 years` → `2018-01-01` → `2019-12-31` |
+
+Dos reglas, y están decididas y escritas para que no haya que adivinarlas:
+
+- **`last …` es el período calendario anterior COMPLETO y nunca incluye hoy.**
+  `last month` es agosto entero, no los últimos 30 días; un período a medio
+  transcurrir hunde el último punto del gráfico y arruina la comparación contra
+  el anterior. Quien quiera la ventana móvil escribe `last 30 days`.
+- **`this …` va del comienzo del período en curso a hoy**, no al final del
+  período: un rango que llegara al 31 de diciembre incluiría días que todavía no
+  ocurrieron.
+
+`N` es un entero positivo y la unidad va siempre en plural, también con N=1
+(`last 1 months` es `last month`). La semana empieza el **lunes**, como el
+`DATE_TRUNC('week', …)` de Postgres. **No hay intérprete de lenguaje natural**:
+cualquier otra cadena —`Last 6 Months`, `last 6 month`, `últimos seis meses`— es
+`INVALID_QUERY` con la lista entera en la sugerencia. Cube usa Chrono para
+interpretar frases libres; aquí no, por la misma razón por la que las
+granularidades son una lista cerrada: un rango mal interpretado no falla,
+devuelve los datos de otro período con un 200 y nadie lo nota.
+
+Para saber cuándo empieza "hoy" hace falta una zona: es `timezone`, una
+propiedad **de la consulta** (como en Cube), por omisión `UTC`, validada con la
+API `Intl` del runtime —una zona que el runtime no conoce es `INVALID_QUERY`—.
+
+```js
+{ measures: ['attendance.count'],
+  timeDimensions: [{ dimension: 'attendance.date', granularity: 'day', dateRange: 'last 7 days' }],
+  timezone: 'America/Santiago' }
+```
+
+La zona **sólo** sirve para resolver la frase a fechas: no reabre el supuesto v1
+de más arriba, las columnas siguen siendo `DATE` y la capa sigue sin convertir
+nada. Con un `dateRange` absoluto no cambia absolutamente nada.
+
+La frase se resuelve **en la primera puerta del planificador**, antes de que las
+fechas entren como parámetros `$n` y, por lo tanto, antes de que exista el
+`queryId`. Eso es lo que hace que "los últimos siete días" de hoy y los de
+mañana sean dos entradas de caché distintas: si la identidad naciera de la
+frase, el gráfico se quedaría congelado en la primera ventana. El dry-run
+muestra en qué quedó:
+
+```jsonc
+// POST /analytics/query?dryRun=true
+"plan": {
+  "timeDimensions": [{ "dimension": "attendance.date", "granularity": "day",
+                       "dateRange": ["2025-08-08", "2025-08-14"],
+                       "dateRangeExpression": "last 7 days" }],
+  "timezone": "UTC"
+}
+```
 
 ### Una serie sin huecos: `fillMissing`
 
@@ -477,9 +568,10 @@ const { sql, params, plan } = engine.plan(consulta, { companyId: 1, consumer: 'a
 ```
 
 `plan` trae la entidad de hechos, el camino de joins, las dimensiones, las
-medidas pedidas, las medidas base que hizo falta resolver, las derivadas con su
-numerador y denominador, los filtros globales, los filtros de cada medida, el
-presupuesto aplicado con el límite efectivo y las advertencias. No abre ninguna
+dimensiones temporales con su rango **ya resuelto** y la zona con que se resolvió
+(ADR 0014), las medidas pedidas, las medidas base que hizo falta resolver, las
+derivadas con su numerador y denominador, los filtros globales, los filtros de
+cada medida, el presupuesto aplicado con el límite efectivo y las advertencias. No abre ninguna
 conexión: un agente puede revisar la consulta antes de ejecutarla.
 
 El plan lógico está escrito **en nombres semánticos**: no hay una tabla ni una
