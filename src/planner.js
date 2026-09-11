@@ -10,6 +10,7 @@
 // el SQL.
 import { presupuestoDe } from './budgets.js';
 import { SemanticError } from './errors.js';
+import { esRangoRelativo, resolverRangoRelativo, zonaValida } from './rangos-relativos.js';
 import { GRANULARIDADES, OPERADORES_EN_SQL, operadoresDe } from './vocabulary.js';
 
 const PARAMETRO_EMPRESA = '$1';
@@ -180,8 +181,13 @@ function validarForma(query) {
 // planificador sólo usa el dialecto, y lo toma de la fuente de la entidad de
 // hechos: qué motor traduce esta consulta lo decide el dato que se consulta, no
 // una constante del planificador.
-export function crearPlanificador({ catalog, fuentes, presupuestos }) {
+// `reloj` es el mismo reloj inyectable del engine (el que fecha el `asOf` y le
+// mide la edad a una entrada de caché). Entra aquí porque un `dateRange`
+// relativo —"los últimos seis meses"— necesita saber qué día es hoy, y sin esta
+// costura ningún test podría fijar un "hoy" ni el plan sería reproducible.
+export function crearPlanificador({ catalog, fuentes, presupuestos, reloj = Date.now }) {
   const puertas = [
+    resolverRangosRelativos,
     validar,
     resolverMiembros,
     aplicarFiltros,
@@ -192,7 +198,7 @@ export function crearPlanificador({ catalog, fuentes, presupuestos }) {
   ];
 
   return function planificar(query, ctx) {
-    let paso = { catalog, fuentes, presupuestos, query, ctx };
+    let paso = { catalog, fuentes, presupuestos, reloj, query, ctx };
     for (const puerta of puertas) paso = anotandoLaPuerta(puerta, paso);
     const { sql, params, medidas, presupuesto, advertencias, logico, fuente, filas, total } = paso;
     // `filas` —el LIMIT efectivo que se emitió— sale del planificador porque el
@@ -217,6 +223,56 @@ function anotandoLaPuerta(puerta, paso) {
     }
     throw error;
   }
+}
+
+// Puerta 0 · Rangos relativos: la frase se cambia por el par de fechas que
+// significa hoy, y de aquí en adelante nadie vuelve a verla (ADR 0014).
+//
+// Va **primera**, antes que cualquier otra puerta, y ésa es la decisión: las
+// fechas resueltas entran al SQL como parámetros (puerta 2), y el `queryId` que
+// identifica la consulta —y con él la llave de caché— nace del SQL y de sus
+// parámetros. Resolver aquí es lo que hace que "los últimos siete días" de hoy
+// y los de mañana sean dos consultas distintas con dos entradas distintas. Si la
+// identidad naciera de la frase, la caché serviría siempre la primera ventana y
+// el gráfico se quedaría congelado sin que nadie se entere.
+//
+// Lo que esta puerta NO hace es opinar sobre la forma: una consulta que no es un
+// objeto, o cuyas `timeDimensions` no son una lista, pasa de largo y la rechaza
+// `validar` con su mensaje de siempre.
+function resolverRangosRelativos(paso) {
+  const { query, reloj } = paso;
+  if (query === null || typeof query !== 'object' || Array.isArray(query)) return paso;
+
+  // La zona se valida aunque no haya ninguna frase que resolver: aceptar en
+  // silencio una zona que el runtime no conoce sería dejar pasar un error que
+  // reaparecería recién el día que alguien agregue un rango relativo.
+  const zona = zonaValida(query.timezone);
+  const frases = new Map();
+  const temporales = query.timeDimensions;
+  if (!Array.isArray(temporales)) return { ...paso, zona, frases };
+
+  // Un solo tic del reloj para toda la consulta: dos dimensiones temporales con
+  // frases tienen que caer en el mismo "hoy" aunque el reloj avance entre una y
+  // otra —si no, un cambio de día a medio resolver daría dos ventanas que no
+  // corresponden a ningún instante.
+  const ahora = reloj();
+  const resueltas = temporales.map((temporal, indice) => {
+    if (!esRangoRelativo(temporal?.dateRange)) return temporal;
+    frases.set(indice, temporal.dateRange);
+    return {
+      ...temporal,
+      dateRange: resolverRangoRelativo(temporal.dateRange, {
+        ahora,
+        zona,
+        member: `timeDimensions[${indice}].dateRange`,
+      }),
+    };
+  });
+
+  // Sin frases, la consulta sigue siendo exactamente el mismo objeto: nada que
+  // copiar y nada que se pueda mover sin querer.
+  const resuelta = frases.size === 0 ? query : { ...query, timeDimensions: resueltas };
+  return { ...paso, zona, frases, query: resuelta };
 }
 
 // Puerta 1 · Validar: lo que se puede rechazar sin mirar el catálogo. El
@@ -871,6 +927,18 @@ function describirPlan(paso) {
     })),
     // Las dimensiones temporales entran aquí como una dimensión más.
     dimensions: dimensiones.map((d) => d.miembro),
+    // Y aparte, con su rango: es lo único del plan que un rango relativo cambia
+    // de una hora a otra, así que el dry-run tiene que mostrarlo **ya resuelto**
+    // —a qué ventana le tocó responder— y no la frase que lo pidió. La frase se
+    // conserva al lado, en `dateRangeExpression`: el par de fechas solo no deja
+    // distinguir una ventana fija de una que se mueve sola, y quien pide un plan
+    // para revisar su consulta quiere ver las dos cosas, lo que escribió y en
+    // qué se convirtió. El nombre es de la capa; Cube no lo tiene.
+    timeDimensions: temporalesDelPlan(paso),
+    // La zona con la que se resolvieron esas frases (UTC si no se pidió otra).
+    // Resolver es todo lo que hace: las columnas siguen siendo `DATE` y la capa
+    // no convierte ningún dato de una zona a otra (ADR 0014).
+    timezone: paso.zona,
     measures: medidas.map((m) => m.miembro),
     baseMeasures: medidasBase.map((m) => m.miembro),
     derived: paso.derivadas.map((m) => ({
@@ -897,6 +965,22 @@ function describirPlan(paso) {
   };
 
   return { ...paso, logico };
+}
+
+// Las dimensiones temporales tal como quedaron después de la puerta 0, con sólo
+// las claves que el consumidor escribió (más la frase, si escribió una): el
+// plan lógico es el vocabulario del consumidor, no el objeto interno del paso.
+function temporalesDelPlan({ query, frases }) {
+  return (query.timeDimensions ?? []).map((temporal, indice) => ({
+    dimension: temporal.dimension,
+    ...(temporal.granularity === undefined ? {} : { granularity: temporal.granularity }),
+    ...(temporal.dateRange === undefined ? {} : { dateRange: temporal.dateRange }),
+    ...(temporal.fillMissing === true ? { fillMissing: true } : {}),
+    // Sale del registro de la puerta 0 y no de la consulta: así un
+    // `dateRangeExpression` escrito a mano por el consumidor no puede aparecer
+    // en el plan diciendo que hubo una frase donde no la hubo.
+    ...(frases.has(indice) ? { dateRangeExpression: frases.get(indice) } : {}),
+  }));
 }
 
 // Cómo nombra una fórmula derivada a la medida base que ya se agregó. Sin

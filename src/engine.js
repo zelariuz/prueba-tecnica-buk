@@ -43,7 +43,10 @@ export function createEngine({
   const fuentesDelEngine = fuentes ?? { [dialect.name]: { dialecto: dialect, pool } };
   // Huella por fuente, resuelta una vez (ver `identidadDeFuente`).
   const huellas = new Map();
-  const planificar = crearPlanificador({ catalog, fuentes: fuentesDelEngine, presupuestos });
+  // El mismo reloj va al planificador: un `dateRange` relativo se resuelve a
+  // fechas en la primera puerta, y el "hoy" con el que se resuelve tiene que ser
+  // el mismo que fecha la respuesta (ADR 0014).
+  const planificar = crearPlanificador({ catalog, fuentes: fuentesDelEngine, presupuestos, reloj });
 
   // Dry-run: el plan sin tocar la base (historia 25). También se observa: el
   // dry-run es una consulta que alguien pidió, y no verla en el log sería no
