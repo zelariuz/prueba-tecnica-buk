@@ -354,6 +354,80 @@ gráfico que la quiere y una exportación que no. El SQL está en
 declare la capacidad `serieDeFechas`: Postgres la declara, SQLite no, y pedirla
 sobre SQLite sale con `UNSUPPORTED_OPERATOR` (400) y una sugerencia.
 
+### Cuando el resultado llega al tope: la advertencia de truncado
+
+Toda consulta sale con `LIMIT`: el tope de filas de tu clase de consumidor
+(`dashboard` 5.000, `api` 10.000, `agent` 1.000). Cuando el resultado lo alcanza,
+la base recorta y la respuesta sale con 200 — y un gráfico dibujado con ella **se
+ve completo**. Desde el ADR 0013 eso ya no pasa en silencio: la respuesta trae
+una advertencia en `meta.warnings`, con la misma forma que la de la razón
+anulada.
+
+```js
+const { rows, meta } = await engine.run({ ...consulta, limit: 3 }, ctx);
+// rows.length === 3
+// meta.warnings → [{ member: 'limit',
+//   warning: 'El resultado trae 3 filas, que es exactamente el tope de tu clase
+//             de consumidor: puede estar truncado y desde la respuesta no hay
+//             forma de notarlo. Acota el rango, sube la granularidad o pide
+//             menos dimensiones; con total: true sabrás cuántas filas tiene el
+//             resultado completo.' }]
+```
+
+Es una advertencia y no una certeza porque saber si sobraban filas exige
+pedirlas, y la capa **no pide una fila de más** en cada consulta para adornar el
+aviso. Quien quiere el número exacto usa `total: true`.
+
+La otra mitad del guardarraíl es un rechazo, y sólo aplica a `fillMissing`: los
+buckets de una serie se cuentan sin tocar la base, desde el `dateRange` y la
+`granularity`. Si los buckets **solos** ya pasan el límite efectivo, ni con un
+único departamento cabría la serie, así que la consulta se rechaza al planificar
+con `INVALID_QUERY` (400):
+
+```js
+// Clase con tope de 90 filas, 181 días por día.
+// → INVALID_QUERY en timeDimensions attendance.date:
+//   'La serie que pide fillMissing tiene 181 buckets (granularity day entre
+//    2025-01-01 y 2025-06-30) y tu clase de consumidor sólo puede devolver 90
+//    filas: … Sube la granularidad (day → week → month → quarter → year),
+//    acorta el dateRange a lo más 90 buckets, o pide la serie por tramos.'
+```
+
+Los **ejes no se estiman**: cuántos departamentos tiene la empresa sólo lo sabe
+la base, y preguntárselo sería gastar una consulta para decidir si vale la pena
+hacer la otra. El rechazo se queda con lo que se sabe con certeza y gratis; el
+resto lo cubre la advertencia de arriba, que cuenta filas de verdad.
+
+### Cuántas filas tiene el resultado completo: `total`
+
+`total: true` devuelve en `meta.total` el número de filas del resultado
+**ignorando límite y desplazamiento**, que es lo que hace falta para paginar. No
+es el gran total de ninguna medida: es un conteo de filas.
+
+```js
+const { rows, meta } = await engine.run(
+  { ...asistenciaPorDia, total: true, limit: 3 },
+  { companyId: 1, consumer: 'dashboard' },
+);
+// rows.length === 3   ← la página
+// meta.total === 10   ← el resultado completo: faltan cuatro páginas
+```
+
+Se implementa como una **segunda sentencia sobre el mismo cuerpo**, sin
+`ORDER BY` y sin `LIMIT` —`SELECT COUNT(*) FROM (<cuerpo>) AS t`—, y no como un
+camino aparte. Por eso vale igual con derivadas y con relleno sin una sola regla
+propia: con `fillMissing` el conteo da `buckets × ejes` porque cuenta exactamente
+la rejilla que la consulta devolvería sin techo (la misma semana da 10 filas sin
+relleno y 14 con relleno, y el total dice 10 y 14).
+
+Las dos sentencias van en la **misma transacción**: el total cuenta sobre la
+misma foto de los datos que produjo las filas, y su tiempo entra en el `dbMs` de
+la telemetría. **En dry-run no se ejecuta nada** —un dry-run no toca la base, y
+contar filas la toca—: lo que devuelve es la sentencia, para poder leerla, y el
+plan lógico con `total: true`. **Desde caché el total viene guardado con la
+entrada**, no se recalcula; una consulta con `total` y la misma sin él no
+comparten entrada, porque la segunda sentencia entra al `queryId`.
+
 ## Medidas derivadas: razones sobre agregados
 
 `completion_rate` no se declara como una fórmula: se declara como la razón entre
@@ -523,7 +597,7 @@ queda en el log del servidor.
 | HTTP | Códigos |
 | --- | --- |
 | 401 | `MISSING_TENANT` (sin token o token desconocido) |
-| 400 | `FORBIDDEN_FIELD`, `UNKNOWN_MEMBER`, `NO_JOIN_PATH`, `INVALID_OPERATOR`, `UNSUPPORTED_OPERATOR`, `MULTI_ENTITY_MEASURES`, `MISSING_TIME_RANGE`, `INVALID_CONSUMER`, `UNKNOWN_QUERY`, `MISSING_PARAM`, `INVALID_JSON` |
+| 400 | `FORBIDDEN_FIELD`, `UNKNOWN_MEMBER`, `NO_JOIN_PATH`, `INVALID_OPERATOR`, `UNSUPPORTED_OPERATOR`, `MULTI_ENTITY_MEASURES`, `MISSING_TIME_RANGE`, `INVALID_CONSUMER`, `UNKNOWN_QUERY`, `MISSING_PARAM`, `INVALID_QUERY`, `INVALID_JSON` |
 | 403 | `FORBIDDEN` (el token se reconoció, pero su sesión no es interna) |
 | 413 | `PAYLOAD_TOO_LARGE` (el cuerpo pasó los 64 KiB) |
 | 503 | `SCHEMA_DRIFT` (la base ya no calza con el catálogo), `SOURCE_UNAVAILABLE` (la base de la fuente no responde; la respuesta lleva `Retry-After: 5`) |

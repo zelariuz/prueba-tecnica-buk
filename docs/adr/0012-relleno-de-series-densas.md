@@ -164,7 +164,10 @@ ORDER BY … LIMIT $n
   departamento sobre un rango de dos años pasa de 4.392 filas (12 departamentos
   completos) a las 5.000 del tope de `dashboard`, con **7 de 12 departamentos**
   en la respuesta y la serie cortada a mitad de camino. Queda registrado en
-  `docs/riesgos.md` con su mitigación y su evolución.
+  `docs/riesgos.md` con su mitigación y su evolución. **Cerrado por el ADR
+  0013**: una serie cuyos buckets solos ya no caben se rechaza al planificar, y
+  cualquier resultado que llegue al tope de su clase sale con una advertencia en
+  `meta.warnings`.
 - **Los nombres `serie`, `ejes` y `agregada` son de la capa.** Una entidad
   registrada con uno de esos nombres chocaría con su CTE. Hoy no existe —y
   `agregada` ya corría el mismo riesgo desde el ADR 0004—, pero es una deuda

@@ -25,7 +25,7 @@ TypeScript, Node 24, `node:test`, node-postgres.
   0005 segmentos sin SQL, 0006 medidas de una sola entidad, 0007 vocabulario
   Cube, 0008 catálogo en dos vistas, 0009 rango opcional para el agente,
   0010 consultas sin medida, 0011 rango sin granularidad, 0012 relleno de
-  series densas).
+  series densas, 0013 truncado visible y total de filas).
 
 ## Estructura
 
@@ -183,7 +183,7 @@ corre la demo y explícame el caso obligatorio; después corre los tests". Orden
    error con sugerencia y la telemetría. Filas esperadas de la empresa A:
    Ingeniería 4.35/2 y 3.80/1; `completion_rate` 75.
 3. Tests: `npm install` y `npm test` con `DATABASE_URL` y `REDIS_URL` de la
-   sección Comandos → 217 en verde (132 + 1 saltado sin variables).
+   sección Comandos → 251 en verde (153 + 1 saltado sin variables).
 4. La demo del agente, si el prompt la pide (el del README la pide):
    `cd demo-agente && npm install && npm start` en segundo plano, con la capa
    arriba; no va en el compose. Di la URL (`http://localhost:3100`), que usa la
@@ -232,6 +232,43 @@ curl -s -H 'Authorization: Bearer demo-dashboard-empresa-a' \
 - Repo público: sin datos personales ni nombres reales en seeds ni ejemplos.
 
 ## Estado
+
+Truncado visible y total de filas (11-09, ADR 0013): cierra la evolución que el
+ADR 0012 había dejado anotada. Tres cosas. **(1)** Cuando las filas devueltas
+alcanzan el límite efectivo de la clase, la respuesta suma una advertencia a
+`meta.warnings` —misma forma `{ member, warning }` que la razón anulada, `member`
+`limit`— diciendo que puede venir truncada y sugiriendo acotar el rango, subir la
+granularidad o pedir menos dimensiones. Vale para **toda** consulta, no sólo para
+las que rellenan; vive en el engine porque antes de ejecutar no hay filas que
+contar, y viaja también en la entrada de caché. No se pide una fila de más para
+saber si sobraban: eso le cobraría a todas las consultas el precio de unas pocas.
+**(2)** Con `fillMissing`, los buckets se cuentan **sin tocar la base** desde el
+`dateRange` y la `granularity` (`bucketsDelRango` en `src/planner.js`, verificada
+contra `generate_series` en las cinco granularidades); si los buckets solos ya
+pasan el límite, ni un eje cabría y la consulta se rechaza en la puerta
+`resolverMiembros` con `INVALID_QUERY` (400) y una sugerencia que nombra buckets,
+tope y salidas. Los ejes **no** se estiman: exigiría consultar la base. Una fecha
+que no viene en `YYYY-MM-DD` no se convierte en rechazo: el guardarraíl falla
+abierto. **(3)** `total: true` (la propiedad de Cube: filas del resultado
+ignorando límite y desplazamiento, **no** el gran total de una medida) devuelve
+`meta.total`. Es una **segunda sentencia sobre el mismo cuerpo**, sin `ORDER BY`
+ni `LIMIT` (`SELECT COUNT(*) FROM (<cuerpo>) AS t`), armada antes de pedir el
+parámetro del `LIMIT` para no mover la numeración de los `$n`; por eso vale igual
+con derivadas y con relleno —ahí da `buckets × ejes`— sin una regla propia. Corre
+en la **misma transacción** que la consulta (misma foto de los datos, una
+conexión, mismo `statement_timeout`) y su tiempo entra en el `dbMs` de la
+telemetría, que no estrena contador. **Dry-run no ejecuta el total**: devuelve la
+sentencia y el plan lógico con `total: true`. **Desde caché el total viene
+guardado con la entrada**, no se recalcula, y el `queryId` incorpora la segunda
+sentencia para que una consulta con total y otra sin él no compartan entrada (la
+clave sólo entra al hash si existe: los queryId anteriores no se movieron). La
+raíz corre **251 tests en verde** con `DATABASE_URL` y `REDIS_URL`, y **154 sin
+nada** (1 se salta). Los seis SQL de referencia de `test/snapshots/` quedaron
+byte por byte iguales. Verificado contra Postgres real: la asistencia por día y
+departamento del 8 al 14 de agosto da 10 filas y `total` 10 sin relleno, y 14 y
+`total` 14 con relleno; con `limit: 3` da 3 filas, `total` 10 y la advertencia de
+truncado. Fila del tope de filas de `docs/riesgos.md` actualizada: ya no dice que
+el truncado es silencioso.
 
 Relleno de series densas (11-09, ADR 0012): una `timeDimension` con
 `granularity`, `dateRange` y `fillMissing: true` devuelve **todos** los buckets
