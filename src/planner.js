@@ -57,6 +57,12 @@ const AGREGADOS_QUE_VALEN_CERO_SIN_FILAS = new Set(['count', 'count_distinct', '
 const ALIAS_SERIE = 'serie';
 const ALIAS_EJES = 'ejes';
 
+// Para contar los buckets de un rango sin tocar la base: un día en milisegundos
+// y la forma exacta que tiene que tener un extremo del `dateRange` para que se
+// pueda contar. Ver `bucketsDelRango`.
+const DIA_EN_MS = 86_400_000;
+const FECHA_ISO = /^\d{4}-\d{2}-\d{2}$/;
+
 // Desde el ADR 0011 una dimensión temporal puede venir sin `granularity`: con
 // `dateRange` sola, la fecha únicamente filtra. La que agrupa es la que trae
 // granularidad, y sólo esa produce una columna de salida.
@@ -299,6 +305,7 @@ function resolverMiembros(paso) {
     }
     if (temporal.fillMissing !== true) continue;
     exigirSerieDeFechas(dialect, fuente, temporal.dimension);
+    exigirSerieQueQuepa(paso, temporal);
     relleno = { miembro: temporal.dimension, granularidad: temporal.granularity, desdeSql, hastaSql };
   }
 
@@ -322,6 +329,99 @@ function exigirSerieDeFechas(dialect, fuente, miembro) {
     member: miembro,
     suggestion: `La fuente ${fuente} no sabe generar la serie de fechas que necesita fillMissing: quita fillMissing de la dimensión temporal y rellena los buckets vacíos en el consumidor.`,
   });
+}
+
+// Con relleno el resultado tiene exactamente `buckets × ejes` filas, y los
+// buckets se pueden contar **sin tocar la base**: salen del rango y de la
+// granularidad, que ya están en la consulta. Si los buckets solos ya pasan el
+// techo de filas de la clase, entonces ni con un único valor de las demás
+// dimensiones cabría la serie: la respuesta saldría cortada a mitad de camino y,
+// densificada, se vería entera. Eso es peor que el hueco que el relleno vino a
+// tapar (ADR 0012), así que se rechaza **antes** de gastar la base en una
+// consulta que ya se sabe que no sirve.
+//
+// No se estiman los ejes: cuántos departamentos tiene la empresa sólo lo sabe la
+// base, y preguntárselo sería gastar una consulta para decidir si vale la pena
+// hacer la otra. El rechazo se queda con lo que se sabe con certeza y gratis; lo
+// que pasa por debajo de ese umbral lo cubre el aviso de truncado del engine,
+// que sí cuenta filas de verdad.
+//
+// El código es `INVALID_QUERY` (400), el que ya usa la puerta de forma: la
+// consulta es legítima como vocabulario, pero tal como está pedida no tiene
+// respuesta posible bajo el presupuesto de quien la pide, y quien la pide sí
+// puede arreglarla. Es el código que `docs/riesgos.md` dejó anotado para esto;
+// no se inventa uno nuevo.
+function exigirSerieQueQuepa(paso, temporal) {
+  const [desde, hasta] = temporal.dateRange;
+  const buckets = bucketsDelRango(temporal.granularity, desde, hasta);
+  const limite = limiteEfectivo(paso.query, paso.presupuesto);
+  // Una fecha que este contador no sabe leer no se convierte en un rechazo: el
+  // guardarraíl falla abierto y deja que la base opine, que es quien de verdad
+  // interpreta el literal. Rechazar por no saber contar sería inventar un error.
+  if (buckets === undefined || buckets <= limite) return;
+  throw new SemanticError({
+    code: 'INVALID_QUERY',
+    member: temporal.dimension,
+    suggestion: `La serie que pide fillMissing tiene ${buckets} buckets (granularity ${temporal.granularity} entre ${desde} y ${hasta}) y tu clase de consumidor sólo puede devolver ${limite} filas: ni con un solo valor de las demás dimensiones cabría, y el resultado saldría cortado a mitad de la serie sin que se note. Sube la granularidad (day → week → month → quarter → year), acorta el dateRange a lo más ${limite} buckets, o pide la serie por tramos.`,
+  });
+}
+
+// Cuántas filas devuelve la serie de un rango, contadas como las genera el
+// dialecto: desde el inicio **truncado** a la granularidad y avanzando un bucket
+// por vez hasta el último que no pasa el fin (ver `serieDeFechas`).
+//
+// Vive en el planificador y no en el dialecto porque contar cuántos lunes o
+// cuántos trimestres hay entre dos fechas es calendario, no sintaxis de motor:
+// da lo mismo en cualquier base. Lo que sí es del dialecto —cómo se **escribe**
+// esa serie— sigue en `serieDeFechas`. La semana se cuenta desde el lunes, que
+// es el `DATE_TRUNC('week', …)` de Postgres, hoy el único motor que declara la
+// capacidad; un motor que empezara la semana en domingo haría variar esta cuenta
+// en a lo más un bucket, y como el número sólo se usa para rechazar lo que ya
+// está muy por encima del techo, esa diferencia no cambia ninguna decisión.
+//
+// `undefined` significa "no sé contarlo": una fecha que no viene en YYYY-MM-DD.
+function bucketsDelRango(granularidad, desde, hasta) {
+  const inicio = diaUtc(desde);
+  const fin = diaUtc(hasta);
+  if (inicio === undefined || fin === undefined) return undefined;
+  const meses = (fin.getUTCFullYear() - inicio.getUTCFullYear()) * 12 + (fin.getUTCMonth() - inicio.getUTCMonth());
+  const pasos = {
+    day: () => Math.round((fin - inicio) / DIA_EN_MS),
+    week: () => Math.floor((fin - lunesDe(inicio)) / (7 * DIA_EN_MS)),
+    month: () => meses,
+    // El trimestre arranca en el mes truncado, así que el inicio aporta lo que
+    // le falte para llegar al comienzo de su propio trimestre.
+    quarter: () => Math.floor((meses + (inicio.getUTCMonth() % 3)) / 3),
+    year: () => fin.getUTCFullYear() - inicio.getUTCFullYear(),
+  }[granularidad];
+  if (!pasos) return undefined;
+  // Un rango al revés puede seguir dando un bucket, porque el inicio se trunca
+  // hacia atrás: del 31/12 al 01/01 del mismo año, `generate_series` arranca en
+  // el 01/01 y devuelve ese único año. Por eso el piso se pone en cero aquí y no
+  // comparando las dos fechas antes de contar.
+  return Math.max(0, pasos() + 1);
+}
+
+// El literal del rango, leído como día calendario en UTC y nunca en la zona del
+// proceso: la capa trata las columnas temporales como días ya resueltos
+// (`docs/riesgos.md`, fechas y zonas), y contar buckets no puede depender de en
+// qué máquina corre el servicio.
+function diaUtc(texto) {
+  if (typeof texto !== 'string' || !FECHA_ISO.test(texto)) return undefined;
+  const fecha = new Date(`${texto}T00:00:00Z`);
+  return Number.isNaN(fecha.getTime()) ? undefined : fecha;
+}
+
+function lunesDe(fecha) {
+  return new Date(fecha.getTime() - (((fecha.getUTCDay() + 6) % 7) * DIA_EN_MS));
+}
+
+// El techo real de filas de una consulta: lo que pidió, nunca por encima del
+// máximo de su clase de consumidor. Vive aparte porque lo usan dos puertas —la
+// que rechaza la serie que no cabe y la que escribe el `LIMIT`— y tienen que
+// estar hablando exactamente del mismo número.
+function limiteEfectivo(query, presupuesto) {
+  return Math.min(query.limit ?? presupuesto.maxFilas, presupuesto.maxFilas);
 }
 
 // De qué entidad sale el SQL. Con medidas es la entidad de la primera, y las
@@ -580,7 +680,7 @@ function emitirSql(paso) {
   const orden = ordenDeSalida(query, dimensiones, medidas);
   // Ninguna consulta sale sin LIMIT: el pedido nunca supera el máximo de la
   // clase de consumidor, y si no pide, manda ese máximo.
-  const filas = Math.min(query.limit ?? presupuesto.maxFilas, presupuesto.maxFilas);
+  const filas = limiteEfectivo(query, presupuesto);
 
   const sql = [
     `WITH ${[...cte, ...ctesDelRelleno].join(',\n')}`,

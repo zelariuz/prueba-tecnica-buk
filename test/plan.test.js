@@ -1390,3 +1390,118 @@ test('una fuente cuyo dialecto no declara serieDeFechas rechaza el relleno', () 
   assert.equal(error.member, 'reviews.period');
   assert.match(error.suggestion, /fillMissing/);
 });
+
+// --- Rechazo anticipado cuando la serie sola no cabe en el presupuesto. Los
+// buckets salen del rango y de la granularidad, así que se cuentan sin tocar la
+// base: si ya pasan el techo de filas, ni con un solo eje cabría la serie y el
+// resultado saldría cortado a mitad de camino, pareciendo entero.
+//
+// La clase `apretada` no existe en `src/budgets.js` a propósito: entra por la
+// costura `createEngine({ presupuestos })`, que es como se prueba un presupuesto
+// extremo sin tocar la tabla real (igual que `estricta` más arriba).
+const CLASE_APRETADA = {
+  timeoutMs: 5_000,
+  maxFilas: 90,
+  rangoObligatorio: false,
+  cacheTtlMs: 60_000,
+};
+
+function engineApretado() {
+  const catalog = createCatalog();
+  registrarModulos(catalog);
+  return createEngine({ catalog, presupuestos: { apretada: CLASE_APRETADA } });
+}
+
+const APRETADO = { companyId: EMPRESA, consumer: 'apretada' };
+
+function porDiaEntre(desde, hasta) {
+  return {
+    measures: ['attendance.count'],
+    dimensions: ['departments.name'],
+    timeDimensions: [
+      { dimension: 'attendance.date', granularity: 'day', dateRange: [desde, hasta], fillMissing: true },
+    ],
+  };
+}
+
+test('un rango por día cuya serie no cabe en la clase se rechaza al planificar', () => {
+  // Del 1 de enero al 30 de junio de 2025 hay 181 días; la clase sólo puede
+  // devolver 90 filas. Ni un único departamento cabría.
+  const error = errorDe(() => engineApretado().plan(porDiaEntre('2025-01-01', '2025-06-30'), APRETADO));
+
+  assert.equal(error.code, 'INVALID_QUERY');
+  assert.equal(error.member, 'attendance.date');
+  assert.match(error.suggestion, /181 buckets/);
+  assert.match(error.suggestion, /90 filas/);
+  assert.match(error.suggestion, /Sube la granularidad/);
+  // Corta en la puerta que resuelve los miembros, antes de emitir una sola
+  // línea de SQL y mucho antes de abrir una conexión.
+  assert.equal(error.gate, 'resolverMiembros');
+});
+
+test('la misma serie cabe si sube la granularidad o si se acorta el rango', () => {
+  const engine = engineApretado();
+
+  // Seis meses por mes son 6 buckets, no 181.
+  const porMes = porDiaEntre('2025-01-01', '2025-06-30');
+  porMes.timeDimensions = [{ ...porMes.timeDimensions[0], granularity: 'month' }];
+  assert.match(engine.plan(porMes, APRETADO).sql, /serie AS \(/);
+
+  // Y 90 días por día son exactamente 90 buckets: el tope se alcanza, no se
+  // pasa, así que la consulta se planifica. Que el resultado pueda venir
+  // truncado por los ejes es lo que avisa `meta.warnings` al ejecutar.
+  assert.match(engine.plan(porDiaEntre('2025-01-01', '2025-03-31'), APRETADO).sql, /serie AS \(/);
+});
+
+test('el límite que manda es el efectivo: un limit más bajo que la clase también rechaza', () => {
+  // La clase permite 90 filas, pero esta consulta pidió 10: el techo real de
+  // este resultado son 10 filas y 31 buckets no caben en ellas.
+  const error = errorDe(() =>
+    engineApretado().plan({ ...porDiaEntre('2025-01-01', '2025-01-31'), limit: 10 }, APRETADO),
+  );
+
+  assert.equal(error.code, 'INVALID_QUERY');
+  assert.match(error.suggestion, /31 buckets/);
+  assert.match(error.suggestion, /10 filas/);
+});
+
+test('sin fillMissing el rango largo no se rechaza: la serie dispersa no llena buckets', () => {
+  const engine = engineApretado();
+  const dispersa = porDiaEntre('2025-01-01', '2025-06-30');
+  dispersa.timeDimensions = [{ ...dispersa.timeDimensions[0], fillMissing: false }];
+
+  // Sin relleno, cuántas filas devuelve el rango lo deciden los datos y no el
+  // calendario: rechazarla por el tamaño del rango sería inventar un motivo.
+  assert.match(engine.plan(dispersa, APRETADO).sql, /GROUP BY/);
+});
+
+test('las cinco granularidades cuentan sus buckets como los genera la serie', () => {
+  const engine = engineApretado();
+  // Cada caso: granularidad, rango y cuántos buckets tiene de verdad —el mismo
+  // número que devuelve `generate_series` sobre ese rango, verificado contra
+  // Postgres—. El rechazo los nombra, así que el mensaje es la prueba.
+  const casos = [
+    ['day', '2025-01-01', '2025-12-31', 365],
+    ['week', '2024-01-01', '2025-12-31', 105],
+    ['month', '2018-01-01', '2025-12-31', 96],
+    ['quarter', '2000-01-01', '2025-12-31', 104],
+    ['year', '1900-01-01', '2025-12-31', 126],
+  ];
+
+  for (const [granularity, desde, hasta, buckets] of casos) {
+    const consulta = porDiaEntre(desde, hasta);
+    consulta.timeDimensions = [{ ...consulta.timeDimensions[0], granularity }];
+    const error = errorDe(() => engine.plan(consulta, APRETADO));
+
+    assert.equal(error.code, 'INVALID_QUERY', granularity);
+    assert.match(error.suggestion, new RegExp(`tiene ${buckets} buckets`), granularity);
+  }
+});
+
+test('un extremo del rango que no es una fecha ISO no se rechaza por el conteo', () => {
+  // El guardarraíl falla abierto: si no sabe contar los buckets, deja que la
+  // base opine del literal en vez de inventarse un rechazo.
+  const raro = porDiaEntre('hace un año', '2025-06-30');
+
+  assert.match(engineApretado().plan(raro, APRETADO).sql, /serie AS \(/);
+});
