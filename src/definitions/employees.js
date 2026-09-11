@@ -13,7 +13,13 @@ export const employees = {
       type: 'boolean',
       description: 'Si el empleado sigue vigente en la empresa.',
     },
+    name: {
+      column: 'name',
+      type: 'string',
+      description: 'Nombre del empleado tal como lo nombra la empresa.',
+    },
   },
+
   measures: {
     headcount: {
       type: 'count',
