@@ -6,7 +6,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
+import { consumidorPorId } from '../src/consumidores.js';
 import { ejecutar } from '../src/ejecutar.js';
+import { preguntas, preguntasRaras } from '../src/preguntas.js';
 import { promptDeRedaccion } from '../src/protocolo.js';
 
 // Capa falsa: registra lo que le piden y devuelve las respuestas en orden.
@@ -951,4 +953,85 @@ test('con 50 filas o menos el prompt no habla de recorte', async () => {
   assert.equal(prompt.includes('se muestran'), false);
   assert.match(prompt, /agregados por empresa/);
   assert.match(prompt, /Sin markdown/);
+});
+
+// ---------------------------------------------------------------------------
+// Casos raros: preguntas SIN JSON preparado, sólo del camino con agente. Viven
+// en `preguntas-raras.json` y se buscan por id igual que las preparadas. Acá
+// también entran tal cual, sin doblarlas: que el rastro las ejecute es lo que
+// fija que ese archivo sigue siendo válido.
+test('un caso raro se ejecuta con agente: no hay preparado, viaja el JSON que él escribió', async () => {
+  const capa = capaFalsa([respuestaOk]);
+  const agente = agenteFalso([JSON.stringify(consultaDelAgente)]);
+
+  const rastro = await ejecutar(
+    peticion({ pregunta: 'raro-sueldos-que-no-existen', usarAgente: true }),
+    { agente, capa, reloj: () => 0 },
+  );
+
+  assert.deepEqual(
+    rastro.map((salto) => salto.estado),
+    ['ok', 'ok', 'ok'],
+  );
+  assert.deepEqual(rastro[1].enviado, consultaDelAgente);
+});
+
+test('un caso raro sin agente no llama a la capa: falla diciendo que es sólo del camino con agente', async () => {
+  const capa = capaFalsa([respuestaOk]);
+
+  await assert.rejects(
+    () => ejecutar(peticion({ pregunta: 'raro-sueldos-que-no-existen' }), { agente: null, capa, reloj: () => 0 }),
+    (error) =>
+      error.message.includes('raro-sueldos-que-no-existen') &&
+      error.message.includes('usar agente'),
+  );
+  assert.equal(capa.llamadas.length, 0);
+});
+
+test('el prompt del clic de un caso raro es su texto y nada más: sin fechas que le arruinen el caso', async () => {
+  const capa = capaFalsa([respuestaOk]);
+  const agente = agenteFalso([JSON.stringify(consultaDelAgente)]);
+
+  await ejecutar(
+    {
+      pregunta: 'raro-relleno-sin-periodo',
+      desde: '',
+      hasta: '',
+      departamento: '',
+      usarAgente: true,
+    },
+    { agente, capa, reloj: () => 0 },
+  );
+
+  assert.equal(
+    agente.prompts[0],
+    'Muéstrame la asistencia día a día por departamento, sin saltarte los días vacíos.',
+  );
+  assert.equal(agente.prompts[0].includes('Filtros:'), false);
+});
+
+test('los seis casos raros traen id, título, texto y nota, y ninguno trae consulta preparada', () => {
+  assert.equal(preguntasRaras.length, 6);
+  for (const raro of preguntasRaras) {
+    for (const campo of ['id', 'titulo', 'texto', 'nota']) {
+      assert.equal(typeof raro[campo], 'string', `${raro.id}: falta ${campo}`);
+      assert.ok(raro[campo].length > 0, `${raro.id}: ${campo} vacío`);
+    }
+    assert.equal('consulta' in raro, false, `${raro.id}: un caso raro no lleva JSON preparado`);
+  }
+});
+
+test('las dieciséis preparadas siguen trayendo su consulta, y ningún id se repite entre las dos listas', () => {
+  assert.equal(preguntas.length, 16);
+  for (const preparada of preguntas) {
+    assert.equal(typeof preparada.consulta, 'object', `${preparada.id}: perdió su consulta`);
+  }
+  const ids = [...preguntas, ...preguntasRaras].map((una) => una.id);
+  assert.equal(new Set(ids).size, ids.length);
+});
+
+test('el token que un caso raro declara es uno de los consumidores de demo', () => {
+  for (const raro of preguntasRaras.filter((una) => una.token)) {
+    assert.ok(consumidorPorId(raro.token), `${raro.id}: token de demo desconocido`);
+  }
 });
