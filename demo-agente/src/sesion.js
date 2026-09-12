@@ -23,14 +23,17 @@ export async function asegurarSesion({
   ahora = () => new Date().toISOString(),
 }) {
   const huella = huellaDelCatalogo(catalogo);
+  const prompt = promptDeCreacion(catalogo);
+  const huellaDelPrompt = huellaDeTexto(prompt);
   const guardada = estado.leer();
-  if (guardada && guardada.huella === huella) {
+  if (guardada && guardada.huella === huella && guardada.huellaDelPrompt === huellaDelPrompt) {
     return {
       id: guardada.uuid,
       creada: false,
       motivo: 'la sesión guardada sigue vigente',
       version: catalogo.version,
       huella,
+      huellaDelPrompt,
     };
   }
 
@@ -38,18 +41,25 @@ export async function asegurarSesion({
   // cualquier otra cosa, la vieja se abandona (no se borra) y nace una con uuid
   // nuevo.
   const uuid = nuevoUuid();
-  await claude(
-    ['-p', '-n', nombre, '--session-id', uuid, '--model', modelo],
-    promptDeCreacion(catalogo),
-  );
-  estado.guardar({ uuid, version: catalogo.version, huella, creadaEn: ahora() });
+  await claude(['-p', '-n', nombre, '--session-id', uuid, '--model', modelo], prompt);
+  estado.guardar({ uuid, version: catalogo.version, huella, huellaDelPrompt, creadaEn: ahora() });
   return {
     id: uuid,
     creada: true,
-    motivo: guardada ? 'el catálogo cambió' : 'no había sesión guardada',
+    motivo: motivoDeLaRecreacion(guardada, huella),
     version: catalogo.version,
     huella,
+    huellaDelPrompt,
   };
+}
+
+// Por qué nació esta sesión. Se separa del `if` porque son tres motivos y cada
+// uno se lee distinto en la página: uno dice que la capa cambió y otro que
+// cambiamos nosotros el texto.
+function motivoDeLaRecreacion(guardada, huella) {
+  if (!guardada) return 'no había sesión guardada';
+  if (guardada.huella !== huella) return 'el catálogo cambió';
+  return 'las reglas del prompt cambiaron';
 }
 
 // Qué catálogo aprendió esta sesión: sha256 de la serialización canónica
@@ -62,6 +72,26 @@ export async function asegurarSesion({
 // al agente hablando de un catálogo que ya no es el que la capa publica.
 export function huellaDelCatalogo(catalogo) {
   return createHash('sha256').update(canonico(catalogo)).digest('hex').slice(0, 16);
+}
+
+// Qué REGLAS aprendió esta sesión: sha256 del prompt de creación entero.
+//
+// La huella del catálogo no alcanza para decidir si la sesión sigue sirviendo.
+// El prompt lleva el catálogo, pero lleva además las reglas que el catálogo NO
+// publica —el rango opcional, la consulta sin medidas, el relleno de series,
+// el total de filas, el vocabulario de rangos relativos, la comparación de
+// períodos—, y ésas cambian editando este archivo, sin que la capa publique
+// nada nuevo. Sin este hash, agregar una regla dejaba viva la sesión guardada y
+// el agente nunca la veía: seguiría escribiendo el JSON de ayer con el prompt
+// de ayer, y el único síntoma sería que no usa lo nuevo. Como el prompt
+// contiene al catálogo, este hash bastaría solo; se comparan los dos para poder
+// decir CUÁL de las dos cosas cambió.
+export function huellaDelPrompt(catalogo) {
+  return huellaDeTexto(promptDeCreacion(catalogo));
+}
+
+function huellaDeTexto(texto) {
+  return createHash('sha256').update(texto).digest('hex').slice(0, 16);
 }
 
 // Serialización canónica: mismas claves, mismo texto, sin importar en qué orden
@@ -121,11 +151,58 @@ REGLAS DEL VOCABULARIO QUE EL CATÁLOGO NO DICE:
   período, y déjalo fuera cuando no. Sin rango la capa ejecuta igual, con los límites de tu
   clase: recorta a 1.000 filas y corta a los 10 s, y si eso pasa te devuelve QUERY_TIMEOUT
   con la sugerencia de acotar el tiempo. Las fechas van en formato AAAA-MM-DD.
+- "dateRange" acepta, EN LUGAR del par de fechas, UNA cadena de esta lista cerrada, escrita
+  exactamente así, en minúsculas y en inglés: "today", "yesterday", "this week", "this month",
+  "this quarter", "this year", "last week", "last month", "last quarter", "last year",
+  "last N days", "last N weeks", "last N months", "last N quarters", "last N years" —N es un
+  entero positivo y la unidad va SIEMPRE en plural, también con N=1 ("last 1 months")—.
+  Cualquier otra cadena ("Last 6 Months", "last 6 month", "últimos seis meses",
+  "previous month") es INVALID_QUERY. Las frases "last …" son períodos de calendario
+  anteriores COMPLETOS y NO incluyen hoy ("last month" es el mes pasado entero, del 1 al
+  último día, no los últimos 30 días); las "this …" van del comienzo del período en curso a
+  hoy. Usa la frase cuando la pregunta nombre el período de forma relativa ("el último año",
+  "los últimos tres meses", "este mes"). NO la uses cuando la pregunta nombre fechas o meses
+  concretos: ahí va el par de fechas, y no se traduce a una frase lo que ya viene fechado. Si
+  el período relativo que te piden no está en la lista, escribe el par de fechas que
+  corresponda; no inventes una frase parecida.
+- "timezone" es una propiedad de la consulta (al lado de "measures", no dentro de la dimensión
+  temporal) y por defecto es "UTC". Lo único que decide es qué día es hoy al resolver esas
+  frases. Ponla sólo si la pregunta nombra una zona, un país o una ciudad; con fechas
+  absolutas no cambia absolutamente nada, así que ahí no va.
+- Una timeDimension puede llevar "fillMissing": true, y entonces la serie vuelve con TODOS los
+  buckets del rango, también los que no tienen ni una fila (las medidas de conteo vienen en 0
+  y los promedios y porcentajes en null, que es lo honesto: el promedio de cero valores no es
+  cero). Exige "granularity" Y "dateRange" en la misma timeDimension; sin cualquiera de los
+  dos es INVALID_QUERY. Ponlo SÓLO cuando la pregunta pida una serie por tiempo y los períodos
+  vacíos importen: "día a día", "sin saltarse días", "mes a mes para un gráfico". NO lo pongas
+  cuando la consulta no agrupe por tiempo —una fila por departamento no tiene buckets que
+  rellenar—, ni cuando la pregunta sólo pida un total o un ranking, ni "por si acaso": una
+  serie densa multiplica las filas por buckets × ejes y puede pasarse del tope de tu clase, y
+  entonces la capa la rechaza.
+- Para comparar períodos entre sí, una timeDimension lleva "compareDateRange" EN LUGAR DE
+  "dateRange": una lista de rangos, cada uno un par de fechas o una de las frases de arriba
+  (por ejemplo "compareDateRange": ["this month", "last month"]). Las dos propiedades juntas
+  en la misma dimensión temporal son INVALID_QUERY, la lista vacía también, y el tope son
+  CUATRO rangos. Para la regla de más arriba, "compareDateRange" ocupa el lugar del rango: una
+  timeDimension con "compareDateRange" ya no necesita "dateRange". OJO: la respuesta cambia de
+  forma —en vez de {"rows": …, "meta": …} llega {"results": [...]}, un elemento por rango, en
+  el orden en que los pediste y con su rango resuelto al lado—. Úsalo SÓLO si la pregunta
+  compara dos o más períodos entre sí ("contra", "comparado con", "respecto del año pasado",
+  "cuánto cambió"). NO lo uses cuando la pregunta pida un solo período: ahí va "dateRange". Y
+  una serie por mes NO es una comparación: eso es "granularity". Nunca agregues un período de
+  comparación que nadie pidió.
 - "filters" es una lista de { "member": <miembro>, "operator": <operador publicado para ese
   miembro>, "values": [<valores>] }.
 - "segments" es una lista de nombres de segmento del catálogo.
 - "order" es opcional: un objeto { "<miembro>": "asc" | "desc" }.
 - "limit" es opcional: un entero.
+- "total": true es una propiedad de la consulta (al lado de "measures", no dentro de la
+  dimensión temporal): agrega a "meta" el número de filas que tendría el resultado ENTERO,
+  ignorando el límite. NO es el gran total de ninguna medida: para "cuánto suma" o "cuántos
+  hay" va una medida del catálogo, no esta bandera. Ponlo sólo cuando la pregunta sea por
+  cuántas filas tiene el resultado completo, o cuando pidan las primeras N filas de algo
+  grande y quieran saber de cuántas se trata. En cualquier otra pregunta sobra: es una segunda
+  sentencia contra la base.
 - Cada entrada de "queries" del catálogo trae su "query": la consulta declarativa tal
   cual la registró el dueño del módulo, con un marcador ":nombre" en el lugar de cada
   parámetro (por ejemplo "dateRange": ":dateRange"). Son ejemplos ya resueltos.

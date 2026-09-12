@@ -531,7 +531,10 @@ function tarjetaDelCatalogo() {
         (sesion.creadaEn ? ` Sesión creada el ${sesion.creadaEn}` : '') +
         (sesion.versionCatalogo ? ` · catálogo ${sesion.versionCatalogo}` : '') +
         (sesion.huella ? ` · huella ${sesion.huella}` : '') +
-        '. Si el catálogo cambia, la huella cambia y el mini back crea una sesión nueva al arrancar.',
+        (sesion.huellaDelPrompt ? ` · prompt ${sesion.huellaDelPrompt}` : '') +
+        '. La identidad de la sesión son las dos huellas: si cambia el catálogo, o si cambia el ' +
+        'texto del prompt —donde viven las reglas que el catálogo no publica—, el mini back crea ' +
+        'una sesión nueva al arrancar.',
       'nota',
     ),
   );

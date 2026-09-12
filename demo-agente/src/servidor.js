@@ -106,6 +106,11 @@ export function crearServidor({
         uuid: sesion?.id ?? null,
         versionCatalogo: catalogo?.version ?? null,
         huella: sesion?.huella ?? null,
+        // La otra mitad de la identidad de la sesión: el hash del prompt
+        // entero. Las reglas del vocabulario viven en su texto, no en el
+        // catálogo, así que la huella del catálogo sola no dice si esta sesión
+        // conoce las reglas de hoy.
+        huellaDelPrompt: sesion?.huellaDelPrompt ?? null,
         creadaEn: sesion?.creadaEn ?? null,
         motivo: sesion?.motivo ?? null,
         modelo,
