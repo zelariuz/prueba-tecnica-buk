@@ -161,6 +161,89 @@ test('con una sola de las dos fechas la consulta preparada tampoco lleva dateRan
   assert.equal('dateRange' in rastro[1].enviado.timeDimensions[0], false);
 });
 
+// Vaciar el formulario le quita el rango a la dimensión que lo recibe DEL
+// formulario —la de los marcadores—, no a la pregunta que trae su período
+// escrito. Una frase relativa (ADR 0014) es el período que la pregunta pide:
+// quitársela dejaba la dimensión temporal sin rango y sin granularidad, que es
+// lo único que la capa no acepta.
+test('sin fechas, el dateRange que la pregunta trae escrito viaja entero: la frase relativa no se toca', async () => {
+  const capa = capaFalsa([respuestaOk]);
+
+  const rastro = await ejecutar(
+    peticion({ pregunta: 'rango-relativo-ultimo-ano', desde: '', hasta: '', departamento: '' }),
+    { agente: null, capa, reloj: () => 0 },
+  );
+
+  const consulta = rastro[1].enviado;
+  assert.deepEqual(consulta.timeDimensions, [
+    { dimension: 'reviews.period', dateRange: 'last year' },
+  ]);
+  assert.equal(consulta.timezone, 'America/Santiago');
+});
+
+// La comparación pone `compareDateRange` EN LUGAR de `dateRange` (ADR 0015):
+// la dimensión temporal no lleva rango y no por eso le falta algo.
+test('la comparación de períodos viaja con su lista de rangos y sin dateRange', async () => {
+  const capa = capaFalsa([respuestaOk]);
+
+  const rastro = await ejecutar(
+    peticion({ pregunta: 'comparacion-agosto-contra-julio', desde: '', hasta: '', departamento: '' }),
+    { agente: null, capa, reloj: () => 0 },
+  );
+
+  const [temporal] = rastro[1].enviado.timeDimensions;
+  assert.equal('dateRange' in temporal, false);
+  assert.deepEqual(temporal.compareDateRange, [
+    ['2025-08-01', '2025-08-31'],
+    ['2025-07-01', '2025-07-31'],
+  ]);
+});
+
+// El relleno (ADR 0012) exige granularidad y rango en la misma dimensión: los
+// marcadores del formulario se sustituyen y la bandera viaja al lado.
+test('la serie densa viaja con fillMissing junto a su granularidad y su rango', async () => {
+  const capa = capaFalsa([respuestaOk]);
+
+  const rastro = await ejecutar(
+    peticion({
+      pregunta: 'serie-densa-asistencia-diaria',
+      desde: '2025-08-08',
+      hasta: '2025-08-14',
+      departamento: '',
+    }),
+    { agente: null, capa, reloj: () => 0 },
+  );
+
+  assert.deepEqual(rastro[1].enviado.timeDimensions, [
+    {
+      dimension: 'attendance.date',
+      granularity: 'day',
+      dateRange: ['2025-08-08', '2025-08-14'],
+      fillMissing: true,
+    },
+  ]);
+});
+
+// `total` es de la consulta, no de la dimensión temporal (ADR 0013), y va con
+// un límite chico a propósito: el número que el límite escondía es el punto.
+test('la pregunta del total viaja con total: true al lado de measures y con su límite', async () => {
+  const capa = capaFalsa([respuestaOk]);
+
+  const rastro = await ejecutar(
+    peticion({
+      pregunta: 'total-de-filas-asistencia',
+      desde: '2025-06-01',
+      hasta: '2025-08-31',
+      departamento: '',
+    }),
+    { agente: null, capa, reloj: () => 0 },
+  );
+
+  assert.equal(rastro[1].enviado.total, true);
+  assert.equal(rastro[1].enviado.limit, 20);
+  assert.equal('total' in rastro[1].enviado.timeDimensions[0], false);
+});
+
 // La pregunta que el rango obligatorio dejaba fuera: ni dimensiones ni tiempo.
 test('la pregunta por cuántos empleados hay viaja sin timeDimensions', async () => {
   const capa = capaFalsa([respuestaOk]);

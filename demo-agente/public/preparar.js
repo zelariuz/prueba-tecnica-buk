@@ -34,13 +34,29 @@ export function prepararTexto(texto, { departamento }) {
 //
 // Basta con que falte UNA de las dos fechas: un `dateRange` es un par, y
 // mandar [<vacío>, 2025-12-31] sería un rango inválido con forma de rango.
+//
+// Se le quita el rango SÓLO a la dimensión cuyo rango lo pone el formulario, es
+// decir la que trae los marcadores. Una pregunta puede traer su período escrito
+// —una frase relativa como "last year" (ADR 0014) o un par de fechas fijas—, y
+// ése no es un rango vacío: es la pregunta. Vaciarlo dejaba la dimensión
+// temporal sin rango y sin granularidad, que es justo lo que la capa rechaza.
 function sinRangoVacio(consulta, desde, hasta) {
   if (desde && hasta) return consulta;
   if (!Array.isArray(consulta.timeDimensions)) return consulta;
   return {
     ...consulta,
-    timeDimensions: consulta.timeDimensions.map(({ dateRange: _fuera, ...resto }) => resto),
+    timeDimensions: consulta.timeDimensions.map((dimension) => {
+      if (!esRangoDelFormulario(dimension.dateRange)) return dimension;
+      const { dateRange: _fuera, ...resto } = dimension;
+      return resto;
+    }),
   };
+}
+
+function esRangoDelFormulario(dateRange) {
+  return (
+    Array.isArray(dateRange) && dateRange.some((valor) => valor === ':desde' || valor === ':hasta')
+  );
 }
 
 function estructuraSinFiltroVacio(consulta, departamento) {
