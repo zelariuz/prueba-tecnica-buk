@@ -209,6 +209,16 @@ test('el prompt de creación lleva el catálogo entero, con su versión, tal cua
   assert.ok(prompt.includes('219f834021759c19'));
 });
 
+// `noPuedo` es para lo que falta, no para adelantarse a la capa. El agente se
+// negaba a combinar relleno con comparación —que la capa sí permite— porque creía
+// saber la regla: hacía de validador, y se equivocó (12-09, madrugada).
+test('el prompt de creación acota noPuedo a lo que falta, no a anticipar rechazos', () => {
+  const prompt = promptDeCreacion(catalogoReal);
+
+  assert.match(prompt, /NO lo uses para\s+adelantarte a un rechazo de la capa/);
+  assert.match(prompt, /La capa es la autoridad sobre sus propias reglas/);
+});
+
 test('el prompt de creación fija el contrato de salida: solo JSON, o noPuedo', () => {
   const prompt = promptDeCreacion(catalogoReal);
 

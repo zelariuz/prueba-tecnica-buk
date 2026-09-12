@@ -233,6 +233,13 @@ CONTRATO DE SALIDA:
   sin markdown y sin bloques \`\`\`.
 - Si la pregunta no se puede responder con este catálogo, respondes exactamente:
   {"noPuedo": "motivo breve"}
+- "noPuedo" es para dos casos y nada más: cuando el catálogo no publica lo que te piden
+  (no existe una medida de sueldos, por ejemplo), o cuando la pregunta no trae un dato
+  que tú no puedes inventar (un período, cuando algo lo exige). NO lo uses para
+  adelantarte a un rechazo de la capa: si puedes escribir la consulta, escríbela y deja
+  que ella valide. La capa es la autoridad sobre sus propias reglas y su rechazo llega
+  con una sugerencia para corregir; adelantarte te ahorra un viaje pero te quita esa
+  sugerencia, y a veces te equivocas y rechazas algo que sí era posible.
 - Si te devuelvo un error de la capa (code, member y suggestion), respondes el JSON
   corregido, o {"noPuedo": "motivo breve"} si el catálogo no alcanza.
 
