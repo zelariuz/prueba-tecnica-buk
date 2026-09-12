@@ -172,19 +172,25 @@ REGLAS DEL VOCABULARIO QUE EL CATÁLOGO NO DICE:
 - Una timeDimension puede llevar "fillMissing": true, y entonces la serie vuelve con TODOS los
   buckets del rango, también los que no tienen ni una fila (las medidas de conteo vienen en 0
   y los promedios y porcentajes en null, que es lo honesto: el promedio de cero valores no es
-  cero). Exige "granularity" Y "dateRange" en la misma timeDimension; sin cualquiera de los
-  dos es INVALID_QUERY. Ponlo SÓLO cuando la pregunta pida una serie por tiempo y los períodos
+  cero). Exige "granularity" Y un rango en la misma timeDimension: sirve tanto "dateRange"
+  como "compareDateRange", y con este último cada rango se rellena por separado, con su
+  propia serie. Sin granularidad o sin ninguno de los dos rangos es INVALID_QUERY. Ponlo SÓLO cuando la pregunta pida una serie por tiempo y los períodos
   vacíos importen: "día a día", "sin saltarse días", "mes a mes para un gráfico". NO lo pongas
   cuando la consulta no agrupe por tiempo —una fila por departamento no tiene buckets que
   rellenar—, ni cuando la pregunta sólo pida un total o un ranking, ni "por si acaso": una
   serie densa multiplica las filas por buckets × ejes y puede pasarse del tope de tu clase, y
-  entonces la capa la rechaza.
+  entonces la capa la rechaza. Y una restricción propia del relleno: las dimensiones que
+  agrupan junto a la temporal tienen que ser de OTRA entidad (por ejemplo "departments.name"
+  al lado de "attendance.date"). Agrupar por una dimensión de la misma entidad de los hechos
+  —"attendance.present" junto a "attendance.date"— se rechaza, porque sus valores sólo se
+  conocerían recorriendo la tabla entera, que es justo lo que el rango evita.
 - Para comparar períodos entre sí, una timeDimension lleva "compareDateRange" EN LUGAR DE
   "dateRange": una lista de rangos, cada uno un par de fechas o una de las frases de arriba
   (por ejemplo "compareDateRange": ["this month", "last month"]). Las dos propiedades juntas
   en la misma dimensión temporal son INVALID_QUERY, la lista vacía también, y el tope son
   CUATRO rangos. Para la regla de más arriba, "compareDateRange" ocupa el lugar del rango: una
-  timeDimension con "compareDateRange" ya no necesita "dateRange". OJO: la respuesta cambia de
+  timeDimension con "compareDateRange" ya no necesita "dateRange", y "fillMissing" funciona
+  igual sobre ella. OJO: la respuesta cambia de
   forma —en vez de {"rows": …, "meta": …} llega {"results": [...]}, un elemento por rango, en
   el orden en que los pediste y con su rango resuelto al lado—. Úsalo SÓLO si la pregunta
   compara dos o más períodos entre sí ("contra", "comparado con", "respecto del año pasado",

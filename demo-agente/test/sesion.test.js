@@ -294,9 +294,16 @@ test('el prompt de creación dice cuándo va fillMissing y cuándo NO', () => {
   const prompt = promptDeCreacion(catalogoReal);
 
   assert.match(prompt, /"fillMissing": true/);
-  assert.match(prompt, /Exige "granularity" Y "dateRange"/);
+  // El rango puede venir como "dateRange" o como "compareDateRange": el prompt
+  // decía sólo el primero y el agente dedujo que el relleno y la comparación
+  // eran incompatibles, cuando la capa las combina sin problema (11-09, noche).
+  assert.match(prompt, /Exige "granularity" Y un rango/);
+  assert.match(prompt, /sirve tanto "dateRange"\s+como "compareDateRange"/);
   assert.match(prompt, /NO lo pongas\s+cuando la consulta no agrupe por tiempo/);
   assert.match(prompt, /buckets × ejes/);
+  // Y la restricción que el planificador impone desde la corrección del ADR
+  // 0012: los ejes salen de otra entidad, nunca de la de los hechos.
+  assert.match(prompt, /tienen que ser de OTRA entidad/);
 });
 
 // Desde el ADR 0013 `total: true` devuelve en `meta` las filas del resultado
