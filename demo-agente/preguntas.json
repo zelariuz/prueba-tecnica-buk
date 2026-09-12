@@ -386,5 +386,174 @@
         "departments.name": "asc"
       }
     }
+  },
+  {
+    "id": "serie-densa-asistencia-diaria",
+    "titulo": "Serie densa · Asistencia día a día, sin saltarse los días vacíos",
+    "texto": "Tasa de asistencia día a día por departamento, para :departamento, sin saltarse los días que no tienen registros: es para un gráfico.",
+    "filtros": [
+      "desde",
+      "hasta",
+      "departamento"
+    ],
+    "nota": "El relleno es `fillMissing: true` DENTRO de la dimensión temporal (ADR 0012): devuelve todos los buckets del rango, también los vacíos, y exige `granularity` y `dateRange`. En la empresa A el rango precargado es el del ADR —del 8 al 14 de agosto de 2025—: sin relleno la capa devuelve 10 filas y con relleno 14. Las cuatro nuevas son los días sin registro de Ventas, con la tasa en `null` y no en 0: el promedio de cero valores no existe (un `count` sí vendría en 0).",
+    "consulta": {
+      "measures": [
+        "attendance.attendance_rate"
+      ],
+      "dimensions": [
+        "departments.name"
+      ],
+      "timeDimensions": [
+        {
+          "dimension": "attendance.date",
+          "granularity": "day",
+          "dateRange": [
+            ":desde",
+            ":hasta"
+          ],
+          "fillMissing": true
+        }
+      ],
+      "filters": [
+        {
+          "member": "departments.name",
+          "operator": "equals",
+          "values": [
+            ":departamento"
+          ]
+        }
+      ],
+      "order": {
+        "attendance.date": "asc"
+      },
+      "limit": 500
+    }
+  },
+  {
+    "id": "rango-relativo-ultimo-ano",
+    "titulo": "Rango relativo · Score promedio por departamento del último año",
+    "texto": "¿Cuál fue el score promedio de desempeño por departamento durante el último año, para :departamento?",
+    "filtros": [
+      "departamento"
+    ],
+    "nota": "La pregunta 1 del enunciado con el período escrito como frase en vez de con dos fechas (ADR 0014): `dateRange: \"last year\"`, una de las quince formas del vocabulario cerrado. La capa la resuelve al año calendario anterior COMPLETO —no a los últimos 365 días— antes de que la consulta tenga identidad, así que no hay fechas que precargar: los campos van vacíos a propósito. Hoy (2026) «last year» es 2025, el año del seed, y da lo mismo que la pregunta 1; en 2027 vendrá vacía, que es exactamente lo que significa un rango relativo. `timezone` es de la consulta y sólo decide qué día es hoy al resolver la frase.",
+    "consulta": {
+      "measures": [
+        "reviews.avg_score"
+      ],
+      "dimensions": [
+        "departments.name"
+      ],
+      "segments": [
+        "reviews.completed"
+      ],
+      "timeDimensions": [
+        {
+          "dimension": "reviews.period",
+          "dateRange": "last year"
+        }
+      ],
+      "filters": [
+        {
+          "member": "departments.name",
+          "operator": "equals",
+          "values": [
+            ":departamento"
+          ]
+        }
+      ],
+      "timezone": "America/Santiago",
+      "order": {
+        "departments.name": "asc"
+      }
+    }
+  },
+  {
+    "id": "comparacion-agosto-contra-julio",
+    "titulo": "Comparación · La asistencia de agosto contra la de julio",
+    "texto": "¿Cómo se compara la tasa de asistencia por departamento de agosto de 2025 contra la de julio de 2025, para :departamento?",
+    "filtros": [
+      "departamento"
+    ],
+    "nota": "`compareDateRange` va EN LUGAR de `dateRange` (ADR 0015): la lista de rangos a comparar, tope cuatro, cada uno un par de fechas o una frase del ADR 0014. La respuesta cambia de forma —`{ results: [...] }`, un elemento por rango, en el orden pedido y cada uno con su rango resuelto, su `servedFrom` y su `queryId`— y la página dibuja los dos. Los meses van con fechas y no con frases porque el seed vive en 2025: «this month» contra «last month», que es el caso de uso real, caería en 2026 y devolvería dos ventanas vacías. Las fechas del formulario van vacías: la comparación las trae puestas.",
+    "consulta": {
+      "measures": [
+        "attendance.attendance_rate"
+      ],
+      "dimensions": [
+        "departments.name"
+      ],
+      "timeDimensions": [
+        {
+          "dimension": "attendance.date",
+          "compareDateRange": [
+            [
+              "2025-08-01",
+              "2025-08-31"
+            ],
+            [
+              "2025-07-01",
+              "2025-07-31"
+            ]
+          ]
+        }
+      ],
+      "filters": [
+        {
+          "member": "departments.name",
+          "operator": "equals",
+          "values": [
+            ":departamento"
+          ]
+        }
+      ],
+      "order": {
+        "departments.name": "asc"
+      }
+    }
+  },
+  {
+    "id": "total-de-filas-asistencia",
+    "titulo": "Total de filas · Las primeras 20 de la asistencia por día y departamento",
+    "texto": "Muéstrame las primeras 20 filas de la tasa de asistencia por día y departamento, para :departamento, y dime cuántas filas tiene el resultado completo.",
+    "filtros": [
+      "desde",
+      "hasta",
+      "departamento"
+    ],
+    "nota": "`total: true` es una propiedad de la consulta (ADR 0013): agrega a `meta` el número de filas del resultado ignorando el límite, para poder paginar. NO es el gran total de una medida. Con el rango precargado de la empresa A —junio a agosto de 2025— devuelve 20 filas, `meta.total: 152` y, de yapa, la advertencia de truncado del mismo ADR: el resultado llegó al tope y desde las filas no había forma de notarlo.",
+    "consulta": {
+      "measures": [
+        "attendance.attendance_rate"
+      ],
+      "dimensions": [
+        "departments.name"
+      ],
+      "timeDimensions": [
+        {
+          "dimension": "attendance.date",
+          "granularity": "day",
+          "dateRange": [
+            ":desde",
+            ":hasta"
+          ]
+        }
+      ],
+      "filters": [
+        {
+          "member": "departments.name",
+          "operator": "equals",
+          "values": [
+            ":departamento"
+          ]
+        }
+      ],
+      "order": {
+        "attendance.date": "asc"
+      },
+      "limit": 20,
+      "total": true
+    }
   }
 ]
