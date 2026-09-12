@@ -163,7 +163,16 @@ cinco si hubo corrección.
   sesión interna; el agente nunca lo ve.
 - **Salto 3 — consulta** — `POST /analytics/query` con el token de clase
   **`agente` de la misma empresa**: `rows` y `meta` (`servedFrom`, `asOf`,
-  `queryId`, `warnings`).
+  `queryId`, `warnings`, y `total` si se pidió). Si la consulta comparaba
+  períodos con `compareDateRange` (**ADR 0015**), la respuesta **cambia de
+  forma**: no es `{ rows, meta }` sino `{ results: [...] }`, un elemento por
+  rango. La página dibuja los N, cada uno rotulado con su rango ya resuelto y
+  con la frase que lo pidió si la hubo (`«last month»`), y con su propio
+  `servedFrom`, su `queryId` y sus avisos —cada rango es una consulta de
+  verdad, con su caché y su instante—. En el dry-run cada rango trae además
+  **su** SQL, que es la mitad de la gracia: son N sentencias, no un `UNION
+  ALL`. La forma la decide la respuesta, así que se dibuja igual venga del
+  agente o del JSON preparado.
 - **Salto 3b — corrección** (solo con agente, y solo una vez) — si la consulta se rechaza
   con 4xx, se le devuelven al agente `code`, `member` y `suggestion` y se
   repite **solo** la consulta: el dry-run ya mostró el plan y el SQL de lo que
@@ -187,8 +196,10 @@ cinco si hubo corrección.
   devuelve vacío, el salto queda en `fallo` y las filas siguen ahí — la
   respuesta ya estaba, redactarla es un extra. Sólo hay redacción si el último
   salto de consulta terminó `ok` con `rows`: un rechazo, un `noPuedo` o un fallo
-  no dejan nada que redactar. En la petición es `redactar` (POST) o
-  `redactar=1` (GET), y sólo tiene efecto junto a `usarAgente`.
+  no dejan nada que redactar, y **una comparación de períodos tampoco**: la
+  redacción se hace sobre `rows` y ahí no hay uno solo, hay uno por rango. En
+  la petición es `redactar` (POST) o `redactar=1` (GET), y sólo tiene efecto
+  junto a `usarAgente`.
 
 Un `noPuedo` del agente deja el rastro en un solo salto y la capa no se toca.
 Un texto que no es JSON queda como salto `fallo` con lo crudo a la vista: para
@@ -270,6 +281,19 @@ consulta tipo no la cambia. Como el prompt de creación lleva el catálogo enter
 guiarse por la versión dejaría al agente hablando de un catálogo que ya no es el
 que la capa publica.
 
+La huella del catálogo no alcanza sola, y por eso la identidad de la sesión
+son **dos** huellas: la del catálogo y la del **prompt de creación entero**
+(`huellaDelPrompt`, también en `.sesion.json` y en el log de arranque). El
+prompt lleva el catálogo, pero lleva además las reglas que el catálogo **no**
+publica —el rango opcional, la consulta sin medidas, el relleno de series, el
+total de filas, el vocabulario de rangos relativos, la comparación de
+períodos—, y ésas cambian editando `src/sesion.js`, sin que la capa publique
+nada nuevo. Sin esa segunda huella, agregar una regla dejaba viva la sesión
+guardada y el agente **nunca la veía**: seguía escribiendo el JSON de ayer, y
+el único síntoma era que no usaba lo nuevo. La consola lo dice al arrancar —
+`(las reglas del prompt cambiaron)`—, y una sesión guardada por una demo
+anterior a esta huella se recrea por no poder saber con qué texto nació.
+
 El enlace "lo que sabe esa sesión" abre un **modal** (`<dialog>` nativo, con
 scroll) con el prompt de creación completo, el system prompt de la llamada, el
 nombre, el modelo y la huella; todo sale de `GET /api/sesion`. La misma
@@ -317,12 +341,13 @@ esa es la diferencia que la demo hace ver. El QA del 09-09 (`docs/qa.md`, 14
 corridas) volvió a dar lo mismo: 3,2-6,2 s y 0,0025-0,0056 USD por llamada al
 agente, 2-17 ms por llamada a la capa.
 
-## Las 12 preguntas preparadas
+## Las 16 preguntas preparadas
 
 Viven en `preguntas.json` (datos, no código). Primero las **3 del enunciado**,
 con su texto literal y sin cambiarle una palabra; después las 3 del caso, las
-otras 3 consultas tipo del catálogo, la trampa, la más simple de todas y la que
-no lleva medidas:
+otras 3 consultas tipo del catálogo, la trampa, la más simple de todas, la que
+no lleva medidas, y al final las **4 de lo último que aprendió la capa**
+(ADR 0012 a 0015):
 
 | Pregunta | Qué demuestra |
 | --- | --- |
@@ -338,6 +363,10 @@ no lleva medidas:
 | Sueldo promedio por departamento | La trampa: `employees.salary_avg` no existe → `UNKNOWN_MEMBER` con sugerencia |
 | Cuántos empleados hay, activos e inactivos | La más simple: sin dimensiones y sin tiempo, una sola fila. Es la pregunta que el rango obligatorio hacía irrespondible (ADR 0009) |
 | Cuáles departamentos hay | Una consulta **sin medidas**: sólo una dimensión, y la capa devuelve sus valores distintos (`GROUP BY` sin agregados). Hasta el 09-09 era `INVALID_QUERY` y el agente no tenía JSON que escribir; desde el **ADR 0010** la ejecuta |
+| **Serie densa** · Asistencia día a día, sin saltarse los días vacíos | `fillMissing: true` dentro de la dimensión temporal (**ADR 0012**): todos los buckets del rango, también los que no tienen filas. Exige `granularity` y `dateRange`. Con el rango precargado de la empresa A —la semana del ADR, del 8 al 14 de agosto de 2025— y el departamento `Ventas`, la serie pasa de 3 días a 7, y los 4 que se agregan vienen con la tasa en `null`: el promedio de cero valores no existe (un `count` sí vendría en 0) |
+| **Rango relativo** · Score promedio por departamento del último año | La pregunta 1 del enunciado con el período escrito como **frase** en vez de con dos fechas (**ADR 0014**): `dateRange: "last year"`, una de las quince formas del vocabulario cerrado, que la capa resuelve al año calendario anterior **completo** antes de que la consulta tenga identidad. Los campos de fecha van vacíos a propósito. En 2026 «last year» es 2025, el año del seed, y da lo mismo que la pregunta 1; en 2027 vendrá vacía, que es justo lo que significa un rango relativo |
+| **Comparación** · La asistencia de agosto contra la de julio | `compareDateRange` **en lugar de** `dateRange` (**ADR 0015**): la lista de rangos a comparar, tope cuatro. La respuesta llega como `{ results: [...] }` y la página dibuja los dos, cada uno con su rango, su `servedFrom` y su `queryId` — la segunda vuelta muestra los dos en `cache-l1`. Los meses van con fechas y no con frases porque el seed vive en 2025: «this month» contra «last month» caería en 2026 y devolvería dos ventanas vacías |
+| **Total de filas** · Las primeras 20 de la asistencia por día y departamento | `total: true` (**ADR 0013**): las filas que tendría el resultado ignorando el límite, para paginar — **no** es el gran total de una medida. Con junio a agosto de 2025 en la empresa A devuelve 20 filas y `meta.total: 152`, y de yapa la advertencia de truncado del mismo ADR: el resultado llegó al tope y desde las filas no había forma de notarlo |
 
 ## Tests
 
@@ -353,8 +382,11 @@ por los dos seams de comportamiento, con dobles inyectados:
   trozos: se llama en el momento en que cada salto queda listo. Observar no
   cambia lo observado, y un observador que lanza no corta el rastro.
 - `asegurarSesion({ claude, catalogo, estado })` → crear, conservar o recrear
-  la sesión, y `promptDeCreacion(catalogo)` y `huellaDelCatalogo(catalogo)` como
-  funciones puras.
+  la sesión, y `promptDeCreacion(catalogo)`, `huellaDelCatalogo(catalogo)` y
+  `huellaDelPrompt(catalogo)` como funciones puras. El prompt se prueba por su
+  **texto**: que diga las reglas que el catálogo no publica, las quince formas
+  del vocabulario de rangos relativos una por una, y —lo que más importa— en
+  qué casos NO va cada propiedad nueva.
 
 El front estático, el `spawn` de `claude`, el adaptador `fetch` y el arranque no
 tienen tests: son efectos, y se verifican mirando la página.
@@ -367,7 +399,7 @@ filas, el reintento, la caché, los tiempos y el costo.
 
 ```
 index.js            arranque: configuración, catálogo, sesión y escucha
-preguntas.json      las 12 preguntas preparadas (datos, no código)
+preguntas.json      las 16 preguntas preparadas (datos, no código)
 src/ejecutar.js     el seam: petición → rastro de saltos
 src/sesion.js       el seam: crear/conservar/recrear la sesión, prompt y huella
 src/protocolo.js    las palabras que se cruzan con el agente: prompt del clic,
