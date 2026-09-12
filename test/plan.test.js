@@ -1298,6 +1298,76 @@ test('sin dimensiones no temporales el relleno no arma ejes ni CROSS JOIN', () =
   assert.match(sql, /DATE_TRUNC\('month', \$2::date\)/);
 });
 
+// --- Corrección del ADR 0012 (2026-09-11): los ejes son los valores que
+// EXISTEN, no los que tienen datos en el período. La versión original los sacaba
+// de la entidad de hechos, cuya CTE ya lleva el rango, y eso hacía desaparecer
+// del gráfico a cualquier valor sin datos en esas fechas.
+
+test('los ejes del relleno no pasan por la entidad de hechos ni por su rango', () => {
+  const { sql } = engineConTodosLosModulos().plan(asistenciaPorDiaRellenada, TABLERO);
+
+  const ejes = sql.match(/ejes AS \(\n([\s\S]*?)\n\)/)[1];
+  // El departamento existe aunque en junio nadie haya marcado asistencia: los
+  // ejes salen de `departments`, la entidad de la dimensión, y ni nombran
+  // `attendance` ni pueden ver su `date >= $2`.
+  assert.match(ejes, /FROM departments/);
+  assert.ok(!ejes.includes('attendance'), 'la entidad de hechos no entra a los ejes');
+  assert.ok(!ejes.includes('employees'), 'sin filtro propio, el puente no aporta nada y se salta');
+  // Y no se arma una segunda copia de la CTE de hechos sin el filtro de fecha:
+  // recorrer la asistencia entera para saber qué departamentos hay es justo lo
+  // que el rango existe para evitar.
+  assert.equal(
+    sql.match(/FROM attendance/g).length,
+    2,
+    'sólo la CTE de la entidad y la agregada: no hay una tercera copia sin el filtro de fecha',
+  );
+});
+
+test('un filtro sobre la entidad puente sí entra a los ejes; el rango de la serie no', () => {
+  const { sql } = engineConTodosLosModulos().plan(
+    { ...asistenciaPorDiaRellenada, segments: ['employees.active'] },
+    TABLERO,
+  );
+
+  const ejes = sql.match(/ejes AS \(\n([\s\S]*?)\n\)/)[1];
+  // `employees` deja de ser un puente vacío en cuanto la consulta le pone una
+  // condición: los ejes pasan a ser los departamentos CON empleados activos,
+  // porque eso es lo que la consulta pidió. Lo que siguen sin respetar es el
+  // recorte de fechas, que no era suyo.
+  assert.match(ejes, /FROM employees\n\s*JOIN departments ON employees\.department_id = departments\.id/);
+  assert.ok(!ejes.includes('attendance'));
+});
+
+test('una dimensión de la propia entidad de hechos no se puede rellenar', () => {
+  // Saber qué valores tiene `attendance.present` exige recorrer `attendance`
+  // entera SIN el rango que la acota, que es el costo que el rango evita. La
+  // capa prefiere rechazar antes que responder mal o carísimo.
+  const error = errorDe(() =>
+    engineConTodosLosModulos().plan(
+      { ...asistenciaPorDiaRellenada, dimensions: ['attendance.present'], order: {} },
+      TABLERO,
+    ),
+  );
+
+  assert.equal(error.code, 'INVALID_QUERY');
+  assert.equal(error.member, 'attendance.present');
+  assert.match(error.suggestion, /recorrer attendance entera/);
+  assert.match(error.suggestion, /otra entidad|sin fillMissing/);
+
+  // La misma consulta sin la bandera se responde como siempre: lo que no se
+  // puede es rellenarla.
+  const { sql } = engineConTodosLosModulos().plan(
+    {
+      ...asistenciaPorDiaRellenada,
+      dimensions: ['attendance.present'],
+      timeDimensions: [{ ...asistenciaPorDiaRellenada.timeDimensions[0], fillMissing: false }],
+      order: { 'attendance.date': 'asc' },
+    },
+    TABLERO,
+  );
+  assert.ok(!sql.includes('ejes AS ('));
+});
+
 test('la bandera en false o ausente emite exactamente el mismo SQL de siempre', () => {
   const engine = engineConTodosLosModulos();
   const sinBandera = {

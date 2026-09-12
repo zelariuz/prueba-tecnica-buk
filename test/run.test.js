@@ -33,6 +33,9 @@ const conteoPorEstado = {
 // Empresas del seed determinista de docker/init/02-seed.sql.
 const EMPRESA_A = 1;
 const EMPRESA_B = 2;
+// Una empresa que el seed no registra: sirve para ver qué responde la capa
+// cuando no hay ni un valor de la dimensión con el que armar los ejes.
+const EMPRESA_SIN_DATOS = 999;
 
 function porEstado(rows) {
   return Object.fromEntries(rows.map((row) => [row['reviews.status'], row['reviews.count']]));
@@ -1258,11 +1261,12 @@ describe('rango sin granularidad', conBase, () => {
 // qué se rellena con qué lo decide el tipo de la medida.
 describe('relleno de series densas', conBase, () => {
   let pool;
+  let catalog;
   let engine;
 
   before(() => {
     pool = new pg.Pool({ connectionString: DATABASE_URL });
-    const catalog = createCatalog();
+    catalog = createCatalog();
     registrarModulos(catalog);
     engine = createEngine({ catalog, pool });
   });
@@ -1366,6 +1370,148 @@ describe('relleno de series densas', conBase, () => {
         ['2025-10-01', 0, null],
       ],
     );
+  });
+
+
+  // --- Corrección del ADR 0012 (2026-09-11): el período decide el eje x, no qué
+  // series existen. Antes los ejes salían de la entidad de hechos, cuya CTE ya
+  // lleva el rango, y un valor sin datos en esas fechas desaparecía del
+  // resultado entero.
+
+  it('un rango sin ninguna asistencia devuelve igual todos los departamentos por todos sus días', async () => {
+    const { rows, meta } = await engine.run(
+      {
+        measures: ['attendance.attendance_rate', 'attendance.count'],
+        dimensions: ['departments.name'],
+        timeDimensions: [
+          {
+            dimension: 'attendance.date',
+            granularity: 'day',
+            dateRange: ['2025-01-01', '2025-01-31'],
+            fillMissing: true,
+          },
+        ],
+        order: { 'departments.name': 'asc', 'attendance.date': 'asc' },
+      },
+      { companyId: EMPRESA_A, consumer: 'dashboard' },
+    );
+
+    // El seed sólo tiene asistencia de junio a agosto: en enero no hay ni una
+    // fila. Antes de la corrección esto devolvía `rows: []` y `warnings: []`, que
+    // es lo contrario de lo que fillMissing promete. Ahora son los dos
+    // departamentos de la empresa A por los 31 días de enero.
+    assert.equal(rows.length, 62, 'dos departamentos × 31 días');
+    assert.deepEqual(meta.warnings, []);
+    assert.deepEqual(rows[0], {
+      'departments.name': 'Ingeniería',
+      'attendance.date': '2025-01-01',
+      // La tasa es un promedio: sin días registrados NO existe, y un 0 hundiría
+      // la línea del gráfico justo donde no hubo datos.
+      'attendance.attendance_rate': null,
+      'attendance.count': 0,
+    });
+    assert.deepEqual(rows[61], {
+      'departments.name': 'Ventas',
+      'attendance.date': '2025-01-31',
+      'attendance.attendance_rate': null,
+      'attendance.count': 0,
+    });
+  });
+
+  it('un departamento sin asistencia en el rango sale con su serie completa, no desaparece', async () => {
+    const { rows } = await engine.run(
+      {
+        measures: ['attendance.count'],
+        dimensions: ['departments.name'],
+        timeDimensions: [
+          {
+            dimension: 'attendance.date',
+            granularity: 'day',
+            dateRange: ['2025-08-11', '2025-08-14'],
+            fillMissing: true,
+          },
+        ],
+        order: { 'departments.name': 'asc', 'attendance.date': 'asc' },
+      },
+      { companyId: EMPRESA_A, consumer: 'dashboard' },
+    );
+
+    // Del 11 al 14 de agosto Ventas (empleado 102, que marca del 01 al 10) no
+    // tiene ni una fila, mientras Ingeniería las tiene todas. Faltar una línea
+    // entera del gráfico es peor que un hueco: el consumidor no puede notarlo.
+    assert.deepEqual(
+      rows.filter((fila) => fila['departments.name'] === 'Ventas'),
+      [
+        { 'departments.name': 'Ventas', 'attendance.date': '2025-08-11', 'attendance.count': 0 },
+        { 'departments.name': 'Ventas', 'attendance.date': '2025-08-12', 'attendance.count': 0 },
+        { 'departments.name': 'Ventas', 'attendance.date': '2025-08-13', 'attendance.count': 0 },
+        { 'departments.name': 'Ventas', 'attendance.date': '2025-08-14', 'attendance.count': 0 },
+      ],
+    );
+    assert.equal(rows.length, 8, 'los cuatro días de los dos departamentos');
+  });
+
+  it('un relleno que vuelve vacío lo dice: el silencio es el fallo que esto corrige', async () => {
+    const { rows, meta } = await engine.run(
+      {
+        measures: ['attendance.count'],
+        dimensions: ['departments.name'],
+        timeDimensions: [
+          {
+            dimension: 'attendance.date',
+            granularity: 'day',
+            dateRange: ['2025-01-01', '2025-01-07'],
+            fillMissing: true,
+          },
+        ],
+      },
+      { companyId: EMPRESA_SIN_DATOS, consumer: 'dashboard' },
+    );
+
+    // Una empresa sin ningún departamento no tiene ejes, así que la rejilla sale
+    // vacía. Es el único vacío que queda posible, y una función que existe para
+    // que nada falte no puede fallar callada.
+    assert.deepEqual(rows, []);
+    assert.equal(meta.warnings.length, 1);
+    assert.equal(meta.warnings[0].member, 'departments.name');
+    assert.match(meta.warnings[0].warning, /fillMissing y no devolvió ninguna fila/);
+  });
+
+  it('el tope de filas del ADR 0013 mide la rejilla nueva, que ahora puede ser más grande', async () => {
+    const acotado = createEngine({
+      catalog,
+      pool,
+      presupuestos: {
+        dashboard: { timeoutMs: 5_000, maxFilas: 40, rangoObligatorio: false, cacheTtlMs: 0 },
+      },
+    });
+
+    const { rows, meta } = await acotado.run(
+      {
+        measures: ['attendance.count'],
+        dimensions: ['departments.name'],
+        total: true,
+        timeDimensions: [
+          {
+            dimension: 'attendance.date',
+            granularity: 'day',
+            dateRange: ['2025-01-01', '2025-01-31'],
+            fillMissing: true,
+          },
+        ],
+        order: { 'departments.name': 'asc', 'attendance.date': 'asc' },
+      },
+      { companyId: EMPRESA_A, consumer: 'dashboard' },
+    );
+
+    // Los 31 buckets caben en el tope de 40, así que la consulta no se rechaza
+    // al planificar; la rejilla completa son 62 filas y el corte se avisa. El
+    // total cuenta el mismo cuerpo, así que mide la rejilla corregida sin una
+    // regla propia.
+    assert.equal(rows.length, 40, 'cortada en el tope de la clase');
+    assert.equal(meta.total, 62);
+    assert.equal(meta.warnings.length, 1);
+    assert.equal(meta.warnings[0].member, 'limit');
   });
 
   it('el relleno no cruza empresas: los ejes salen de los valores de la propia', async () => {
