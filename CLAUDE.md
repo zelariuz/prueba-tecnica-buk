@@ -258,6 +258,29 @@ curl -s -H 'Authorization: Bearer demo-dashboard-empresa-a' \
 
 ## Estado
 
+El segundo selector, el de los **casos raros** (11-09, sólo `demo-agente`). Seis
+preguntas para ver **cómo reacciona el agente ante lo difícil**, debajo de la
+casilla "usar agente": no traen `consulta` —lo que se mira es el JSON que él
+decide escribir—, así que son **sólo del camino con agente** (elegir una marca la
+casilla y, si el caso lo pide, cambia el token; sin Claude Code el selector queda
+deshabilitado con el motivo) y van **sin fechas** a propósito, porque casi todas
+tratan de lo que hace cuando no le dan un período. Viven en
+`demo-agente/preguntas-raras.json`, aparte de las dieciséis preparadas, porque
+tienen otra forma y otro selector; `preguntaPorId` busca en las dos listas, el
+mini back las publica en `GET /api/preguntas-raras` y una rara sin agente falla
+diciendo que hay que marcar la casilla, en vez de dejar un rastro vacío. Cada una
+trae una `nota` con qué mirar, y las notas describen la conducta **medida**, no
+la esperada: el caso del miembro mal escrito se cayó —seis preguntas distintas
+(ausencias, días presentes, inactivos, calibradas, cruzar asistencia con
+evaluaciones, un "empieza con") y el agente no inventó un miembro ni una vez:
+siempre `noPuedo` nombrando lo que sí existe, o la consulta correcta— y se
+cambió por el **resultado truncado** de la empresa C: 500 filas de 4.380 con el
+aviso del ADR 0013 en `meta.warnings` y `plan.warnings` vacío. Los seis se
+ejecutaron de verdad contra la capa en Docker y Claude Code real; el 1 y el 2
+salen como dice su nota en 3 de cada 4 clics (en el otro, `noPuedo` de entrada),
+los demás en todas sus corridas. La raíz sigue en **291 tests en verde** (no se
+tocó `src/` ni `test/`); `demo-agente` pasa de **73 a 79**.
+
 Los ejes del relleno dejan de depender del rango (11-09, corrección del ADR
 0012). Defecto reproducido contra Postgres: la tasa de asistencia de la empresa A
 por departamento, por día, entre el 01 y el 31 de enero de 2025 con

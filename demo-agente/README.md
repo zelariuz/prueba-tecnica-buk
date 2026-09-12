@@ -212,7 +212,8 @@ publica estos endpoints:
 
 | Endpoint | Qué devuelve |
 | --- | --- |
-| `GET /api/preguntas` | las 12 preparadas con su texto, sus filtros y su JSON |
+| `GET /api/preguntas` | las 16 preparadas con su texto, sus filtros y su JSON |
+| `GET /api/preguntas-raras` | los 6 casos raros: texto y nota, **sin** JSON preparado |
 | `GET /api/consumidores` | los tokens de demo elegibles: nombre, etiqueta y rangos precargados. Ningún valor de token — el mini back es el único que los conoce |
 | `GET /api/sesion` | la sesión del agente y los dos prompts completos |
 | `GET /api/rastro?…` | el rastro como **NDJSON en streaming** |
@@ -368,6 +369,57 @@ no lleva medidas, y al final las **4 de lo último que aprendió la capa**
 | **Comparación** · La asistencia de agosto contra la de julio | `compareDateRange` **en lugar de** `dateRange` (**ADR 0015**): la lista de rangos a comparar, tope cuatro. La respuesta llega como `{ results: [...] }` y la página dibuja los dos, cada uno con su rango, su `servedFrom` y su `queryId` — la segunda vuelta muestra los dos en `cache-l1`. Los meses van con fechas y no con frases porque el seed vive en 2025: «this month» contra «last month» caería en 2026 y devolvería dos ventanas vacías |
 | **Total de filas** · Las primeras 20 de la asistencia por día y departamento | `total: true` (**ADR 0013**): las filas que tendría el resultado ignorando el límite, para paginar — **no** es el gran total de una medida. Con junio a agosto de 2025 en la empresa A devuelve 20 filas y `meta.total: 152`, y de yapa la advertencia de truncado del mismo ADR: el resultado llegó al tope y desde las filas no había forma de notarlo |
 
+## Los seis casos raros
+
+Debajo de la casilla "usar agente" hay un **segundo selector**. Sus seis
+preguntas no están para lucir un resultado bonito: están para ver **cómo
+reacciona el agente ante lo difícil**. Se diferencian de las dieciséis en una
+cosa que se ve en el archivo: **no traen `consulta`**. La gracia es justamente
+el JSON que él decide escribir, así que son **sólo del camino con agente** —
+elegir una marca la casilla; sin Claude Code el selector queda deshabilitado
+con el motivo, igual que la casilla—. Mientras hay un caso elegido, el selector
+de las preparadas se deshabilita: manda el caso.
+
+Viven en **`preguntas-raras.json`** y no como una marca dentro de
+`preguntas.json` porque tienen otra forma y otro selector: mezclarlos habría
+obligado a preguntar "¿ésta trae consulta?" en cada sitio que lee una
+preparada. El mini back las sirve igual que las otras, por `GET
+/api/preguntas-raras`, y `ejecutar` las busca por id en las dos listas: el
+rastro no necesita saber de cuál salió la pregunta. Una pregunta rara **sin**
+agente no ejecuta nada: es un error que dice que hay que marcar la casilla, y
+no un rastro vacío.
+
+Van **sin fechas** a propósito —casi todas se tratan de lo que el agente hace
+cuando no le dan un período, y la línea `Filtros: desde…, hasta…` del prompt del
+clic le arruinaría el caso—, y cada una trae una **`nota`** que la página
+muestra bajo el selector: qué mirar cuando se ejecuta. Como todo lo demás, sólo
+corren al pulsar Ejecutar.
+
+| Caso | Qué hay que mirar |
+| --- | --- |
+| **Raro 1** · Los 3 mejores de dos años | El agente escribe `compareDateRange` con `order` y `limit 3`, y vuelven **dos rankings independientes** (2025: A2 y A1; 2024: A3 y A1). El límite real del concepto: la comparación compara **períodos**, no rankings — el orden y el corte se aplican dentro de cada rango |
+| **Raro 2** · Cuántos empleados hay y su score promedio | El fan-out: `MULTI_ENTITY_MEASURES` (ADR 0006) y el reintento con la sugerencia de la capa. El agente responde `noPuedo` en vez de descartar una medida por su cuenta |
+| **Raro 3** · Un año de asistencia día a día (empresa C) | Cambia el token solo. Vuelven 500 filas de 4.380 y `meta.warnings` avisa del truncado (ADR 0013); `plan.warnings` del dry-run viene **vacío**, porque antes de ejecutar nadie sabe cuántas filas van a salir |
+| **Raro 4** · Una tasa que da 100 % | La razón anulada: el filtro global es el mismo que distingue al numerador, la tasa vale 100 % en cada fila y la capa lo **avisa** en vez de devolver el número callada |
+| **Raro 5** · Días sin saltarse, sin decir qué días | Sin período no hay relleno posible (ADR 0012): el agente contesta `noPuedo` diciendo qué le falta, en un solo salto y sin tocar la capa. Ésa es la conducta correcta: inventar un rango habría respondido otra pregunta |
+| **Raro 6** · Sueldos que no existen | `noPuedo` sin inventar un miembro. El otro lado —`UNKNOWN_MEMBER` con su sugerencia— sólo se ve en la preparada «Sueldo promedio por departamento», cuyo JSON está escrito a mano: el agente, solo, no llega ahí |
+
+**Lo que no se pudo hacer fallar** (11-09): el caso 3 iba a ser un miembro mal
+escrito para ver `UNKNOWN_MEMBER` y su sugerencia por distancia de edición. Seis
+preguntas distintas —el promedio de días presentes, el porcentaje de ausencias,
+los empleados inactivos, las evaluaciones calibradas, cruzar asistencia con el
+estado de la evaluación y un "empieza con" que el catálogo no publica— dieron
+seis veces lo mismo: el agente **no inventa miembros**, contesta `noPuedo`
+nombrando lo que sí existe o resuelve la pregunta con lo publicado. Forzarlo con
+trampas habría sido mentir sobre la demo, así que ese caso se cambió por el
+resultado truncado de la empresa C.
+
+**No siempre sale igual**: son llamadas a un modelo. Medido el 11-09 con cuatro
+clics por caso, el 1 y el 2 salen como dice la tabla en 3 de 4 (en el otro el
+agente contesta `noPuedo` de entrada; en el caso 1, además, con un motivo
+equivocado). Los casos 3 a 6 salieron igual en todas sus corridas. Cada `nota`
+lo dice.
+
 ## Tests
 
 ```bash
@@ -381,6 +433,10 @@ por los dos seams de comportamiento, con dobles inyectados:
   `alSalto(salto, indice)` es opcional y es lo que permite dibujar la página por
   trozos: se llama en el momento en que cada salto queda listo. Observar no
   cambia lo observado, y un observador que lanza no corta el rastro.
+- Los **casos raros** entran por el mismo seam: que `ejecutar` los corra con un
+  agente doble fija que `preguntas-raras.json` sigue siendo válido —los seis con
+  su nota y ninguno con `consulta`, las dieciséis preparadas con la suya, ningún
+  id repetido entre las dos listas— y que sin agente fallan diciendo por qué.
 - `asegurarSesion({ claude, catalogo, estado })` → crear, conservar o recrear
   la sesión, y `promptDeCreacion(catalogo)`, `huellaDelCatalogo(catalogo)` y
   `huellaDelPrompt(catalogo)` como funciones puras. El prompt se prueba por su
@@ -400,6 +456,8 @@ filas, el reintento, la caché, los tiempos y el costo.
 ```
 index.js            arranque: configuración, catálogo, sesión y escucha
 preguntas.json      las 16 preguntas preparadas (datos, no código)
+preguntas-raras.json los 6 casos raros del segundo selector: sólo con agente y
+                    sin JSON preparado (datos, no código)
 src/ejecutar.js     el seam: petición → rastro de saltos
 src/sesion.js       el seam: crear/conservar/recrear la sesión, prompt y huella
 src/protocolo.js    las palabras que se cruzan con el agente: prompt del clic,
