@@ -91,6 +91,18 @@
                 Un salto más: el agente recibe la pregunta y las filas agregadas (nunca filas
                 crudas) y escribe una o dos frases; cuesta ~0,003 USD y 3-5 s.
               </p>
+
+              <label class="campo" id="campo-raro">
+                <span class="etiqueta">Caso raro (sólo con agente)</span>
+                <select id="raro" name="raro"></select>
+                <span class="nota" id="nota-raro">
+                  Preguntas para ver cómo reacciona el agente ante lo difícil, no para lucir un
+                  resultado bonito. No traen JSON preparado —lo que se mira es el que él decide
+                  escribir—, así que sólo existen con "usar agente": elegir una la marca. Van sin
+                  fechas a propósito, y cada una dice qué mirar cuando se ejecuta.
+                </span>
+                <span class="nota" id="nota-del-caso" hidden></span>
+              </label>
               <label class="campo" id="campo-texto" hidden>
                 <span class="etiqueta">Texto en lenguaje natural</span>
                 <textarea id="texto" name="texto"></textarea>

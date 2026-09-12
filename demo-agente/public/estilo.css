@@ -270,6 +270,12 @@ textarea {
   color: var(--apagado);
 }
 
+/* Mismo apagado para el selector de casos raros: sin Claude Code no hay caso
+   que ofrecer, y el campo entero se atenúa en vez de esconderse. */
+.campo.apagada {
+  color: var(--apagado);
+}
+
 /* Las dos casillas del agente van en línea y se envuelven en pantallas
    angostas: "redactar" es una opción DE "usar agente", no un paso aparte. */
 .fila-casillas {

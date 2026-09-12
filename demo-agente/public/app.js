@@ -11,6 +11,8 @@ const $ = (id) => document.getElementById(id);
 
 const estado = {
   preguntas: [],
+  // Los casos raros: preguntas sin JSON preparado, sólo del camino con agente.
+  raras: [],
   consumidores: [],
   sesion: null,
   controlador: null,
@@ -88,16 +90,19 @@ arrancar();
 
 async function arrancar() {
   try {
-    const [preguntas, consumidores, sesion] = await Promise.all([
+    const [preguntas, raras, consumidores, sesion] = await Promise.all([
       pedir('/api/preguntas'),
+      pedir('/api/preguntas-raras'),
       pedir('/api/consumidores'),
       pedir('/api/sesion'),
     ]);
     estado.preguntas = preguntas;
+    estado.raras = raras;
     estado.consumidores = consumidores;
     estado.sesion = sesion;
     llenarConsumidores(consumidores);
     llenarSelector(preguntas);
+    llenarSelectorDeRaros(raras);
     pintarSesion(sesion);
   } catch (error) {
     mostrarAviso(`No se pudo hablar con el mini back: ${error.message}`);
@@ -188,6 +193,66 @@ function llenarSelector(preguntas) {
   }
 }
 
+// El segundo selector: los casos raros. Son del camino con agente y de ningún
+// otro —no traen JSON preparado—, así que elegir uno marca la casilla, y sin
+// Claude Code el selector entero queda deshabilitado con el motivo a la vista
+// (lo apaga `pintarSesion`, que es quien sabe si el agente está).
+//
+// Mientras hay un caso raro elegido manda él: el selector de las preparadas se
+// deshabilita en vez de quedar diciendo una pregunta que no se va a ejecutar.
+// Volver a "ninguno" lo devuelve.
+function llenarSelectorDeRaros(raras) {
+  const selector = $('raro');
+  selector.replaceChildren();
+  const ninguno = document.createElement('option');
+  ninguno.value = '';
+  ninguno.textContent = '— ninguno: manda la pregunta preparada —';
+  selector.append(ninguno);
+  for (const rara of raras) {
+    const opcion = document.createElement('option');
+    opcion.value = rara.id;
+    opcion.textContent = rara.titulo;
+    selector.append(opcion);
+  }
+  selector.addEventListener('change', elegirCasoRaro);
+}
+
+function casoRaroElegido() {
+  return estado.raras.find((rara) => rara.id === $('raro').value) ?? null;
+}
+
+function elegirCasoRaro() {
+  const raro = casoRaroElegido();
+  $('pregunta').disabled = Boolean(raro);
+  $('nota-del-caso').textContent = raro?.nota ?? '';
+  $('nota-del-caso').hidden = !raro;
+  if (raro) {
+    // Estos casos son del agente: la casilla se marca sola. Y el token, si el
+    // caso pide uno —el resultado truncado sólo se ve en la empresa C—.
+    $('agente').checked = true;
+    if (raro.token && $('token').value !== raro.token) {
+      $('token').value = raro.token;
+      pintarNotaDelToken();
+    }
+    // Las fechas del formulario volverían a decidir por el agente: la línea
+    // "Filtros: desde…, hasta…" del prompt del clic le pondría un período que
+    // el caso justamente no le da. Se vacían y se dejan de precargar.
+    fechasEditadas = false;
+    $('enganche').checked = true;
+  }
+  mostrarTextoSegunAgente();
+  sincronizarRango();
+  sincronizarTexto();
+}
+
+// Deshacer la elección: se usa cuando se desmarca el agente, porque un caso
+// raro sin agente no tiene consulta que mandar.
+function volverALaPreparada() {
+  if (!casoRaroElegido()) return;
+  $('raro').value = '';
+  elegirCasoRaro();
+}
+
 // El rango es opcional desde el ADR 0009, pero sigue precargado: cada pregunta
 // trae uno que da filas con el seed de su empresa, y vaciarlo a mano manda la
 // consulta sin `dateRange`. Las preguntas sobre `employees` —que no tiene
@@ -204,6 +269,14 @@ for (const campo of ['desde', 'hasta']) {
 
 function sincronizarRango() {
   if (fechasEditadas) return;
+  // Los casos raros van SIN fechas: casi todos se tratan justamente de lo que
+  // el agente hace cuando no le dan un período, y un rango precargado arruinaría
+  // el caso antes de empezar.
+  if (casoRaroElegido()) {
+    $('desde').value = '';
+    $('hasta').value = '';
+    return;
+  }
   const consumidor = consumidorElegido();
   const [desde, hasta] =
     consumidor?.rangos?.[$('pregunta').value] ?? consumidor?.rangoPorDefecto ?? RANGO_DE_RESPALDO;
@@ -232,7 +305,12 @@ function mostrarTextoSegunAgente() {
   $('nota-enganche').hidden = oculto;
   sincronizarRedaccion();
 }
-$('agente').addEventListener('change', mostrarTextoSegunAgente);
+$('agente').addEventListener('change', () => {
+  // Desmarcar el agente con un caso raro elegido dejaría una pregunta sin JSON
+  // que mandar: el caso se suelta y vuelve a mandar la preparada.
+  if (!$('agente').checked) volverALaPreparada();
+  mostrarTextoSegunAgente();
+});
 
 // "Redactar" es una opción DE "usar agente": sin agente no hay a quién pedirle
 // la frase. Se deshabilita en vez de esconderse —que se vea que existe— y su
@@ -250,7 +328,16 @@ function sincronizarTexto() {
 }
 
 function preguntaElegida() {
-  return estado.preguntas.find((pregunta) => pregunta.id === $('pregunta').value);
+  return casoRaroElegido() ?? estado.preguntas.find((pregunta) => pregunta.id === $('pregunta').value);
+}
+
+// Cualquiera de las dos listas, por id: el rastro no distingue de cuál salió.
+function preguntaPorId(id) {
+  return (
+    estado.preguntas.find((pregunta) => pregunta.id === id) ??
+    estado.raras.find((pregunta) => pregunta.id === id) ??
+    null
+  );
 }
 
 function pintarSesion(sesion) {
@@ -285,6 +372,14 @@ function pintarSesion(sesion) {
     $('nota-agente').textContent = `No disponible: ${
       sesion.agenteMotivo ?? 'Claude Code no responde'
     }. El camino sin agente funciona igual.`;
+    // Los casos raros son sólo del camino con agente: sin agente no hay nada
+    // que ofrecer, y el selector queda deshabilitado diciendo por qué. No se
+    // esconde, por lo mismo que "Redactar": que se vea que existe.
+    $('raro').disabled = true;
+    $('campo-raro').classList.add('apagada');
+    $('nota-raro').textContent =
+      'Los casos raros no traen JSON preparado: sólo existen por el camino con agente, así que ' +
+      `sin Claude Code no hay ninguno que ofrecer (${sesion.agenteMotivo ?? 'no responde'}).`;
   }
 }
 
@@ -334,7 +429,8 @@ function abrirModal() {
 
 function leerFormulario() {
   return {
-    pregunta: $('pregunta').value,
+    // El caso raro manda mientras haya uno elegido; si no, la preparada.
+    pregunta: casoRaroElegido()?.id ?? $('pregunta').value,
     token: $('token').value,
     // Enganchado: el back arma el texto preparado + filtros. Desenganchado: va
     // este texto y nada más.
@@ -351,14 +447,25 @@ function leerFormulario() {
 function aplicarURL(parametros) {
   if (parametros.has('token')) $('token').value = parametros.get('token');
   pintarNotaDelToken();
-  if (parametros.has('pregunta')) $('pregunta').value = parametros.get('pregunta');
+  // La pregunta del link puede ser una preparada o un caso raro: cada una va a
+  // su selector, y el caso raro arrastra su token y sus fechas vacías.
+  if (parametros.has('pregunta')) {
+    const id = parametros.get('pregunta');
+    const esRaro = estado.raras.some((rara) => rara.id === id);
+    $('raro').value = esRaro && !$('raro').disabled ? id : '';
+    if (!esRaro) $('pregunta').value = id;
+    elegirCasoRaro();
+  }
   // El rango del link manda sobre el precargado de la pregunta.
   if (parametros.has('desde') || parametros.has('hasta')) fechasEditadas = true;
   $('desde').value = parametros.get('desde') ?? '';
   $('hasta').value = parametros.get('hasta') ?? '';
   if (!fechasEditadas) sincronizarRango();
   $('departamento').value = parametros.get('departamento') ?? '';
-  $('agente').checked = parametros.get('agente') === '1' && !$('agente').disabled;
+  // Un caso raro implica el agente aunque el link no lo diga: sin él no hay
+  // consulta que mandar.
+  $('agente').checked =
+    (parametros.get('agente') === '1' || Boolean(casoRaroElegido())) && !$('agente').disabled;
   $('redactar').checked = parametros.get('redactar') === '1';
   mostrarTextoSegunAgente();
   const texto = parametros.get('texto') ?? '';
@@ -861,8 +968,10 @@ function comparacionDelAgente() {
   if (!primero || actorDe(primero.destino) !== 'agente') return null;
   const escrito = comoJson(primero.recibido);
   if (!escrito || escrito.noPuedo) return null;
-  const pregunta = estado.preguntas.find((una) => una.id === estado.peticion.pregunta);
-  if (!pregunta) return null;
+  const pregunta = preguntaPorId(estado.peticion.pregunta);
+  // Un caso raro no trae JSON preparado: no hay contra qué comparar, y ésa es
+  // justamente su gracia.
+  if (!pregunta?.consulta) return null;
   const preparada = prepararConsulta(pregunta, estado.peticion);
   return { escrito, preparada, igual: canonico(escrito) === canonico(preparada) };
 }
