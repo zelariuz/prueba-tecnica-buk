@@ -172,7 +172,9 @@ demo-agente/               demo web del rastro de llamadas: paquete aparte, con 
   index.js                 arranque: catálogo, sesión y escucha en :3100
   src/ejecutar.js          seam 1: petición → rastro de saltos
   src/sesion.js            seam 2: crear/conservar/recrear la sesión, prompt de
-                           creación y huella del catálogo
+                           creación y las DOS huellas que la identifican: la del
+                           catálogo y la del texto del prompt
+  preguntas.json           las 16 preguntas preparadas (datos, no código)
   src/protocolo.js         las palabras del agente: prompt del clic, prompt de
                            corrección y lectura del JSON que devuelve
   src/servidor.js          estáticos de public/ y los endpoints JSON (incluida
@@ -253,6 +255,37 @@ curl -s -H 'Authorization: Bearer demo-dashboard-empresa-a' \
 - Repo público: sin datos personales ni nombres reales en seeds ni ejemplos.
 
 ## Estado
+
+La demo aprende lo último de la capa (11-09, ADR 0012 a 0015): el agente de
+`demo-agente` no conocía el relleno, el total, los rangos relativos ni la
+comparación, porque su vocabulario vive en el texto de `promptDeCreacion`
+(`src/sesion.js`) y ahí no estaban. Ahora están, y cada regla nueva dice
+**cuándo sí y cuándo no**: el riesgo real de enseñarle propiedades nuevas es que
+las use donde no van —`fillMissing` en una consulta que no agrupa por tiempo,
+una comparación que nadie pidió—, así que la mitad "cuándo NO" es parte de la
+regla y tiene test. El vocabulario de rangos relativos va **entero**, las quince
+formas escritas como se aceptan, porque es cerrado: una que falte es una que el
+agente no puede escribir. **La identidad de la sesión pasa a ser dos huellas**,
+la del catálogo y la del prompt entero (`huellaDelPrompt`): las reglas cambian
+editando ese archivo, sin que la capa publique nada, y sin la segunda huella la
+sesión guardada seguía viva y el agente nunca veía la regla nueva. El front
+entiende la respuesta de una comparación: `{ results: [...] }` se dibuja como N
+bloques, cada uno con su rango resuelto, su frase, su `servedFrom`, su `queryId`
+y —en el dry-run— su SQL; la forma la decide la respuesta, así que sirve igual al
+camino con agente y al preparado. Cuatro preguntas preparadas nuevas (16 en
+total) con sus rangos precargados por empresa, y un arreglo que salió de
+probarlas: `sinRangoVacio` (`public/preparar.js`) le borraba el `dateRange` a
+**toda** dimensión temporal cuando el formulario venía sin fechas, y se comía la
+frase `"last year"` que la pregunta trae escrita; ahora sólo le quita el rango a
+la dimensión que lo recibe del formulario, la de los marcadores. La raíz sigue
+en **283 tests en verde** (no se tocó `src/` ni `test/`); `demo-agente` pasa de
+**62 a 73**. Verificado ejecutando con la capa en Docker y Claude Code real: las
+cuatro preguntas por los dos caminos y en las dos empresas; el agente escribió
+sin ayuda `fillMissing: true`, `dateRange: "last year"`, `compareDateRange` y
+`total: true` **a la primera**, sin corrección, y no le puso ninguna de las
+cuatro a tres preguntas viejas que no las piden. La sesión se recreó de verdad al
+cambiar el prompt (`las reglas del prompt cambiaron` en el log) y se reutilizó en
+el arranque siguiente.
 
 Comparación de períodos (11-09, ADR 0015): `compareDateRange` en una dimensión
 temporal, **en lugar de** `dateRange`, con la lista de rangos a comparar —cada
