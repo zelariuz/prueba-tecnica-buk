@@ -148,7 +148,9 @@ test/
                              SELECT ni en el GROUP BY (ADR 0011)
   snapshots/relleno-de-serie.sql  SQL esperado del relleno de serie densa: las
                              CTE serie, ejes y agregada, el CROSS JOIN y el
-                             LEFT JOIN por bucket (ADR 0012)
+                             LEFT JOIN por bucket (ADR 0012). `ejes` sale de
+                             `FROM departments`: los valores que existen, no
+                             los que tienen datos en el rango (corrección 11-09)
   fixtures/snapshot.json     foto del esquema generada desde la base del caso
   fixtures/caso-sqlite.sql   el mismo esquema y las mismas 16 evaluaciones,
                              escritos para SQLite
@@ -206,7 +208,7 @@ corre la demo y explícame el caso obligatorio; después corre los tests". Orden
    error con sugerencia y la telemetría. Filas esperadas de la empresa A:
    Ingeniería 4.35/2 y 3.80/1; `completion_rate` 75.
 3. Tests: `npm install` y `npm test` con `DATABASE_URL` y `REDIS_URL` de la
-   sección Comandos → 283 en verde (177 + 1 saltado sin variables).
+   sección Comandos → 290 en verde (181 tests, 180 + 1 saltado, sin variables).
 4. La demo del agente, si el prompt la pide (el del README la pide):
    `cd demo-agente && npm install && npm start` en segundo plano, con la capa
    arriba; no va en el compose. Di la URL (`http://localhost:3100`), que usa la
@@ -255,6 +257,32 @@ curl -s -H 'Authorization: Bearer demo-dashboard-empresa-a' \
 - Repo público: sin datos personales ni nombres reales en seeds ni ejemplos.
 
 ## Estado
+
+Los ejes del relleno dejan de depender del rango (11-09, corrección del ADR
+0012). Defecto reproducido contra Postgres: la tasa de asistencia de la empresa A
+por departamento, por día, entre el 01 y el 31 de enero de 2025 con
+`fillMissing: true` devolvía **`rows: []` y `warnings: []`**. La CTE `ejes` hacía
+`SELECT DISTINCT … FROM <entidad de hechos + joins>` y esa CTE **ya lleva el
+`dateRange`**, así que los ejes eran "los valores con datos en el período" y no
+"los que existen": un departamento sin asistencia en enero desaparecía del
+gráfico entero, y si ninguno tenía, la respuesta era cero filas en silencio. El
+código hacía lo que decía la especificación; la especificación estaba mal.
+**Ahora los ejes se arman desde las CTE de las entidades de las dimensiones, sin
+pasar por la de hechos** (`FROM departments`), con sus propios filtros y sin el
+recorte de fechas; una entidad intermedia entra sólo si aporta un filtro o hace
+de puente, porque `JOIN employees` de más borra los departamentos sin empleados.
+No se arma una segunda copia de la CTE de hechos sin el filtro de fecha: recorrer
+1 M de filas para saber qué departamentos hay es lo que el rango evita. **Una
+dimensión no temporal de la propia entidad de hechos** (`attendance.present` con
+relleno) **se rechaza** con `INVALID_QUERY`: su dominio no se conoce sin escanear
+la tabla entera, y degradar a serie dispersa sería devolver 200 con lo contrario
+de lo pedido. **Un relleno que vuelve vacío avisa** en `meta.warnings`. Aceptación
+verificada: 2 departamentos × 31 días = **62 filas**, tasa `null` y `count` 0;
+con el tope en 40 filas devuelve 40, advierte el corte y `total` dice 62. Cambió
+**un solo SQL de referencia**, `test/snapshots/relleno-de-serie.sql`, y un test
+cambió de expectativa a propósito ("el relleno no cruza empresas": la empresa B
+ahora devuelve sus dos departamentos, uno con la serie en cero). La raíz pasa de
+**283 a 290 tests en verde**; `demo-agente` sigue en **73**.
 
 La demo aprende lo último de la capa (11-09, ADR 0012 a 0015): el agente de
 `demo-agente` no conocía el relleno, el total, los rangos relativos ni la

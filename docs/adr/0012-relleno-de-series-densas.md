@@ -4,6 +4,11 @@ Extiende el ADR 0011 (rango sin granularidad) y el ADR 0007 (vocabulario Cube).
 No supersede nada: sin la bandera nueva, el SQL emitido es byte por byte el de
 antes.
 
+> **Corregido el 2026-09-11.** La CTE `ejes` de «Forma del SQL» y su bullet «Los
+> ejes salen de los mismos datos ya filtrados» **ya no son lo que se emite**: los
+> ejes dependían del `dateRange` y no debían. Lee la sección «Corrección» del
+> final antes de creerle a esas dos líneas; se dejan escritas a propósito.
+
 ## Contexto
 Una serie temporal agregada sólo trae los buckets que **tienen filas**. La tasa
 de asistencia de Ventas del 8 al 14 de agosto del seed devuelve tres días —el
@@ -172,3 +177,122 @@ ORDER BY … LIMIT $n
   registrada con uno de esos nombres chocaría con su CTE. Hoy no existe —y
   `agregada` ya corría el mismo riesgo desde el ADR 0004—, pero es una deuda
   conocida: el día que importe, los tres alias se prefijan.
+
+## Corrección · 2026-09-11 · Los ejes no dependen del rango
+
+Esta sección no reescribe el ADR: lo corrige a la vista. La decisión de arriba
+tenía un error de especificación, y el valor de dejarlo escrito es que se vea
+cuál fue y por qué cambió.
+
+### Qué decía
+
+En «Forma del SQL», la CTE de los ejes era
+
+```sql
+ejes AS (SELECT DISTINCT <dimensiones NO temporales> FROM <raíz + joins>)
+```
+
+y el ADR lo justificaba así: «**Los ejes salen de los mismos datos ya
+filtrados**, dentro de las CTE con su `company_id = $1`: se rellena el tiempo de
+los ejes que **existen**, no se inventan departamentos que la empresa no tiene ni
+se cruzan los de otra».
+
+### Por qué estaba mal
+
+La frase era verdadera a medias. Los ejes salían de la **entidad de hechos**, y
+su CTE lleva —además del `company_id`— la condición del `dateRange`. Así que los
+ejes no eran «los valores que existen» sino «los valores que **tienen datos en el
+período**». El período tiene que decidir el eje x, no qué series existen.
+
+Reproducido contra Postgres real, empresa A, `attendance.attendance_rate` por
+`departments.name`, granularidad `day`, entre el 01 y el 31 de enero de 2025 con
+`fillMissing: true`: **`rows: []` y `warnings: []`**. El seed sólo tiene
+asistencia de junio a agosto, así que `ejes` quedaba vacía y el producto cruzado
+no producía nada.
+
+Dos consecuencias, la segunda peor que la primera:
+
+- Un valor de dimensión sin datos en el período **desaparecía** en vez de salir
+  con su serie en cero. En un gráfico falta una línea entera, y quien lo mira no
+  tiene cómo notarlo: es exactamente el fallo que este ADR vino a corregir, una
+  vuelta más abajo.
+- Si **ninguno** tenía datos, la respuesta era cero filas **en silencio**, que es
+  lo contrario de lo que la bandera promete.
+
+El código hacía lo que decía la especificación. La especificación estaba mal.
+
+### Qué dice ahora
+
+**1 · Los ejes se arman desde las entidades de las dimensiones, sin pasar por la
+entidad de hechos.** Esas CTE ya llevan su `company_id` y sus propios filtros
+—un segmento de empleados activos, por ejemplo—, así que los ejes siguen
+respetando lo que deben respetar y dejan de respetar el recorte de fechas, que no
+era suyo. El ejemplo del snapshot pasa de
+
+```sql
+FROM attendance JOIN employees JOIN departments   -- antes
+FROM departments                                   -- ahora
+```
+
+Una entidad intermedia entra sólo si aporta: o trae condiciones propias que los
+ejes tienen que respetar, o hace de puente entre dos que sí entran. Pasar por una
+entidad que no aporta nada **no es gratis**: `FROM employees JOIN departments`
+borra los departamentos sin ningún empleado, que existen igual. Con el segmento
+`employees.active` en la consulta, en cambio, los ejes vuelven a pasar por
+`employees` y son los departamentos con empleados activos, porque eso es lo que
+la consulta pidió.
+
+**No se arma una segunda copia de la CTE de hechos sin el filtro de fecha.**
+Escanear un millón de filas de asistencia para averiguar qué departamentos hay es
+justo lo que el rango existe para evitar; la tabla de hechos se sigue leyendo una
+sola vez y siempre acotada.
+
+**2 · Una dimensión no temporal de la propia entidad de hechos rechaza el
+relleno.** `attendance.present` agrupando junto con `fillMissing` no tiene
+dominio conocible barato: saber qué valores tiene exige recorrer `attendance`
+entera **sin** el rango que la acota. Sale `INVALID_QUERY` (400) nombrando la
+dimensión, con una sugerencia que explica por qué y da las dos salidas: agrupar
+por una dimensión de otra entidad, o pedir la consulta sin relleno. El mismo
+rechazo cubre el caso simétrico —que la entidad necesaria para los ejes sea la
+que aplica el `dateRange` de la dimensión rellenada—, porque es el mismo problema
+por la puerta de atrás.
+
+Se eligió **rechazar** y no degradar con advertencia, y la razón es la coherencia
+del repo: el ADR 0013 ya rechaza la serie que no cabe («el error se reserva para
+lo que con certeza no puede responderse») y el ADR 0012 ya descartó la
+alternativa de «desactivar el relleno por encima de un número de filas» porque
+convierte una serie densa en una dispersa sin avisar. Degradar aquí sería eso
+mismo: devolver 200 con una serie que el consumidor pidió densa. Antes rechazar
+que responder mal o carísimo.
+
+Lo que **no** cambia: una consulta con `fillMissing` y **sin** dimensiones no
+temporales no tiene ejes, y sigue emitiendo `FROM serie LEFT JOIN agregada`.
+
+**3 · Un relleno que vuelve vacío lo dice.** Corregidos los ejes, la rejilla ya
+no puede vaciarse porque el período no tenga datos; sólo puede vaciarse si la
+empresa no tiene ningún valor de esa dimensión. Cuando pasa, `meta.warnings` trae
+una advertencia con la forma `{ member, warning }` de siempre. Una función que
+existe para que nada falte no puede fallar callada. Nace en el engine y no en el
+planificador, por lo mismo que el aviso de truncado del ADR 0013: antes de
+ejecutar no hay filas que contar.
+
+### Consecuencias de la corrección
+
+- **El SQL de referencia `test/snapshots/relleno-de-serie.sql` cambió**, y es el
+  único que cambió: su CTE `ejes` pasó de `FROM attendance JOIN employees JOIN
+  departments` a `FROM departments`. Los otros cinco siguen byte por byte
+  iguales, y una consulta sin `fillMissing` no cambió ni un carácter.
+- **Una consulta que antes devolvía menos filas ahora devuelve más**, y ése es el
+  arreglo: los ejes son todos los que existen. La aceptación es la consulta que
+  reprodujo el defecto: dos departamentos × 31 días = 62 filas, con la tasa en
+  nulo y el conteo en cero.
+- **El tope del ADR 0013 mide la rejilla nueva sin una regla propia.** El rechazo
+  por buckets no se movió —cuenta buckets, no ejes—, el aviso de truncado cuenta
+  filas de verdad y `total: true` cuenta el mismo cuerpo que produce las filas.
+  Con el tope en 40 filas, la consulta de la aceptación devuelve 40, advierte el
+  corte y `meta.total` dice 62.
+- **Un test cambió de expectativa a propósito**: «el relleno no cruza empresas»
+  esperaba que la empresa B devolviera sólo Ingeniería, porque Ventas no tenía
+  asistencia en el rango. Ahora devuelve sus dos departamentos, uno de ellos con
+  la serie entera en cero. Lo que el test prueba —que no se cruzan las empresas—
+  sigue en pie: son sus dos departamentos, no los cuatro del seed.

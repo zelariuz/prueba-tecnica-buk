@@ -93,7 +93,7 @@ Con los contenedores de A arriba, en la raíz del repo:
 npm install
 export DATABASE_URL=postgres://capa:capa@localhost:5433/capa_semantica
 export REDIS_URL=redis://localhost:6380
-npm test                         # suite completa, 217 tests
+npm test                         # suite completa, 290 tests
 npm run demo                     # las tres preguntas del caso, por consola
 ```
 
@@ -511,6 +511,29 @@ gráfico que la quiere y una exportación que no. El SQL está en
 `test/snapshots/relleno-de-serie.sql`. Requiere que el dialecto de la fuente
 declare la capacidad `serieDeFechas`: Postgres la declara, SQLite no, y pedirla
 sobre SQLite sale con `UNSUPPORTED_OPERATOR` (400) y una sugerencia.
+
+**Los ejes son los valores que existen, no los que tienen datos en el período**
+(corrección del ADR 0012, 11-09). El rango decide el eje x y nada más: los
+valores de las dimensiones no temporales salen de las CTE de **sus propias
+entidades** —`FROM departments`, no `FROM attendance JOIN employees JOIN
+departments`—, así que respetan la empresa y los filtros de la consulta, pero no
+el recorte de fechas. Un departamento sin asistencia en enero sale igual, con sus
+31 días en cero; antes desaparecía del gráfico entero, y si ninguno tenía datos
+la respuesta eran cero filas sin una palabra. Una entidad intermedia entra a los
+ejes sólo si aporta un filtro propio —con el segmento `employees.active`, los
+ejes pasan a ser los departamentos con empleados activos— o si hace de puente.
+
+Dos consecuencias del mismo criterio:
+
+- **Una dimensión no temporal de la propia entidad de hechos rechaza el
+  relleno.** `dimensions: ['attendance.present']` con `fillMissing` sale con
+  `INVALID_QUERY` (400): saber qué valores tiene exigiría recorrer `attendance`
+  entera sin el rango que la acota, que es el costo que el rango evita. La
+  sugerencia dice las dos salidas: agrupar por una dimensión de otra entidad, o
+  pedir la consulta sin relleno.
+- **Un relleno que vuelve vacío lo avisa** en `meta.warnings`. Sólo puede pasar
+  si la empresa no tiene ningún valor de esa dimensión, y una función que existe
+  para que nada falte no puede fallar callada.
 
 ### Cuando el resultado llega al tope: la advertencia de truncado
 
