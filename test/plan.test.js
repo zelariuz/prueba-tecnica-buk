@@ -9,6 +9,7 @@ import { departments } from '../src/definitions/departments.js';
 import { employees } from '../src/definitions/employees.js';
 import { reviews } from '../src/definitions/reviews.js';
 import { consultasTipo } from '../src/definitions/consultas-tipo.js';
+import { attendance } from '../src/definitions/attendance.js';
 import { registrarModulos } from '../src/definitions/index.js';
 
 // Valor improbable a propósito: si aparece en el SQL, es que se interpoló.
@@ -1217,4 +1218,486 @@ test('la entidad de un rango que sólo filtra entra al camino de joins como cual
 
   assert.equal(error.code, 'NO_JOIN_PATH');
   assert.equal(error.member, 'reviews');
+});
+
+// --- ADR 0012: relleno de series densas. Una dimensión temporal puede traer
+// `fillMissing: true` y entonces el resultado devuelve TODOS los buckets del
+// rango, incluso los que no tienen ninguna fila, para que un gráfico no salte
+// días. La bandera es del consumidor —la necesita quien dibuja, no la entidad—,
+// así que viaja en la consulta y nunca en la definición del módulo.
+
+const asistenciaPorDiaRellenada = {
+  measures: ['attendance.count', 'attendance.attendance_rate'],
+  dimensions: ['departments.name'],
+  timeDimensions: [
+    {
+      dimension: 'attendance.date',
+      granularity: 'day',
+      dateRange: ['2025-06-01', '2025-06-30'],
+      fillMissing: true,
+    },
+  ],
+  order: { 'departments.name': 'asc', 'attendance.date': 'asc' },
+};
+
+test('el SQL del relleno con dimensión y tiempo es el del snapshot del repo', () => {
+  const { sql, params } = engineConTodosLosModulos().plan(asistenciaPorDiaRellenada, TABLERO);
+
+  // Sexto snapshot legible del repo: las tres etapas del relleno una debajo de
+  // otra —la serie de buckets, los ejes no temporales y la agregada de
+  // siempre— y afuera el producto de las dos primeras con el LEFT JOIN.
+  const esperado = readFileSync(new URL('./snapshots/relleno-de-serie.sql', import.meta.url), 'utf8');
+  assert.equal(sql, esperado.trimEnd());
+
+  // Rellenar no agrega ni un parámetro: la serie se genera con los mismos $2 y
+  // $3 que ya filtran la CTE, así que la numeración es la de siempre.
+  assert.deepEqual(params, [EMPRESA, '2025-06-01', '2025-06-30', true, 5000]);
+  assert.match(sql, /DATE_TRUNC\('day', \$2::date\)/);
+  assert.ok(!sql.includes(String(EMPRESA)), 'la empresa viaja como parámetro');
+});
+
+test('el conteo se rellena con cero y la razón queda nula: lo decide el tipo de la medida', () => {
+  const { sql } = engineConTodosLosModulos().plan(asistenciaPorDiaRellenada, TABLERO);
+
+  // `count` sobre un bucket sin filas vale 0 de verdad: hubo cero eventos.
+  assert.match(sql, /COALESCE\(agregada\."attendance\.count", 0\) AS "attendance\.count"/);
+  // La razón NO se rellena: se calcula afuera sobre el resultado ya denso y su
+  // denominador en 0 la anula sola por el NULLIF que ya estaba.
+  assert.match(
+    sql,
+    /NULLIF\(COALESCE\(agregada\."attendance\.count", 0\), 0\) \* 100 AS "attendance\.attendance_rate"/,
+  );
+  assert.ok(
+    !/COALESCE\([^)]*attendance_rate/.test(sql),
+    'una razón rellenada con cero sería un número falso',
+  );
+});
+
+test('sin dimensiones no temporales el relleno no arma ejes ni CROSS JOIN', () => {
+  const { sql } = engineConTodosLosModulos().plan(
+    {
+      measures: ['attendance.count'],
+      timeDimensions: [
+        {
+          dimension: 'attendance.date',
+          granularity: 'month',
+          dateRange: ['2025-01-15', '2025-06-30'],
+          fillMissing: true,
+        },
+      ],
+      order: { 'attendance.date': 'asc' },
+    },
+    TABLERO,
+  );
+
+  // Sin eje que multiplicar, la serie sola es el esqueleto del resultado.
+  assert.ok(!sql.includes('ejes'), 'no hay dimensión no temporal que distinguir');
+  assert.ok(!sql.includes('CROSS JOIN'), 'sin ejes no hay producto que armar');
+  assert.match(sql, /FROM serie\nLEFT JOIN agregada ON agregada\."attendance\.date" = serie\.bucket\n/);
+  // El inicio del rango se trunca antes de generar: un rango que parte el 15 de
+  // enero con granularidad `month` tiene que dar 01/01, 01/02…, no 15/01, 15/02.
+  assert.match(sql, /DATE_TRUNC\('month', \$2::date\)/);
+});
+
+// --- Corrección del ADR 0012 (2026-09-11): los ejes son los valores que
+// EXISTEN, no los que tienen datos en el período. La versión original los sacaba
+// de la entidad de hechos, cuya CTE ya lleva el rango, y eso hacía desaparecer
+// del gráfico a cualquier valor sin datos en esas fechas.
+
+test('los ejes del relleno no pasan por la entidad de hechos ni por su rango', () => {
+  const { sql } = engineConTodosLosModulos().plan(asistenciaPorDiaRellenada, TABLERO);
+
+  const ejes = sql.match(/ejes AS \(\n([\s\S]*?)\n\)/)[1];
+  // El departamento existe aunque en junio nadie haya marcado asistencia: los
+  // ejes salen de `departments`, la entidad de la dimensión, y ni nombran
+  // `attendance` ni pueden ver su `date >= $2`.
+  assert.match(ejes, /FROM departments/);
+  assert.ok(!ejes.includes('attendance'), 'la entidad de hechos no entra a los ejes');
+  assert.ok(!ejes.includes('employees'), 'sin filtro propio, el puente no aporta nada y se salta');
+  // Y no se arma una segunda copia de la CTE de hechos sin el filtro de fecha:
+  // recorrer la asistencia entera para saber qué departamentos hay es justo lo
+  // que el rango existe para evitar.
+  assert.equal(
+    sql.match(/FROM attendance/g).length,
+    2,
+    'sólo la CTE de la entidad y la agregada: no hay una tercera copia sin el filtro de fecha',
+  );
+});
+
+test('un filtro sobre la entidad puente sí entra a los ejes; el rango de la serie no', () => {
+  const { sql } = engineConTodosLosModulos().plan(
+    { ...asistenciaPorDiaRellenada, segments: ['employees.active'] },
+    TABLERO,
+  );
+
+  const ejes = sql.match(/ejes AS \(\n([\s\S]*?)\n\)/)[1];
+  // `employees` deja de ser un puente vacío en cuanto la consulta le pone una
+  // condición: los ejes pasan a ser los departamentos CON empleados activos,
+  // porque eso es lo que la consulta pidió. Lo que siguen sin respetar es el
+  // recorte de fechas, que no era suyo.
+  assert.match(ejes, /FROM employees\n\s*JOIN departments ON employees\.department_id = departments\.id/);
+  assert.ok(!ejes.includes('attendance'));
+});
+
+test('una dimensión de la propia entidad de hechos no se puede rellenar', () => {
+  // Saber qué valores tiene `attendance.present` exige recorrer `attendance`
+  // entera SIN el rango que la acota, que es el costo que el rango evita. La
+  // capa prefiere rechazar antes que responder mal o carísimo.
+  const error = errorDe(() =>
+    engineConTodosLosModulos().plan(
+      { ...asistenciaPorDiaRellenada, dimensions: ['attendance.present'], order: {} },
+      TABLERO,
+    ),
+  );
+
+  assert.equal(error.code, 'INVALID_QUERY');
+  assert.equal(error.member, 'attendance.present');
+  assert.match(error.suggestion, /recorrer attendance entera/);
+  assert.match(error.suggestion, /otra entidad|sin fillMissing/);
+
+  // La misma consulta sin la bandera se responde como siempre: lo que no se
+  // puede es rellenarla.
+  const { sql } = engineConTodosLosModulos().plan(
+    {
+      ...asistenciaPorDiaRellenada,
+      dimensions: ['attendance.present'],
+      timeDimensions: [{ ...asistenciaPorDiaRellenada.timeDimensions[0], fillMissing: false }],
+      order: { 'attendance.date': 'asc' },
+    },
+    TABLERO,
+  );
+  assert.ok(!sql.includes('ejes AS ('));
+});
+
+test('dos ejes de ramas distintas se cruzan entre sí: ninguna relación los une', () => {
+  // El catálogo de hoy tiene una sola rama colgando de la asistencia
+  // (`employees → departments`), así que este caso se arma con un módulo de
+  // prueba: una segunda relación de la entidad de hechos hacia `shifts`. Sin la
+  // entidad de hechos en el medio, las dos ramas quedan sueltas, y la rejilla
+  // las cruza igual que cruza la serie con ellas.
+  const catalog = createCatalog();
+  catalog.register(departments);
+  catalog.register(employees);
+  catalog.register({
+    name: 'shifts',
+    table: 'shifts',
+    primaryKey: 'id',
+    companyColumn: 'company_id',
+    description: 'Turnos de trabajo, sólo para este test.',
+    dimensions: { label: { column: 'label', type: 'string', description: 'Nombre del turno.' } },
+  });
+  catalog.register({
+    ...attendance,
+    relationships: {
+      ...attendance.relationships,
+      shift: {
+        type: 'many_to_one',
+        target: 'shifts',
+        foreignKey: 'shift_id',
+        description: 'Turno del registro.',
+      },
+    },
+  });
+
+  const { sql } = createEngine({ catalog }).plan(
+    {
+      measures: ['attendance.count'],
+      dimensions: ['departments.name', 'shifts.label'],
+      timeDimensions: [
+        {
+          dimension: 'attendance.date',
+          granularity: 'day',
+          dateRange: ['2025-06-01', '2025-06-03'],
+          fillMissing: true,
+        },
+      ],
+    },
+    TABLERO,
+  );
+
+  const ejes = sql.match(/ejes AS \(\n([\s\S]*?)\n\)/)[1];
+  assert.match(ejes, /FROM departments\n\s*CROSS JOIN shifts/);
+  assert.ok(!ejes.includes('attendance'), 'la entidad de hechos sigue fuera de los ejes');
+});
+
+test('la bandera en false o ausente emite exactamente el mismo SQL de siempre', () => {
+  const engine = engineConTodosLosModulos();
+  const sinBandera = {
+    measures: ['attendance.count'],
+    dimensions: ['departments.name'],
+    timeDimensions: [
+      { dimension: 'attendance.date', granularity: 'day', dateRange: ['2025-06-01', '2025-06-30'] },
+    ],
+  };
+  const conBanderaEnFalse = {
+    ...sinBandera,
+    timeDimensions: [{ ...sinBandera.timeDimensions[0], fillMissing: false }],
+  };
+
+  const { sql, params } = engine.plan(sinBandera, TABLERO);
+  assert.deepEqual(engine.plan(conBanderaEnFalse, TABLERO).sql, sql);
+  assert.deepEqual(engine.plan(conBanderaEnFalse, TABLERO).params, params);
+  // Y ese SQL es el de siempre: una sola etapa, sin ninguna de las tres del
+  // relleno. Los snapshots de arriba son la otra mitad de esta comprobación.
+  for (const etapa of ['serie AS (', 'ejes AS (', 'agregada AS (']) {
+    assert.ok(!sql.includes(etapa), `sin fillMissing no existe la etapa ${etapa}`);
+  }
+});
+
+test('fillMissing sin granularidad, sin rango o con un valor no booleano se rechaza', () => {
+  const casos = [
+    [
+      { dimension: 'attendance.date', dateRange: ['2025-06-01', '2025-06-30'], fillMissing: true },
+      /granularity y dateRange/,
+    ],
+    [{ dimension: 'attendance.date', granularity: 'day', fillMissing: true }, /granularity y dateRange/],
+    [
+      {
+        dimension: 'attendance.date',
+        granularity: 'day',
+        dateRange: ['2025-06-01', '2025-06-30'],
+        fillMissing: 'true',
+      },
+      /true o false/,
+    ],
+  ];
+
+  for (const [temporal, sugerencia] of casos) {
+    const error = errorDe(() =>
+      engineConTodosLosModulos().plan(
+        { measures: ['attendance.count'], timeDimensions: [temporal] },
+        TABLERO,
+      ),
+    );
+
+    assert.equal(error.code, 'INVALID_QUERY', JSON.stringify(temporal));
+    assert.equal(error.member, 'timeDimensions[0].fillMissing', JSON.stringify(temporal));
+    assert.match(error.suggestion, sugerencia);
+  }
+});
+
+test('una fuente cuyo dialecto no declara serieDeFechas rechaza el relleno', () => {
+  // El mismo dialecto de Postgres con la capacidad apagada: lo que se prueba es
+  // que el planificador la mira antes de emitir, no qué motor hay abajo.
+  const sinSerie = {
+    ...dialectoPostgres,
+    name: 'sin-serie',
+    capabilities: { ...dialectoPostgres.capabilities, serieDeFechas: false },
+  };
+  const fuentes = { plana: { dialecto: sinSerie, pool: {} } };
+  const catalog = createCatalog({ fuentes });
+  for (const definicion of [reviews, employees, departments]) {
+    catalog.register({ ...definicion, source: 'plana' });
+  }
+
+  const error = errorDe(() =>
+    createEngine({ catalog, fuentes }).plan(
+      {
+        measures: ['reviews.count'],
+        timeDimensions: [
+          {
+            dimension: 'reviews.period',
+            granularity: 'month',
+            dateRange: ['2025-01-01', '2025-12-31'],
+            fillMissing: true,
+          },
+        ],
+      },
+      TABLERO,
+    ),
+  );
+
+  // Es un 400 y no un 500: el consumidor puede arreglarlo quitando la bandera.
+  assert.equal(error.code, 'UNSUPPORTED_OPERATOR');
+  assert.equal(error.member, 'reviews.period');
+  assert.match(error.suggestion, /fillMissing/);
+});
+
+// --- Rechazo anticipado cuando la serie sola no cabe en el presupuesto. Los
+// buckets salen del rango y de la granularidad, así que se cuentan sin tocar la
+// base: si ya pasan el techo de filas, ni con un solo eje cabría la serie y el
+// resultado saldría cortado a mitad de camino, pareciendo entero.
+//
+// La clase `apretada` no existe en `src/budgets.js` a propósito: entra por la
+// costura `createEngine({ presupuestos })`, que es como se prueba un presupuesto
+// extremo sin tocar la tabla real (igual que `estricta` más arriba).
+const CLASE_APRETADA = {
+  timeoutMs: 5_000,
+  maxFilas: 90,
+  rangoObligatorio: false,
+  cacheTtlMs: 60_000,
+};
+
+function engineApretado() {
+  const catalog = createCatalog();
+  registrarModulos(catalog);
+  return createEngine({ catalog, presupuestos: { apretada: CLASE_APRETADA } });
+}
+
+const APRETADO = { companyId: EMPRESA, consumer: 'apretada' };
+
+function porDiaEntre(desde, hasta) {
+  return {
+    measures: ['attendance.count'],
+    dimensions: ['departments.name'],
+    timeDimensions: [
+      { dimension: 'attendance.date', granularity: 'day', dateRange: [desde, hasta], fillMissing: true },
+    ],
+  };
+}
+
+test('un rango por día cuya serie no cabe en la clase se rechaza al planificar', () => {
+  // Del 1 de enero al 30 de junio de 2025 hay 181 días; la clase sólo puede
+  // devolver 90 filas. Ni un único departamento cabría.
+  const error = errorDe(() => engineApretado().plan(porDiaEntre('2025-01-01', '2025-06-30'), APRETADO));
+
+  assert.equal(error.code, 'INVALID_QUERY');
+  assert.equal(error.member, 'attendance.date');
+  assert.match(error.suggestion, /181 buckets/);
+  assert.match(error.suggestion, /90 filas/);
+  assert.match(error.suggestion, /Sube la granularidad/);
+  // Corta en la puerta que resuelve los miembros, antes de emitir una sola
+  // línea de SQL y mucho antes de abrir una conexión.
+  assert.equal(error.gate, 'resolverMiembros');
+});
+
+test('la misma serie cabe si sube la granularidad o si se acorta el rango', () => {
+  const engine = engineApretado();
+
+  // Seis meses por mes son 6 buckets, no 181.
+  const porMes = porDiaEntre('2025-01-01', '2025-06-30');
+  porMes.timeDimensions = [{ ...porMes.timeDimensions[0], granularity: 'month' }];
+  assert.match(engine.plan(porMes, APRETADO).sql, /serie AS \(/);
+
+  // Y 90 días por día son exactamente 90 buckets: el tope se alcanza, no se
+  // pasa, así que la consulta se planifica. Que el resultado pueda venir
+  // truncado por los ejes es lo que avisa `meta.warnings` al ejecutar.
+  assert.match(engine.plan(porDiaEntre('2025-01-01', '2025-03-31'), APRETADO).sql, /serie AS \(/);
+});
+
+test('el límite que manda es el efectivo: un limit más bajo que la clase también rechaza', () => {
+  // La clase permite 90 filas, pero esta consulta pidió 10: el techo real de
+  // este resultado son 10 filas y 31 buckets no caben en ellas.
+  const error = errorDe(() =>
+    engineApretado().plan({ ...porDiaEntre('2025-01-01', '2025-01-31'), limit: 10 }, APRETADO),
+  );
+
+  assert.equal(error.code, 'INVALID_QUERY');
+  assert.match(error.suggestion, /31 buckets/);
+  assert.match(error.suggestion, /10 filas/);
+});
+
+test('sin fillMissing el rango largo no se rechaza: la serie dispersa no llena buckets', () => {
+  const engine = engineApretado();
+  const dispersa = porDiaEntre('2025-01-01', '2025-06-30');
+  dispersa.timeDimensions = [{ ...dispersa.timeDimensions[0], fillMissing: false }];
+
+  // Sin relleno, cuántas filas devuelve el rango lo deciden los datos y no el
+  // calendario: rechazarla por el tamaño del rango sería inventar un motivo.
+  assert.match(engine.plan(dispersa, APRETADO).sql, /GROUP BY/);
+});
+
+test('las cinco granularidades cuentan sus buckets como los genera la serie', () => {
+  const engine = engineApretado();
+  // Cada caso: granularidad, rango y cuántos buckets tiene de verdad —el mismo
+  // número que devuelve `generate_series` sobre ese rango, verificado contra
+  // Postgres—. El rechazo los nombra, así que el mensaje es la prueba.
+  const casos = [
+    ['day', '2025-01-01', '2025-12-31', 365],
+    ['week', '2024-01-01', '2025-12-31', 105],
+    ['month', '2018-01-01', '2025-12-31', 96],
+    ['quarter', '2000-01-01', '2025-12-31', 104],
+    ['year', '1900-01-01', '2025-12-31', 126],
+  ];
+
+  for (const [granularity, desde, hasta, buckets] of casos) {
+    const consulta = porDiaEntre(desde, hasta);
+    consulta.timeDimensions = [{ ...consulta.timeDimensions[0], granularity }];
+    const error = errorDe(() => engine.plan(consulta, APRETADO));
+
+    assert.equal(error.code, 'INVALID_QUERY', granularity);
+    assert.match(error.suggestion, new RegExp(`tiene ${buckets} buckets`), granularity);
+  }
+});
+
+test('un extremo del rango que no es una fecha ISO no se rechaza por el conteo', () => {
+  // El guardarraíl falla abierto: si no sabe contar los buckets, deja que la
+  // base opine del literal en vez de inventarse un rechazo.
+  const raro = porDiaEntre('hace un año', '2025-06-30');
+
+  assert.match(engineApretado().plan(raro, APRETADO).sql, /serie AS \(/);
+});
+
+// --- `total: true`: la segunda sentencia que cuenta las filas del resultado
+// ignorando límite y desplazamiento. Estos tests entran por `engine.plan`, que
+// no toca la base: es justamente lo que se quiere comprobar del dry-run.
+const conTotal = { ...conteoPorEstado, total: true };
+
+test('el total se arma sobre el cuerpo ya escrito, sin ORDER BY y sin LIMIT', () => {
+  const { params, total } = engineDePrueba().plan({ ...conTotal, order: { 'reviews.count': 'desc' } }, CTX);
+
+  // El mismo WITH y el mismo cuerpo de la consulta, envueltos en un COUNT(*).
+  assert.match(total.sql, /^WITH reviews AS \(/);
+  assert.match(total.sql, /SELECT COUNT\(\*\) AS total FROM \(\n/);
+  assert.match(total.sql, /\n\) AS t$/);
+  assert.ok(!total.sql.includes('ORDER BY'), 'ordenar filas que sólo se cuentan no sirve de nada');
+  assert.ok(!total.sql.includes('LIMIT'), 'el total es el resultado completo: por eso sirve para paginar');
+  assert.ok(total.sql.includes('GROUP BY reviews.status'), 'cuenta los mismos grupos que devuelve la consulta');
+
+  // Sus parámetros son los del cuerpo, sin el del LIMIT: la numeración de los
+  // $n no se mueve, porque el total se arma antes de pedir ese parámetro.
+  assert.deepEqual(params, [EMPRESA, 10000]);
+  assert.deepEqual(total.params, [EMPRESA]);
+});
+
+test('el dry-run no ejecuta el total: devuelve la sentencia y el plan la nombra', () => {
+  // `engineDePrueba` no recibe pool: cualquier ejecución reventaría aquí. Que el
+  // dry-run responda es la prueba de que contar filas no se hizo.
+  const { plan, total } = engineDePrueba().plan(conTotal, CTX);
+
+  assert.equal(plan.total, true, 'el plan dice que se entendió el total…');
+  assert.ok(total.sql.includes('COUNT(*)'), '…y entrega la sentencia para poder leerla antes de correrla');
+});
+
+test('sin la propiedad no hay segunda sentencia y el plan lo dice', () => {
+  const { plan, total } = engineDePrueba().plan(conteoPorEstado, CTX);
+
+  assert.equal(total, undefined);
+  assert.equal(plan.total, false);
+});
+
+test('total que no es booleano se rechaza con INVALID_QUERY', () => {
+  for (const valor of ['true', 1, null, {}]) {
+    const error = errorDe(() => engineDePrueba().plan({ ...conteoPorEstado, total: valor }, CTX));
+
+    assert.equal(error.code, 'INVALID_QUERY', JSON.stringify(valor));
+    assert.equal(error.member, 'total');
+    assert.match(error.suggestion, /true o false/);
+  }
+});
+
+test('con relleno el total cuenta la rejilla, porque cuenta el mismo cuerpo', () => {
+  const { total } = engineConTodosLosModulos().plan({ ...asistenciaPorDiaRellenada, total: true }, TABLERO);
+
+  // Las tres CTE del relleno y el producto de la serie por los ejes están
+  // adentro del COUNT(*): no hay un camino aparte que tenga que saber contar
+  // buckets, y por eso el número sale bien sin una sola regla propia.
+  assert.match(total.sql, /serie AS \(/);
+  assert.match(total.sql, /ejes AS \(/);
+  assert.match(total.sql, /FROM serie\n {2}CROSS JOIN ejes/, 'el cuerpo entero, indentado dentro del COUNT');
+  assert.ok(!total.sql.includes('LIMIT'));
+});
+
+test('pedir el total no cambia ni un byte del SQL que devuelve las filas', () => {
+  const engine = engineConTodosLosModulos();
+
+  // El caso del snapshot del relleno, con y sin la propiedad: la consulta de
+  // filas tiene que salir idéntica, porque el total es una sentencia aparte y
+  // no un cambio en la primera. Es lo que garantiza que los seis archivos de
+  // `test/snapshots/` sigan describiendo lo que la capa emite.
+  const sinTotal = engine.plan(asistenciaPorDiaRellenada, TABLERO);
+  const conElTotal = engine.plan({ ...asistenciaPorDiaRellenada, total: true }, TABLERO);
+
+  assert.equal(conElTotal.sql, sinTotal.sql);
+  assert.deepEqual(conElTotal.params, sinTotal.params);
 });

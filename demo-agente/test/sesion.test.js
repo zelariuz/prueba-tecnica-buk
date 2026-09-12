@@ -5,10 +5,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { asegurarSesion, huellaDelCatalogo, promptDeCreacion } from '../src/sesion.js';
+import {
+  asegurarSesion,
+  huellaDelCatalogo,
+  huellaDelPrompt,
+  promptDeCreacion,
+} from '../src/sesion.js';
 
 const catalogo = { version: 'v1', granularities: ['month'], entities: [], queries: [] };
 const huella = huellaDelCatalogo(catalogo);
+const huellaPrompt = huellaDelPrompt(catalogo);
 
 // Doble de `claude`: registra los argumentos y el prompt que le llegó por
 // stdin, y contesta como el CLI cuando la creación sale bien.
@@ -46,9 +52,15 @@ test('sin estado previo crea la sesión, la guarda y avisa que la creó', async 
   assert.equal(claude.llamadas.length, 1);
 });
 
-test('con un estado de la misma huella del catálogo conserva la sesión y no llama a claude', async () => {
+test('con un estado de la misma huella del catálogo y del mismo prompt conserva la sesión y no llama a claude', async () => {
   const claude = claudeFalso();
-  const estado = estadoFalso({ uuid: 'guardado-1', version: 'v1', huella, creadaEn: '2026-09-09' });
+  const estado = estadoFalso({
+    uuid: 'guardado-1',
+    version: 'v1',
+    huella,
+    huellaDelPrompt: huellaPrompt,
+    creadaEn: '2026-09-09',
+  });
 
   const sesion = await asegurarSesion({ claude, catalogo, estado });
 
@@ -58,13 +70,64 @@ test('con un estado de la misma huella del catálogo conserva la sesión y no ll
     motivo: 'la sesión guardada sigue vigente',
     version: 'v1',
     huella,
+    huellaDelPrompt: huellaPrompt,
   });
   assert.equal(claude.llamadas.length, 0);
 });
 
+// El prompt es lo único que el agente sabe, y sus reglas —el relleno, el total,
+// los rangos relativos, la comparación— viven en su TEXTO, no en el catálogo.
+// Editar ese texto sin que la capa publique nada nuevo dejaba viva la sesión
+// guardada, y el agente nunca veía la regla nueva.
+test('si sólo cambió el texto del prompt, la sesión se recrea aunque el catálogo sea el mismo', async () => {
+  const claude = claudeFalso();
+  const estado = estadoFalso({
+    uuid: 'guardado-1',
+    version: 'v1',
+    huella,
+    huellaDelPrompt: 'el-prompt-de-ayer',
+    creadaEn: '2026-09-09',
+  });
+
+  const sesion = await asegurarSesion({ claude, catalogo, estado, nuevoUuid: () => 'uuid-4' });
+
+  assert.equal(sesion.id, 'uuid-4');
+  assert.equal(sesion.creada, true);
+  assert.equal(sesion.motivo, 'las reglas del prompt cambiaron');
+  assert.equal(estado.guardado.huella, huella);
+  assert.equal(estado.guardado.huellaDelPrompt, huellaPrompt);
+  // Y lo que se le mandó a claude es el prompt nuevo, entero.
+  assert.equal(claude.llamadas[0].entrada, promptDeCreacion(catalogo));
+});
+
+// Una sesión guardada por la demo de antes de esta huella no la tiene. No hay
+// forma de saber con qué texto se creó, así que se recrea: es más barato que
+// hablarle a un agente que quizá no conoce las reglas nuevas.
+test('una sesión guardada sin huella del prompt se recrea', async () => {
+  const claude = claudeFalso();
+  const estado = estadoFalso({ uuid: 'guardado-1', version: 'v1', huella, creadaEn: '2026-09-09' });
+
+  const sesion = await asegurarSesion({ claude, catalogo, estado, nuevoUuid: () => 'uuid-5' });
+
+  assert.equal(sesion.id, 'uuid-5');
+  assert.equal(sesion.motivo, 'las reglas del prompt cambiaron');
+  assert.equal(estado.guardado.huellaDelPrompt, huellaPrompt);
+});
+
+test('la huella del prompt es del texto entero: dos catálogos distintos dan dos prompts distintos', () => {
+  assert.notEqual(huellaDelPrompt(catalogo), huellaDelPrompt({ ...catalogo, entities: [{}] }));
+  assert.equal(huellaDelPrompt(catalogo), huellaPrompt);
+});
+
 test('si el catálogo cambió recrea la sesión con un uuid nuevo y lo dice', async () => {
   const claude = claudeFalso();
-  const estado = estadoFalso({ uuid: 'guardado-1', version: 'v0', huella: 'otra', creadaEn: '2026-09-09' });
+  const estado = estadoFalso({
+    uuid: 'guardado-1',
+    version: 'v0',
+    huella: 'otra',
+    huellaDelPrompt: 'otro-prompt',
+    creadaEn: '2026-09-09',
+  });
 
   const sesion = await asegurarSesion({ claude, catalogo, estado, nuevoUuid: () => 'uuid-2' });
 
@@ -81,7 +144,13 @@ test('si el catálogo cambió recrea la sesión con un uuid nuevo y lo dice', as
 // que aprendió las viejas. Por eso la huella es del catálogo entero.
 test('misma versión pero otra consulta tipo: la huella cambia y la sesión se recrea', async () => {
   const claude = claudeFalso();
-  const estado = estadoFalso({ uuid: 'guardado-1', version: 'v1', huella, creadaEn: '2026-09-09' });
+  const estado = estadoFalso({
+    uuid: 'guardado-1',
+    version: 'v1',
+    huella,
+    huellaDelPrompt: huellaPrompt,
+    creadaEn: '2026-09-09',
+  });
   const conOtraConsulta = {
     ...catalogo,
     queries: [{ name: 'nueva', params: [], query: { measures: ['reviews.count'] } }],
@@ -138,6 +207,16 @@ test('el prompt de creación lleva el catálogo entero, con su versión, tal cua
 
   assert.ok(prompt.includes(JSON.stringify(catalogoReal, null, 2)));
   assert.ok(prompt.includes('219f834021759c19'));
+});
+
+// `noPuedo` es para lo que falta, no para adelantarse a la capa. El agente se
+// negaba a combinar relleno con comparación —que la capa sí permite— porque creía
+// saber la regla: hacía de validador, y se equivocó (12-09, madrugada).
+test('el prompt de creación acota noPuedo a lo que falta, no a anticipar rechazos', () => {
+  const prompt = promptDeCreacion(catalogoReal);
+
+  assert.match(prompt, /NO lo uses para\s+adelantarte a un rechazo de la capa/);
+  assert.match(prompt, /La capa es la autoridad sobre sus propias reglas/);
 });
 
 test('el prompt de creación fija el contrato de salida: solo JSON, o noPuedo', () => {
@@ -214,4 +293,83 @@ test('el prompt de creación manda copiar el query de la consulta tipo que coinc
   assert.match(prompt, /:nombre/);
   // Y el ejemplo viaja entero en el catálogo, con su marcador sin sustituir.
   assert.ok(prompt.includes('":dateRange"'));
+});
+
+// Desde el ADR 0012 una timeDimension puede pedir la serie densa. El catálogo
+// no publica la bandera, así que sin esta regla el agente escribe la serie
+// dispersa de siempre y el gráfico salta los días sin registros. La contracara
+// importa igual o más: el riesgo de enseñarle la bandera es que la ponga en
+// todo, y una fila por departamento no tiene buckets que rellenar.
+test('el prompt de creación dice cuándo va fillMissing y cuándo NO', () => {
+  const prompt = promptDeCreacion(catalogoReal);
+
+  assert.match(prompt, /"fillMissing": true/);
+  // El rango puede venir como "dateRange" o como "compareDateRange": el prompt
+  // decía sólo el primero y el agente dedujo que el relleno y la comparación
+  // eran incompatibles, cuando la capa las combina sin problema (11-09, noche).
+  assert.match(prompt, /Exige "granularity" Y un rango/);
+  assert.match(prompt, /sirve tanto "dateRange"\s+como "compareDateRange"/);
+  assert.match(prompt, /NO lo pongas\s+cuando la consulta no agrupe por tiempo/);
+  assert.match(prompt, /buckets × ejes/);
+  // Y la restricción que el planificador impone desde la corrección del ADR
+  // 0012: los ejes salen de otra entidad, nunca de la de los hechos.
+  assert.match(prompt, /tienen que ser de OTRA entidad/);
+});
+
+// Desde el ADR 0013 `total: true` devuelve en `meta` las filas del resultado
+// ignorando el límite. Es la propiedad que más fácil se malentiende: no es el
+// gran total de una medida, y el prompt lo dice con todas las letras.
+test('el prompt de creación dice que total es el número de filas, no el total de una medida', () => {
+  const prompt = promptDeCreacion(catalogoReal);
+
+  assert.match(prompt, /"total": true/);
+  assert.match(prompt, /ignorando el límite/);
+  assert.match(prompt, /NO es el gran total de ninguna medida/);
+});
+
+// Desde el ADR 0014 el dateRange acepta una frase de un vocabulario CERRADO de
+// quince formas. Cerrado quiere decir que las quince tienen que estar acá: una
+// que falte es una que el agente no puede escribir, y una inventada ("previous
+// month", "últimos seis meses") es un INVALID_QUERY seguro.
+test('el prompt de creación trae las quince formas del vocabulario de rangos relativos', () => {
+  const prompt = promptDeCreacion(catalogoReal);
+
+  for (const frase of [
+    'today',
+    'yesterday',
+    'this week',
+    'this month',
+    'this quarter',
+    'this year',
+    'last week',
+    'last month',
+    'last quarter',
+    'last year',
+    'last N days',
+    'last N weeks',
+    'last N months',
+    'last N quarters',
+    'last N years',
+  ]) {
+    assert.ok(prompt.includes(`"${frase}"`), `falta la forma "${frase}" en el prompt`);
+  }
+  // Y las dos reglas que deciden qué ventana sale: el plural siempre, y que
+  // ninguna frase "last …" incluye hoy.
+  assert.match(prompt, /SIEMPRE en plural/);
+  assert.match(prompt, /NO incluyen hoy/);
+  // La zona es de la consulta y sólo decide qué día es hoy.
+  assert.match(prompt, /"timezone" es una propiedad de la consulta/);
+});
+
+// Desde el ADR 0015 se compara con `compareDateRange` en lugar de `dateRange`,
+// y la respuesta cambia de forma. Las dos mitades tienen que estar: que existe,
+// y que no se usa cuando nadie pidió comparar.
+test('el prompt de creación dice que compareDateRange reemplaza a dateRange, su tope y cuándo NO usarlo', () => {
+  const prompt = promptDeCreacion(catalogoReal);
+
+  assert.match(prompt, /"compareDateRange" EN LUGAR DE/);
+  assert.match(prompt, /CUATRO rangos/);
+  assert.match(prompt, /\{"results": \[\.\.\.\]\}/);
+  assert.match(prompt, /Úsalo SÓLO si la pregunta\s+compara dos o más períodos/);
+  assert.match(prompt, /una serie por mes NO es una comparación/);
 });

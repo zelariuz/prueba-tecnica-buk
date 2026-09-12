@@ -10,6 +10,7 @@
 // el SQL.
 import { presupuestoDe } from './budgets.js';
 import { SemanticError } from './errors.js';
+import { esRangoRelativo, resolverRangoRelativo, zonaValida } from './rangos-relativos.js';
 import { GRANULARIDADES, OPERADORES_EN_SQL, operadoresDe } from './vocabulary.js';
 
 const PARAMETRO_EMPRESA = '$1';
@@ -41,6 +42,27 @@ const LISTAS_QUE_PIDEN = ['measures', 'dimensions', 'timeDimensions'];
 const DIRECCIONES = new Set(['asc', 'desc']);
 
 const GRANULARIDADES_VALIDAS = new Set(GRANULARIDADES);
+
+// Qué se rellena con cero y qué queda nulo cuando un bucket no tiene filas lo
+// decide el TIPO de la medida, que el catálogo ya conoce, y nunca la consulta.
+// Un bucket sin filas tuvo cero eventos: un `count`, un `count_distinct` y un
+// `sum` valen 0 de verdad ahí. Un `avg` sobre cero filas no vale 0: no existe.
+// Rellenar un promedio con cero inventa un número y hunde la línea del gráfico
+// justo donde no hubo datos, que es exactamente el error que esta capa evita
+// (ADR 0012). Las razones tampoco se rellenan: se calculan afuera sobre el
+// resultado ya denso, y su denominador en 0 las anula solo por `NULLIF`.
+const AGREGADOS_QUE_VALEN_CERO_SIN_FILAS = new Set(['count', 'count_distinct', 'sum']);
+
+// Nombres de las dos etapas que sólo existen cuando hay relleno: la serie de
+// buckets del rango y los valores distintos de las dimensiones no temporales.
+const ALIAS_SERIE = 'serie';
+const ALIAS_EJES = 'ejes';
+
+// Para contar los buckets de un rango sin tocar la base: un día en milisegundos
+// y la forma exacta que tiene que tener un extremo del `dateRange` para que se
+// pueda contar. Ver `bucketsDelRango`.
+const DIA_EN_MS = 86_400_000;
+const FECHA_ISO = /^\d{4}-\d{2}-\d{2}$/;
 
 // Desde el ADR 0011 una dimensión temporal puede venir sin `granularity`: con
 // `dateRange` sola, la fecha únicamente filtra. La que agrupa es la que trae
@@ -107,12 +129,44 @@ function validarForma(query) {
     );
   });
 
+  // `fillMissing` es una necesidad del consumidor —un gráfico que no debe saltar
+  // días— y no una propiedad de la entidad, así que viaja en la dimensión
+  // temporal de la consulta y no en la definición del módulo (ADR 0012). Se
+  // valida en un recorrido aparte del de arriba, porque aquél corta antes con
+  // `return` en los casos que a éste sí le importan.
+  (query.timeDimensions ?? []).forEach((temporal, indice) => {
+    if (temporal?.fillMissing === undefined) return;
+    if (typeof temporal.fillMissing !== 'boolean') {
+      throw formaInvalida(
+        `timeDimensions[${indice}].fillMissing`,
+        `fillMissing es true o false; recibí ${JSON.stringify(temporal.fillMissing)}.`,
+      );
+    }
+    if (temporal.fillMissing === false) return;
+    // Sin granularidad no hay bucket que repetir y sin rango no hay desde dónde
+    // ni hasta dónde: en cualquiera de los dos casos no existe la serie que
+    // rellenar. Se rechaza en vez de ignorar la bandera en silencio, que dejaría
+    // al consumidor creyendo que su gráfico ya viene denso.
+    if (GRANULARIDADES_VALIDAS.has(temporal.granularity) && temporal.dateRange !== undefined) return;
+    throw formaInvalida(
+      `timeDimensions[${indice}].fillMissing`,
+      `fillMissing necesita granularity y dateRange en la misma dimensión temporal: sin los dos no hay serie de buckets que generar. Declara granularity con una de ${GRANULARIDADES.join(', ')} y dateRange con el rango cerrado a rellenar.`,
+    );
+  });
+
   for (const [miembro, direccion] of Object.entries(query.order ?? {})) {
     if (DIRECCIONES.has(direccion)) continue;
     throw formaInvalida(
       `order.${miembro}`,
       `La dirección de orden se escribe exactamente asc o desc, en minúsculas; recibí ${JSON.stringify(direccion)}.`,
     );
+  }
+
+  // `total` es la propiedad de Cube que pide el número de filas del resultado
+  // **ignorando límite y desplazamiento**, para poder paginar. No es el gran
+  // total de ninguna medida: es un conteo de filas.
+  if (query.total !== undefined && typeof query.total !== 'boolean') {
+    throw formaInvalida('total', `total es true o false; recibí ${JSON.stringify(query.total)}.`);
   }
 
   if (query.limit !== undefined && !(Number.isInteger(query.limit) && query.limit >= 1)) {
@@ -127,22 +181,40 @@ function validarForma(query) {
 // planificador sólo usa el dialecto, y lo toma de la fuente de la entidad de
 // hechos: qué motor traduce esta consulta lo decide el dato que se consulta, no
 // una constante del planificador.
-export function crearPlanificador({ catalog, fuentes, presupuestos }) {
+// `reloj` es el mismo reloj inyectable del engine (el que fecha el `asOf` y le
+// mide la edad a una entrada de caché). Entra aquí porque un `dateRange`
+// relativo —"los últimos seis meses"— necesita saber qué día es hoy, y sin esta
+// costura ningún test podría fijar un "hoy" ni el plan sería reproducible.
+export function crearPlanificador({ catalog, fuentes, presupuestos, reloj = Date.now }) {
   const puertas = [
+    resolverRangosRelativos,
     validar,
     resolverMiembros,
     aplicarFiltros,
     resolverCaminoDeJoins,
+    resolverEjesDelRelleno,
     resolverAgregacion,
     emitirSql,
     describirPlan,
   ];
 
-  return function planificar(query, ctx) {
-    let paso = { catalog, fuentes, presupuestos, query, ctx };
+  // `ahora` es opcional y sólo lo pasa quien necesita que VARIAS planificaciones
+  // caigan en el mismo "hoy": la comparación de períodos planifica una consulta
+  // por rango, y si el día cambiara entre una y otra, `this month` y `last
+  // month` podrían resolver al mismo mes (ADR 0015). Sin él, cada consulta lee
+  // el reloj una vez, como siempre.
+  return function planificar(query, ctx, { ahora } = {}) {
+    let paso = { catalog, fuentes, presupuestos, reloj, ahora, query, ctx };
     for (const puerta of puertas) paso = anotandoLaPuerta(puerta, paso);
-    const { sql, params, medidas, presupuesto, advertencias, logico, fuente } = paso;
-    return { sql, params, medidas, presupuesto, advertencias, logico, fuente };
+    const { sql, params, medidas, presupuesto, advertencias, logico, fuente, filas, total, relleno } = paso;
+    // `filas` —el LIMIT efectivo que se emitió— sale del planificador porque el
+    // engine no puede recalcularlo sin repetir la regla: quien lo decide es
+    // quien lo escribió en el SQL. Lo necesita para saber si la respuesta llegó
+    // al tope y puede venir cortada.
+    // `total` es la segunda sentencia, o nada si la consulta no la pidió.
+    // `relleno` viaja hasta el engine porque un relleno que vuelve vacío hay que
+    // decirlo, y eso sólo se sabe contando filas: ver `avisoDeRellenoVacio`.
+    return { sql, params, medidas, presupuesto, advertencias, logico, fuente, filas, total, relleno };
   };
 }
 
@@ -159,6 +231,59 @@ function anotandoLaPuerta(puerta, paso) {
     }
     throw error;
   }
+}
+
+// Puerta 0 · Rangos relativos: la frase se cambia por el par de fechas que
+// significa hoy, y de aquí en adelante nadie vuelve a verla (ADR 0014).
+//
+// Va **primera**, antes que cualquier otra puerta, y ésa es la decisión: las
+// fechas resueltas entran al SQL como parámetros (puerta 2), y el `queryId` que
+// identifica la consulta —y con él la llave de caché— nace del SQL y de sus
+// parámetros. Resolver aquí es lo que hace que "los últimos siete días" de hoy
+// y los de mañana sean dos consultas distintas con dos entradas distintas. Si la
+// identidad naciera de la frase, la caché serviría siempre la primera ventana y
+// el gráfico se quedaría congelado sin que nadie se entere.
+//
+// Lo que esta puerta NO hace es opinar sobre la forma: una consulta que no es un
+// objeto, o cuyas `timeDimensions` no son una lista, pasa de largo y la rechaza
+// `validar` con su mensaje de siempre.
+function resolverRangosRelativos(paso) {
+  const { query, reloj } = paso;
+  if (query === null || typeof query !== 'object' || Array.isArray(query)) return paso;
+
+  // La zona se valida aunque no haya ninguna frase que resolver: aceptar en
+  // silencio una zona que el runtime no conoce sería dejar pasar un error que
+  // reaparecería recién el día que alguien agregue un rango relativo.
+  const zona = zonaValida(query.timezone);
+  const frases = new Map();
+  const temporales = query.timeDimensions;
+  if (!Array.isArray(temporales)) return { ...paso, zona, frases };
+
+  // Un solo tic del reloj para toda la consulta: dos dimensiones temporales con
+  // frases tienen que caer en el mismo "hoy" aunque el reloj avance entre una y
+  // otra —si no, un cambio de día a medio resolver daría dos ventanas que no
+  // corresponden a ningún instante.
+  // Y un solo tic para toda una comparación de períodos, si quien llamó lo
+  // impuso: sus rangos son consultas distintas que tienen que hablar del mismo
+  // día (ADR 0015).
+  const ahora = paso.ahora ?? reloj();
+  const resueltas = temporales.map((temporal, indice) => {
+    if (!esRangoRelativo(temporal?.dateRange)) return temporal;
+    frases.set(indice, temporal.dateRange);
+    return {
+      ...temporal,
+      dateRange: resolverRangoRelativo(temporal.dateRange, {
+        ahora,
+        zona,
+        member: `timeDimensions[${indice}].dateRange`,
+      }),
+    };
+  });
+
+  // Sin frases, la consulta sigue siendo exactamente el mismo objeto: nada que
+  // copiar y nada que se pueda mover sin querer.
+  const resuelta = frases.size === 0 ? query : { ...query, timeDimensions: resueltas };
+  return { ...paso, zona, frases, query: resuelta };
 }
 
 // Puerta 1 · Validar: lo que se puede rechazar sin mirar el catálogo. El
@@ -225,6 +350,11 @@ function resolverMiembros(paso) {
   // Sin granularidad (ADR 0011) queda sólo el rango: la fecha filtra dentro de
   // la CTE y no produce columna, así que no se suma a las dimensiones.
   const condiciones = new Map();
+  // La dimensión temporal que pidió relleno, si alguna lo pidió, con los
+  // marcadores de sus extremos: la serie se genera con LOS MISMOS parámetros que
+  // ya filtran la CTE, así que rellenar no agrega ni un `$n` más ni reordena
+  // ninguno (ADR 0012).
+  let relleno;
   for (const temporal of query.timeDimensions ?? []) {
     const { entidad, columna } = catalog.dimension(temporal.dimension);
     if (agrupaPorTiempo(temporal)) {
@@ -235,17 +365,138 @@ function resolverMiembros(paso) {
         expresion: dialect.dateTrunc(temporal.granularity, `${entidad}.${columna}`),
       });
     }
-    if (!temporal.dateRange) continue;
-    const [desde, hasta] = temporal.dateRange;
-    // Rango cerrado en ambos extremos, como el dateRange de Cube.
-    condiciones.set(entidad, [
-      ...(condiciones.get(entidad) ?? []),
-      `${columna} >= ${parametro(desde)}`,
-      `${columna} <= ${parametro(hasta)}`,
-    ]);
+    let desdeSql;
+    let hastaSql;
+    if (temporal.dateRange) {
+      const [desde, hasta] = temporal.dateRange;
+      desdeSql = parametro(desde);
+      hastaSql = parametro(hasta);
+      // Rango cerrado en ambos extremos, como el dateRange de Cube.
+      condiciones.set(entidad, [
+        ...(condiciones.get(entidad) ?? []),
+        `${columna} >= ${desdeSql}`,
+        `${columna} <= ${hastaSql}`,
+      ]);
+    }
+    if (temporal.fillMissing !== true) continue;
+    exigirSerieDeFechas(dialect, fuente, temporal.dimension);
+    exigirSerieQueQuepa(paso, temporal);
+    relleno = { miembro: temporal.dimension, entidad, granularidad: temporal.granularity, desdeSql, hastaSql };
   }
 
-  return { ...paso, raiz, fuente, dialect, medidas, derivadas, dimensiones, condiciones };
+  return { ...paso, raiz, fuente, dialect, medidas, derivadas, dimensiones, condiciones, relleno };
+}
+
+// Si la fuente no sabe generar la serie de buckets, no hay relleno que emitir.
+// El código es `UNSUPPORTED_OPERATOR`, el mismo que ya usa el vocabulario para
+// "esto es parte del contrato, pero esta fuente no lo sabe escribir": es un 400
+// porque el consumidor sí puede arreglarlo —quitando la bandera—, y no un 500
+// porque el servidor no está roto. No se inventa un código nuevo; el que hay
+// está mapeado en `src/http/codigos.js` y significa exactamente esto.
+//
+// La comprobación no vive en la puerta `validar` a propósito: esa puerta es la
+// que rechaza sin mirar el catálogo, y qué dialecto traduce la consulta recién
+// se sabe aquí, cuando la entidad de hechos ya nombró su fuente.
+function exigirSerieDeFechas(dialect, fuente, miembro) {
+  if (dialect.capabilities?.serieDeFechas === true) return;
+  throw new SemanticError({
+    code: 'UNSUPPORTED_OPERATOR',
+    member: miembro,
+    suggestion: `La fuente ${fuente} no sabe generar la serie de fechas que necesita fillMissing: quita fillMissing de la dimensión temporal y rellena los buckets vacíos en el consumidor.`,
+  });
+}
+
+// Con relleno el resultado tiene exactamente `buckets × ejes` filas, y los
+// buckets se pueden contar **sin tocar la base**: salen del rango y de la
+// granularidad, que ya están en la consulta. Si los buckets solos ya pasan el
+// techo de filas de la clase, entonces ni con un único valor de las demás
+// dimensiones cabría la serie: la respuesta saldría cortada a mitad de camino y,
+// densificada, se vería entera. Eso es peor que el hueco que el relleno vino a
+// tapar (ADR 0012), así que se rechaza **antes** de gastar la base en una
+// consulta que ya se sabe que no sirve.
+//
+// No se estiman los ejes: cuántos departamentos tiene la empresa sólo lo sabe la
+// base, y preguntárselo sería gastar una consulta para decidir si vale la pena
+// hacer la otra. El rechazo se queda con lo que se sabe con certeza y gratis; lo
+// que pasa por debajo de ese umbral lo cubre el aviso de truncado del engine,
+// que sí cuenta filas de verdad.
+//
+// El código es `INVALID_QUERY` (400), el que ya usa la puerta de forma: la
+// consulta es legítima como vocabulario, pero tal como está pedida no tiene
+// respuesta posible bajo el presupuesto de quien la pide, y quien la pide sí
+// puede arreglarla. Es el código que `docs/riesgos.md` dejó anotado para esto;
+// no se inventa uno nuevo.
+function exigirSerieQueQuepa(paso, temporal) {
+  const [desde, hasta] = temporal.dateRange;
+  const buckets = bucketsDelRango(temporal.granularity, desde, hasta);
+  const limite = limiteEfectivo(paso.query, paso.presupuesto);
+  // Una fecha que este contador no sabe leer no se convierte en un rechazo: el
+  // guardarraíl falla abierto y deja que la base opine, que es quien de verdad
+  // interpreta el literal. Rechazar por no saber contar sería inventar un error.
+  if (buckets === undefined || buckets <= limite) return;
+  throw new SemanticError({
+    code: 'INVALID_QUERY',
+    member: temporal.dimension,
+    suggestion: `La serie que pide fillMissing tiene ${buckets} buckets (granularity ${temporal.granularity} entre ${desde} y ${hasta}) y tu clase de consumidor sólo puede devolver ${limite} filas: ni con un solo valor de las demás dimensiones cabría, y el resultado saldría cortado a mitad de la serie sin que se note. Sube la granularidad (day → week → month → quarter → year), acorta el dateRange a lo más ${limite} buckets, o pide la serie por tramos.`,
+  });
+}
+
+// Cuántas filas devuelve la serie de un rango, contadas como las genera el
+// dialecto: desde el inicio **truncado** a la granularidad y avanzando un bucket
+// por vez hasta el último que no pasa el fin (ver `serieDeFechas`).
+//
+// Vive en el planificador y no en el dialecto porque contar cuántos lunes o
+// cuántos trimestres hay entre dos fechas es calendario, no sintaxis de motor:
+// da lo mismo en cualquier base. Lo que sí es del dialecto —cómo se **escribe**
+// esa serie— sigue en `serieDeFechas`. La semana se cuenta desde el lunes, que
+// es el `DATE_TRUNC('week', …)` de Postgres, hoy el único motor que declara la
+// capacidad; un motor que empezara la semana en domingo haría variar esta cuenta
+// en a lo más un bucket, y como el número sólo se usa para rechazar lo que ya
+// está muy por encima del techo, esa diferencia no cambia ninguna decisión.
+//
+// `undefined` significa "no sé contarlo": una fecha que no viene en YYYY-MM-DD.
+function bucketsDelRango(granularidad, desde, hasta) {
+  const inicio = diaUtc(desde);
+  const fin = diaUtc(hasta);
+  if (inicio === undefined || fin === undefined) return undefined;
+  const meses = (fin.getUTCFullYear() - inicio.getUTCFullYear()) * 12 + (fin.getUTCMonth() - inicio.getUTCMonth());
+  const pasos = {
+    day: () => Math.round((fin - inicio) / DIA_EN_MS),
+    week: () => Math.floor((fin - lunesDe(inicio)) / (7 * DIA_EN_MS)),
+    month: () => meses,
+    // El trimestre arranca en el mes truncado, así que el inicio aporta lo que
+    // le falte para llegar al comienzo de su propio trimestre.
+    quarter: () => Math.floor((meses + (inicio.getUTCMonth() % 3)) / 3),
+    year: () => fin.getUTCFullYear() - inicio.getUTCFullYear(),
+  }[granularidad];
+  if (!pasos) return undefined;
+  // Un rango al revés puede seguir dando un bucket, porque el inicio se trunca
+  // hacia atrás: del 31/12 al 01/01 del mismo año, `generate_series` arranca en
+  // el 01/01 y devuelve ese único año. Por eso el piso se pone en cero aquí y no
+  // comparando las dos fechas antes de contar.
+  return Math.max(0, pasos() + 1);
+}
+
+// El literal del rango, leído como día calendario en UTC y nunca en la zona del
+// proceso: la capa trata las columnas temporales como días ya resueltos
+// (`docs/riesgos.md`, fechas y zonas), y contar buckets no puede depender de en
+// qué máquina corre el servicio.
+function diaUtc(texto) {
+  if (typeof texto !== 'string' || !FECHA_ISO.test(texto)) return undefined;
+  const fecha = new Date(`${texto}T00:00:00Z`);
+  return Number.isNaN(fecha.getTime()) ? undefined : fecha;
+}
+
+function lunesDe(fecha) {
+  return new Date(fecha.getTime() - (((fecha.getUTCDay() + 6) % 7) * DIA_EN_MS));
+}
+
+// El techo real de filas de una consulta: lo que pidió, nunca por encima del
+// máximo de su clase de consumidor. Vive aparte porque lo usan dos puertas —la
+// que rechaza la serie que no cabe y la que escribe el `LIMIT`— y tienen que
+// estar hablando exactamente del mismo número.
+function limiteEfectivo(query, presupuesto) {
+  return Math.min(query.limit ?? presupuesto.maxFilas, presupuesto.maxFilas);
 }
 
 // De qué entidad sale el SQL. Con medidas es la entidad de la primera, y las
@@ -363,7 +614,146 @@ function exigirMismaFuente(catalog, fuente, raiz, entidad) {
   });
 }
 
-// Puerta 5 · Agregación y derivadas: qué se agrega, con qué fórmula se combina
+// Puerta 5 · Ejes del relleno: de dónde salen los valores de las dimensiones NO
+// temporales cuando la consulta pide `fillMissing` (corrección del ADR 0012 del
+// 2026-09-11).
+//
+// El período decide el **eje x**, no qué series existen. La versión original
+// armaba `ejes` con un `SELECT DISTINCT … FROM <entidad de hechos + joins>`, y
+// la CTE de la entidad de hechos ya lleva el rango: los ejes terminaban siendo
+// "los valores que tienen datos en el período" en vez de "los valores que
+// existen". Un departamento sin asistencia en enero desaparecía del gráfico
+// entero, y si ninguno tenía datos la respuesta salía con cero filas y sin una
+// palabra, que es lo contrario de lo que el relleno promete.
+//
+// Los ejes se arman ahora desde las CTE de las **entidades de las dimensiones**,
+// unidas entre sí por el camino de relaciones y **sin pasar por la entidad de
+// hechos**. Esas CTE ya traen su `company_id` y sus propios filtros, así que los
+// ejes siguen respetando lo que deben respetar —la empresa, un filtro por
+// empleados activos— y dejan de respetar el recorte de fechas, que no era suyo.
+//
+// No se arma una segunda versión de la CTE de hechos sin el filtro de fecha:
+// escanear un millón de filas de asistencia para averiguar qué departamentos hay
+// es exactamente lo que el rango existe para evitar.
+function resolverEjesDelRelleno(paso) {
+  const { relleno, dimensiones, raiz, aristas, condiciones, catalog } = paso;
+  if (!relleno) return paso;
+
+  // La dimensión temporal rellenada la pone la serie; las demás son los ejes.
+  const dimensionesDeEje = dimensiones.filter((d) => d.miembro !== relleno.miembro);
+  // Sin dimensiones no temporales no hay ejes que armar: la serie sola es el
+  // esqueleto y el cuerpo sigue siendo `FROM serie LEFT JOIN agregada`. Ese
+  // camino no cambió.
+  // Los miembros de los ejes viajan con el relleno hasta el engine: si la
+  // rejilla vuelve vacía, la advertencia tiene que poder nombrarlos.
+  const miembrosDeEje = dimensionesDeEje.map((d) => d.miembro);
+  if (dimensionesDeEje.length === 0) {
+    return {
+      ...paso,
+      relleno: { ...relleno, ejes: miembrosDeEje },
+      ejes: { dimensiones: [], aristas: [], entidades: [] },
+    };
+  }
+
+  for (const dimension of dimensionesDeEje) {
+    exigirEjeConociblePorSuCuenta(paso, dimension);
+  }
+
+  // El camino de joins es un árbol colgado de la entidad de hechos. Quitarla
+  // deja un bosque: cada entidad de eje sube por sus padres hasta justo antes de
+  // la raíz, y lo que queda son una o más ramas sueltas.
+  const padres = new Map(aristas.map((arista) => [arista.hacia, arista]));
+  const cadenaHastaLaRaiz = (entidad) => {
+    const cadena = [];
+    for (let actual = padres.get(entidad)?.desde; actual !== undefined && actual !== raiz; ) {
+      cadena.push(actual);
+      actual = padres.get(actual)?.desde;
+    }
+    return cadena;
+  };
+
+  // Qué entidades entran. Las de los ejes, siempre. Una entidad intermedia entra
+  // sólo si aporta algo: o trae condiciones propias —un filtro que los ejes
+  // tienen que respetar— o hace de puente entre dos que sí entran. Pasar por una
+  // entidad que no aporta nada no es gratis: `FROM employees JOIN departments`
+  // borra los departamentos sin ningún empleado, que existen igual. Ésa es la
+  // "forma mínima correcta": los valores que existen, filtrados sólo por lo que
+  // la consulta pidió.
+  const conservadas = new Set(dimensionesDeEje.map((d) => d.entidad));
+  for (const entidad of new Set(dimensionesDeEje.map((d) => d.entidad))) {
+    for (const intermedia of cadenaHastaLaRaiz(entidad)) {
+      if ((condiciones.get(intermedia) ?? []).length > 0) conservadas.add(intermedia);
+    }
+  }
+  // Puentes: entre una entidad conservada y su antepasado conservado más cercano
+  // no puede quedar un hueco, porque el JOIN se escribe con la clave foránea del
+  // padre y sin él no hay dónde colgarlo.
+  for (const entidad of [...conservadas]) {
+    const puente = [];
+    for (const antepasado of cadenaHastaLaRaiz(entidad)) {
+      if (conservadas.has(antepasado)) {
+        for (const medio of puente) conservadas.add(medio);
+        break;
+      }
+      puente.push(antepasado);
+    }
+  }
+
+  // Una entidad conservada que carga el rango de la dimensión rellenada volvería
+  // a atar los ejes al período por la puerta de atrás.
+  if (conservadas.has(relleno.entidad)) exigirEjeSinElRango(paso, dimensionesDeEje);
+
+  // El orden de `aristas` ya deja cada entidad después de la suya de origen, que
+  // es lo que el FROM necesita para que ningún JOIN nombre algo que todavía no
+  // apareció.
+  const entidades = aristas.map((arista) => arista.hacia).filter((entidad) => conservadas.has(entidad));
+
+  return {
+    ...paso,
+    relleno: { ...relleno, ejes: miembrosDeEje },
+    ejes: {
+      dimensiones: dimensionesDeEje,
+      entidades,
+      // De cada entidad conservada, la arista que la cuelga de su padre, si el
+      // padre también quedó. Si no, es la raíz de su propia rama.
+      aristas: entidades.map((entidad) => padres.get(entidad)).filter((arista) => conservadas.has(arista.desde)),
+    },
+  };
+}
+
+// Una dimensión no temporal de la propia entidad de hechos —`attendance.present`
+// agrupando junto con el relleno— no tiene dominio conocible barato: saber qué
+// valores existen exige escanear la tabla de hechos entera, sin el rango que la
+// acota, que es justo el costo que el rango evita. La capa prefiere rechazar
+// antes que responder mal o carísimo, así que se rechaza en vez de degradar en
+// silencio a una serie dispersa (ver la corrección del ADR 0012).
+//
+// `INVALID_QUERY` (400): la consulta es legítima como vocabulario —las dos
+// piezas existen y por separado se responden—, pero juntas no tienen respuesta
+// posible, y quien la pide sí puede arreglarla. Es el mismo código con el que el
+// ADR 0013 rechaza la serie que no cabe.
+function exigirEjeConociblePorSuCuenta(paso, dimension) {
+  if (dimension.entidad !== paso.raiz) return;
+  throw new SemanticError({
+    code: 'INVALID_QUERY',
+    member: dimension.miembro,
+    suggestion: `${dimension.miembro} es una dimensión de ${paso.raiz}, la misma entidad de la que salen los hechos: para rellenar la serie habría que saber qué valores tiene, y eso exige recorrer ${paso.raiz} entera sin el rango que la acota. Agrupa por una dimensión de otra entidad —a la que se llega por una relación— o pide la consulta sin fillMissing.`,
+  });
+}
+
+// El otro caso del mismo problema: la entidad que hace falta para armar los ejes
+// es la que lleva el rango de la dimensión rellenada, así que sus valores
+// volverían a ser "los que tienen datos en el período".
+function exigirEjeSinElRango(paso, dimensionesDeEje) {
+  const culpable = dimensionesDeEje.find((d) => d.entidad === paso.relleno.entidad) ?? dimensionesDeEje[0];
+  throw new SemanticError({
+    code: 'INVALID_QUERY',
+    member: culpable.miembro,
+    suggestion: `Los ejes de ${culpable.miembro} salen de ${paso.relleno.entidad}, que es la entidad donde ${paso.relleno.miembro} aplica su dateRange: rellenar así daría por ejes sólo los valores con datos en el período, que es lo que fillMissing viene a evitar. Agrupa por una dimensión de otra entidad o pide la consulta sin fillMissing.`,
+  });
+}
+
+// Puerta 6 · Agregación y derivadas: qué se agrega, con qué fórmula se combina
 // lo agregado y qué hay que advertirle al consumidor sobre lo que pidió. Una
 // consulta sin medidas la atraviesa sin producir nada: no hay base que agregar
 // ni derivada que calcular, y el SELECT queda con las dimensiones solas.
@@ -406,7 +796,7 @@ function resolverAgregacion(paso) {
       if (formulas.has(dependencia)) return `(${formulas.get(dependencia)})`;
       const base = catalog.measure(`${raiz}.${dependencia}`);
       bases.set(base.miembro, base);
-      return `"${base.miembro}"`;
+      return referenciaDeBase(paso, base);
     };
     const razon = `${paso.dialect.aNumerico(parte(numerator))} / NULLIF(${parte(denominator)}, 0)`;
     formulas.set(nombre, scale === undefined ? razon : `${razon} * ${scale}`);
@@ -449,7 +839,7 @@ function advertirRazonesAnuladas(paso, declaraciones, derivadas, declarados) {
   return advertencias;
 }
 
-// Puerta 6 · Emitir: las CTE por entidad, la consulta agregada, la etapa de las
+// Puerta 7 · Emitir: las CTE por entidad, la consulta agregada, la etapa de las
 // derivadas, el orden y el límite. Es el único lugar donde se escribe SQL.
 function emitirSql(paso) {
   const { query, presupuesto, parametro, dimensiones, medidas, derivadas, medidasBase, formulas, raiz, aristas } = paso;
@@ -477,33 +867,146 @@ function emitirSql(paso) {
   // derivadas, la agregación pasa a ser la etapa de adentro y la fórmula se
   // escribe afuera, sobre sus alias: así solo puede ver valores ya agregados y
   // las bases que el consumidor no pidió no llegan a las filas (ADR 0004).
-  const cuerpo = derivadas.length
-    ? [
-        `SELECT ${[
-          ...dimensiones.map((d) => `"${d.miembro}"`),
-          ...medidas.map((m) =>
-            m.definicion.type === 'ratio'
-              ? `${formulas.get(m.nombre)} AS "${m.miembro}"`
-              : `"${m.miembro}"`,
-          ),
-        ].join(', ')}`,
-        `FROM (\n${indentar(agregada.join('\n'))}\n) AS ${ALIAS_AGREGADA}`,
-      ]
-    : agregada;
+  //
+  // Con relleno la agregación también pasa a ser una etapa de adentro, pero con
+  // nombre propio y dos hermanas, porque afuera hay que unirla con la serie de
+  // buckets. Sin `fillMissing` no se toca nada de esto: el SQL emitido es el
+  // mismo de siempre, byte por byte.
+  const { ctesDelRelleno, cuerpo } = paso.relleno
+    ? etapasDelRelleno(paso, agregada)
+    : {
+        ctesDelRelleno: [],
+        cuerpo: derivadas.length
+          ? [
+              `SELECT ${[
+                ...dimensiones.map((d) => `"${d.miembro}"`),
+                ...medidas.map((m) =>
+                  m.definicion.type === 'ratio'
+                    ? `${formulas.get(m.nombre)} AS "${m.miembro}"`
+                    : `"${m.miembro}"`,
+                ),
+              ].join(', ')}`,
+              `FROM (\n${indentar(agregada.join('\n'))}\n) AS ${ALIAS_AGREGADA}`,
+            ]
+          : agregada,
+      };
 
   const orden = ordenDeSalida(query, dimensiones, medidas);
+  const con = `WITH ${[...cte, ...ctesDelRelleno].join(',\n')}`;
+
+  // El conteo total se arma **sobre el cuerpo ya escrito**, envuelto y sin
+  // `ORDER BY` ni `LIMIT`: `SELECT COUNT(*) FROM (<cuerpo>) AS t`. Es lo que lo
+  // hace correcto sin una sola regla propia —con relleno cuenta la rejilla
+  // `buckets × ejes`, con derivadas cuenta las filas de la etapa de afuera, y
+  // sin nada cuenta los grupos—, porque cuenta exactamente lo que la consulta
+  // devolvería si no tuviera techo. Un camino aparte que "supiera" contar
+  // grupos tendría que aprender de nuevo cada una de esas formas, y se
+  // equivocaría justo en la que se agregue después.
+  //
+  // Se arma ANTES de pedir el parámetro del `LIMIT`: así sus `$n` son los mismos
+  // del cuerpo, sin el último, y la numeración no se mueve.
+  const total =
+    query.total === true
+      ? { sql: [con, `SELECT COUNT(*) AS total FROM (\n${indentar(cuerpo.join('\n'))}\n) AS t`].join('\n'), params: [...paso.params] }
+      : undefined;
+
   // Ninguna consulta sale sin LIMIT: el pedido nunca supera el máximo de la
   // clase de consumidor, y si no pide, manda ese máximo.
-  const filas = Math.min(query.limit ?? presupuesto.maxFilas, presupuesto.maxFilas);
+  const filas = limiteEfectivo(query, presupuesto);
 
   const sql = [
-    `WITH ${cte.join(',\n')}`,
+    con,
     ...cuerpo,
     ...(orden.length ? [`ORDER BY ${orden.join(', ')}`] : []),
     `LIMIT ${parametro(filas)}`,
   ].join('\n');
 
-  return { ...paso, sql, filas };
+  return { ...paso, sql, filas, total };
+}
+
+// Relleno de serie densa (ADR 0012): las tres etapas que convierten el
+// resultado disperso de siempre en uno con TODOS los buckets del rango.
+//
+//   serie    los buckets del rango, uno por fila, en el mismo formato de texto
+//            que `dateTrunc`, para que el JOIN calce por igualdad.
+//   ejes     los valores distintos de las dimensiones NO temporales, tomados de
+//            las CTE de SUS PROPIAS entidades, sin pasar por la entidad de
+//            hechos: son los valores que existen en la empresa, no los que
+//            tienen datos en el período (corrección del ADR 0012; la forma la
+//            decide `resolverEjesDelRelleno`).
+//   agregada exactamente la etapa que emite el camino normal, sin un cambio.
+//
+// Afuera, el producto `serie × ejes` es la rejilla completa y el `LEFT JOIN`
+// trae lo que haya. Sin dimensiones no temporales no hay rejilla que armar: no
+// se emite `ejes` ni el `CROSS JOIN`, y la serie sola es el esqueleto.
+function etapasDelRelleno(paso, agregada) {
+  const { dialect, dimensiones, medidas, formulas, relleno } = paso;
+
+  const ejes = paso.ejes.dimensiones;
+
+  const ctesDelRelleno = [
+    `${ALIAS_SERIE} AS (\n${indentar(
+      dialect.serieDeFechas(relleno.granularidad, relleno.desdeSql, relleno.hastaSql),
+    )}\n)`,
+  ];
+  if (ejes.length) {
+    ctesDelRelleno.push(
+      `${ALIAS_EJES} AS (\n${indentar(
+        [
+          `SELECT DISTINCT ${ejes.map((d) => `${d.expresion} AS "${d.miembro}"`).join(', ')}`,
+          `FROM ${fromDeLosEjes(paso)}`,
+        ].join('\n'),
+      )}\n)`,
+    );
+  }
+  ctesDelRelleno.push(`${ALIAS_AGREGADA} AS (\n${indentar(agregada.join('\n'))}\n)`);
+
+  // Las columnas salen en el mismo orden en que la consulta las pidió: la
+  // temporal rellenada viene de la serie y las demás del eje, para que un bucket
+  // sin filas igual traiga el nombre del departamento y no un nulo.
+  const columnas = [
+    ...dimensiones.map((d) =>
+      d.miembro === relleno.miembro
+        ? `${ALIAS_SERIE}.bucket AS "${d.miembro}"`
+        : `${ALIAS_EJES}."${d.miembro}" AS "${d.miembro}"`,
+    ),
+    ...medidas.map((m) =>
+      m.definicion.type === 'ratio'
+        ? `${formulas.get(m.nombre)} AS "${m.miembro}"`
+        : `${rellenoDeMedida(m, `${ALIAS_AGREGADA}."${m.miembro}"`)} AS "${m.miembro}"`,
+    ),
+  ];
+
+  const condicion = [
+    `${ALIAS_AGREGADA}."${relleno.miembro}" = ${ALIAS_SERIE}.bucket`,
+    ...ejes.map((d) => `${ALIAS_AGREGADA}."${d.miembro}" = ${ALIAS_EJES}."${d.miembro}"`),
+  ];
+
+  return {
+    ctesDelRelleno,
+    cuerpo: [
+      `SELECT ${columnas.join(', ')}`,
+      `FROM ${ALIAS_SERIE}${ejes.length ? `\nCROSS JOIN ${ALIAS_EJES}` : ''}`,
+      `LEFT JOIN ${ALIAS_AGREGADA} ON ${condicion.join('\n  AND ')}`,
+    ],
+  };
+}
+
+// El FROM de la CTE `ejes`: las entidades que `resolverEjesDelRelleno` conservó,
+// cada una colgada de su padre por la relación declarada. Una entidad cuyo padre
+// no quedó es la raíz de su propia rama y entra con `CROSS JOIN`: dos ejes de
+// ramas distintas no tienen relación que los una, y la rejilla los cruza igual
+// que cruza la serie con ellos. La entidad de hechos nunca aparece aquí.
+function fromDeLosEjes(paso) {
+  const { catalog, ejes } = paso;
+  const porDestino = new Map(ejes.aristas.map((arista) => [arista.hacia, arista]));
+  return ejes.entidades
+    .map((entidad, indice) => {
+      const arista = porDestino.get(entidad);
+      if (arista === undefined) return indice === 0 ? entidad : `\nCROSS JOIN ${entidad}`;
+      return `\nJOIN ${entidad} ON ${arista.desde}.${arista.relacion.foreignKey} = ${entidad}.${catalog.entity(entidad).primaryKey}`;
+    })
+    .join('');
 }
 
 // El filtro de empresa vive dentro de la CTE, en el único lugar donde se nombra
@@ -573,7 +1076,7 @@ function ordenDeSalida(query, dimensiones, medidas) {
   });
 }
 
-// Puerta 7 · Describir: lo que el planificador decidió, dicho en el vocabulario
+// Puerta 8 · Describir: lo que el planificador decidió, dicho en el vocabulario
 // del consumidor y sin una sola tabla física (historia 25). Es lo que el
 // dry-run devuelve para poder revisar una consulta antes de gastar la base.
 function describirPlan(paso) {
@@ -593,6 +1096,18 @@ function describirPlan(paso) {
     })),
     // Las dimensiones temporales entran aquí como una dimensión más.
     dimensions: dimensiones.map((d) => d.miembro),
+    // Y aparte, con su rango: es lo único del plan que un rango relativo cambia
+    // de una hora a otra, así que el dry-run tiene que mostrarlo **ya resuelto**
+    // —a qué ventana le tocó responder— y no la frase que lo pidió. La frase se
+    // conserva al lado, en `dateRangeExpression`: el par de fechas solo no deja
+    // distinguir una ventana fija de una que se mueve sola, y quien pide un plan
+    // para revisar su consulta quiere ver las dos cosas, lo que escribió y en
+    // qué se convirtió. El nombre es de la capa; Cube no lo tiene.
+    timeDimensions: temporalesDelPlan(paso),
+    // La zona con la que se resolvieron esas frases (UTC si no se pidió otra).
+    // Resolver es todo lo que hace: las columnas siguen siendo `DATE` y la capa
+    // no convierte ningún dato de una zona a otra (ADR 0014).
+    timezone: paso.zona,
     measures: medidas.map((m) => m.miembro),
     baseMeasures: medidasBase.map((m) => m.miembro),
     derived: paso.derivadas.map((m) => ({
@@ -610,10 +1125,51 @@ function describirPlan(paso) {
         .map((m) => [m.miembro, filtrosDeMedida(paso, m).map(copiaDeFiltro)]),
     ),
     budget: { consumer: ctx.consumer, ...presupuesto, rowLimit: paso.filas },
+    // Que la consulta pidió el conteo de filas se dice en el plan, pero el plan
+    // no lo ejecuta: un dry-run no toca la base, y contar sí la tocaría (ver
+    // `engine.plan`). Es la mitad honesta de responder "sí, te entendí el
+    // total" sin cobrar por él.
+    total: paso.query.total === true,
     warnings: paso.advertencias,
   };
 
   return { ...paso, logico };
+}
+
+// Las dimensiones temporales tal como quedaron después de la puerta 0, con sólo
+// las claves que el consumidor escribió (más la frase, si escribió una): el
+// plan lógico es el vocabulario del consumidor, no el objeto interno del paso.
+function temporalesDelPlan({ query, frases }) {
+  return (query.timeDimensions ?? []).map((temporal, indice) => ({
+    dimension: temporal.dimension,
+    ...(temporal.granularity === undefined ? {} : { granularity: temporal.granularity }),
+    ...(temporal.dateRange === undefined ? {} : { dateRange: temporal.dateRange }),
+    ...(temporal.fillMissing === true ? { fillMissing: true } : {}),
+    // Sale del registro de la puerta 0 y no de la consulta: así un
+    // `dateRangeExpression` escrito a mano por el consumidor no puede aparecer
+    // en el plan diciendo que hubo una frase donde no la hubo.
+    ...(frases.has(indice) ? { dateRangeExpression: frases.get(indice) } : {}),
+  }));
+}
+
+// Cómo nombra una fórmula derivada a la medida base que ya se agregó. Sin
+// relleno es el alias de la etapa de adentro. Con relleno es la columna de la
+// CTE `agregada` **ya rellenada**, porque la razón se sigue calculando afuera,
+// sobre el resultado denso: en un bucket vacío el denominador queda en 0, el
+// `NULLIF` que ya estaba lo vuelve nulo y la razón sale vacía sola, sin una
+// sola regla nueva (ADR 0012).
+function referenciaDeBase(paso, base) {
+  if (!paso.relleno) return `"${base.miembro}"`;
+  return rellenoDeMedida(base, `${ALIAS_AGREGADA}."${base.miembro}"`);
+}
+
+// Una medida base leída desde la etapa agregada en un bucket que puede no
+// existir. El `COALESCE` lo decide el tipo, nunca la consulta: ver
+// `AGREGADOS_QUE_VALEN_CERO_SIN_FILAS`.
+function rellenoDeMedida(medida, expresion) {
+  return AGREGADOS_QUE_VALEN_CERO_SIN_FILAS.has(medida.definicion.type)
+    ? `COALESCE(${expresion}, 0)`
+    : expresion;
 }
 
 // El agregado de una medida base, con el filtro de su segmento si lo tiene.

@@ -13,7 +13,19 @@ export const employees = {
       type: 'boolean',
       description: 'Si el empleado sigue vigente en la empresa.',
     },
+    name: {
+      column: 'name',
+      type: 'string',
+      description: 'Nombre del empleado tal como lo nombra la empresa.',
+    },
+    hire_date: {
+      column: 'hire_date',
+      type: 'date',
+      description:
+        'Fecha de contratación; se agrupa por día, mes, trimestre o año para ver la evolución de las contrataciones.',
+    },
   },
+
   measures: {
     headcount: {
       type: 'count',

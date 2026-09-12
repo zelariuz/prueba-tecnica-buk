@@ -1,0 +1,39 @@
+[
+  {
+    "id": "raro-top-3-de-dos-anos",
+    "titulo": "Raro 1 · Los 3 mejores de dos años, uno al lado del otro",
+    "texto": "¿Quiénes son los 3 mejores empleados por desempeño del año pasado y del año anterior a ése?",
+    "nota": "El agente escribe UNA consulta con compareDateRange —la frase «last year» y el par de 2024— más order por score y limit 3, y la respuesta llega como {\"results\": […]}, un ranking por período. Mira quiénes salen en cada uno: en la empresa A, 2025 trae a A2 y A1; 2024, a A3 y A1. Ése es el límite real del concepto: la comparación compara PERÍODOS, no rankings, y el orden y el límite se aplican dentro de cada rango por separado. No son «los mismos 3 dos años seguidos»: son dos top 3 independientes puestos lado a lado. Medido el 11-09: sale así en 3 de cada 4 clics; en el otro el agente contestó noPuedo diciendo que reviews no publica quién es el empleado —y se equivocaba, el catálogo la relaciona con employees—. Volver a pulsar Ejecutar también es parte de lo que hay que ver."
+  },
+  {
+    "id": "raro-medidas-de-dos-entidades",
+    "titulo": "Raro 2 · Cuántos empleados hay y su score promedio, juntos",
+    "texto": "¿Cuántos empleados hay y cuál es su score promedio, por departamento?",
+    "nota": "Una pregunta que en una planilla sería una sola tabla. El agente pide employees.headcount y reviews.avg_score en la misma consulta y la capa la rechaza con MULTI_ENTITY_MEASURES (ADR 0006): cruzar dos entidades de hechos multiplica las filas de una por las de la otra y el promedio saldría mal sin que se note. Mira el reintento: con el código, el miembro y la sugerencia de la capa («pide reviews.avg_score en una segunda consulta»), el agente responde noPuedo en vez de descartar una medida por su cuenta. Son dos consultas o ninguna. Medido el 11-09: el fan-out con su rechazo y su corrección sale en 3 de cada 4 clics; en el otro el agente se adelanta y contesta noPuedo sin tocar la capa."
+  },
+  {
+    "id": "raro-resultado-truncado",
+    "titulo": "Raro 3 · Un año entero de asistencia, día a día (empresa C)",
+    "texto": "Muéstrame la tasa de asistencia día a día por departamento durante todo 2025.",
+    "token": "demo-agente-empresa-c",
+    "nota": "Este caso va con el token de la empresa C (12 departamentos, 1.062.283 filas de asistencia): elegirlo cambia el token solo. El agente escribe la serie diaria con fillMissing y su propio limit 500, y vuelven exactamente 500 filas de las 4.380 que tiene el año. Mira meta.warnings antes que las filas: el resultado llegó al tope y desde las filas no hay forma de notarlo (ADR 0013), así que la capa lo dice y sugiere acotar el rango, subir la granularidad o pedir total: true. Y mira dónde NO está el aviso: plan.warnings del dry-run viene vacío, porque antes de ejecutar nadie sabe cuántas filas van a salir. Un resultado que se ve completo y no lo está es el error más caro de esta demo."
+  },
+  {
+    "id": "raro-razon-anulada",
+    "titulo": "Raro 4 · Una tasa de completitud que da 100 %",
+    "texto": "Filtra las evaluaciones al estado completed y dime qué porcentaje de completitud tiene cada departamento.",
+    "nota": "El filtro pedido es global, y es justo el que distingue al numerador de completion_rate: numerador y denominador terminan contando las mismas filas y la tasa vale 100 % en todas. El agente lo escribe unas veces como segments: [\"reviews.completed\"] y otras como un filters de reviews.status; las dos caen en el mismo filtro global y el mismo aviso. Mira el aviso —está en plan.warnings del dry-run, antes de ejecutar, y otra vez en meta.warnings—: la capa entrega el número y además avisa de que está mal pedido, en vez de devolver un 100 % indistinguible de una empresa con completitud perfecta. Sin el filtro, la misma pregunta da 66,7 % y 25 %."
+  },
+  {
+    "id": "raro-relleno-sin-periodo",
+    "titulo": "Raro 5 · Sin saltarse días, pero sin decir qué días",
+    "texto": "Muéstrame la asistencia día a día por departamento, sin saltarte los días vacíos.",
+    "nota": "La pregunta pide relleno de serie (ADR 0012) y no nombra ningún período. El relleno exige granularidad Y rango, así que no hay JSON válido que escribir: el agente responde noPuedo diciendo exactamente qué le falta —«fillMissing requiere un rango de fechas»— y el rastro termina en un solo salto, sin tocar la capa. Ésa es la conducta correcta y es lo que hay que mirar: inventar un rango habría devuelto una serie creíble que contesta otra pregunta. Para ver la misma serie bien pedida está la preparada «Serie densa», que trae su semana."
+  },
+  {
+    "id": "raro-sueldos-que-no-existen",
+    "titulo": "Raro 6 · Sueldos que el catálogo no tiene",
+    "texto": "¿Cuánto gana en promedio cada departamento?",
+    "nota": "No hay sueldos en el catálogo. El agente responde noPuedo nombrando lo que falta y NO inventa un employees.salary_avg: un solo salto, la capa ni se entera. Para ver el otro lado de la misma moneda —UNKNOWN_MEMBER con su sugerencia por distancia de edición— está la preparada «Sueldo promedio por departamento», cuyo JSON está escrito a mano justamente para que la capa lo rechace: el agente, sin ayuda, no llega ahí."
+  }
+]

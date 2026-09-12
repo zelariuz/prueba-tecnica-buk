@@ -24,7 +24,9 @@ TypeScript, Node 24, `node:test`, node-postgres.
   sesión separado, 0003 CTE por entidad con empresa, 0004 derivadas ratio,
   0005 segmentos sin SQL, 0006 medidas de una sola entidad, 0007 vocabulario
   Cube, 0008 catálogo en dos vistas, 0009 rango opcional para el agente,
-  0010 consultas sin medida, 0011 rango sin granularidad).
+  0010 consultas sin medida, 0011 rango sin granularidad, 0012 relleno de
+  series densas, 0013 truncado visible y total de filas, 0014 rangos relativos
+  con vocabulario cerrado, 0015 comparación de períodos con varias consultas).
 
 ## Estructura
 
@@ -39,16 +41,18 @@ src/
   definitions/index.js       composición: qué módulos y qué consultas tipo
                              existen, y `registrarModulos(catalog, snapshot)`
   dialect/postgres.js        el motor, entero: sintaxis (dateTrunc,
-                             agregadoFiltrado, aNumerico, tablaFisica,
-                             sentenciasDeSesion y capacidades), introspección del
-                             esquema, mapa de tipos físicos → semánticos y
-                             traducción de errores nativos
+                             serieDeFechas, agregadoFiltrado, aNumerico,
+                             tablaFisica, sentenciasDeSesion y capacidades),
+                             introspección del esquema, mapa de tipos físicos →
+                             semánticos y traducción de errores nativos
   dialect/sqlite.js          el segundo motor, con las mismas cuatro
                              responsabilidades sobre `node:sqlite`: dateTrunc con
                              strftime/printf, introspección por PRAGMA, tipos por
                              afinidad y errores por texto. Declara lo que no
                              puede prometer (tiposGarantizados: false,
-                             timeoutDeSentencia: false)
+                             timeoutDeSentencia: false, serieDeFechas: false —
+                             sin generate_series no hay serie que calce con
+                             dateTrunc en las cinco granularidades, ADR 0012)
   dialect/sqlite-pool.js     adaptador de DatabaseSync al contrato mínimo de pool
                              (connect → { query, release }); traduce los
                              parámetros posicionales $n a los nombrados de SQLite
@@ -69,15 +73,26 @@ src/
                              esquema físico y tipos), fuente por entidad,
                              resolución de miembros, vistas pública e interna,
                              versión y consultas tipo
+  comparacion.js             `compareDateRange`: valida la comparación de
+                             períodos y la expande en las N consultas normales
+                             en que se descompone, una por rango (ADR 0015). No
+                             planifica ni ejecuta nada
+  rangos-relativos.js        el vocabulario cerrado de rangos relativos
+                             (`last 6 months`, `this quarter`) y su resolución a
+                             un par de fechas en la zona pedida; valida la zona
+                             con `Intl` (ADR 0014)
   suggest.js                 distancia de edición y sugerencia del nombre más parecido
   vocabulary.js              operadores por tipo de dimensión y granularidades
-  planner.js                 el planificador: pipeline de puertas (validar, resolver
-                             miembros, filtros, joins, agregación y derivadas,
-                             emitir SQL, describir el plan lógico). Única pieza
-                             que escribe SQL
+  planner.js                 el planificador: pipeline de puertas (resolver rangos
+                             relativos, validar, resolver miembros, filtros,
+                             joins, agregación y derivadas, emitir SQL, describir
+                             el plan lógico). Única pieza que escribe SQL
   engine.js                  plan() y run(): dry-run y ejecución transaccional con
                              SET LOCAL statement_timeout, más las puertas
-                             buscarEnCache y guardarEnCache
+                             buscarEnCache y guardarEnCache. Decide también
+                             cuántas consultas hay: una comparación de períodos
+                             es una vuelta por rango, con un solo tic del reloj
+                             para todas (ADR 0015)
   errors.js                  SemanticError { code, member, suggestion }
   telemetry.js               contadores en memoria por resultado, código, puerta,
                              consumidor, hits/misses de caché (hits por nivel),
@@ -110,6 +125,15 @@ test/
   redis.test.js              caché L2 contra Redis de verdad: dos instancias,
                              llaves con empresa por SCAN y Redis inalcanzable;
                              se salta sin REDIS_URL
+  comparacion.test.js        compareDateRange por los seams engine.plan y
+                             engine.run: la forma de la respuesta y su orden, las
+                             validaciones y el tope de rangos, el relleno y el
+                             total por rango, y la caché por rango comprobada
+                             ejecutando (contra Postgres)
+  rangos-relativos.test.js   el vocabulario forma por forma con reloj fijo, los
+                             bordes de mes/trimestre/año, las zonas, y la prueba
+                             que más importa: dos "hoy" distintos dan queryId
+                             distintos y no comparten caché (contra Postgres)
   sqlite.test.js             la segunda fuente por los seams engine.run,
                              engine.plan y catalog.register; base en memoria, sin
                              variables de entorno
@@ -122,6 +146,11 @@ test/
   snapshots/rango-sin-granularidad.sql  SQL esperado del rango que sólo filtra:
                              el dateRange en la CTE y sin la fecha en el
                              SELECT ni en el GROUP BY (ADR 0011)
+  snapshots/relleno-de-serie.sql  SQL esperado del relleno de serie densa: las
+                             CTE serie, ejes y agregada, el CROSS JOIN y el
+                             LEFT JOIN por bucket (ADR 0012). `ejes` sale de
+                             `FROM departments`: los valores que existen, no
+                             los que tienen datos en el rango (corrección 11-09)
   fixtures/snapshot.json     foto del esquema generada desde la base del caso
   fixtures/caso-sqlite.sql   el mismo esquema y las mismas 16 evaluaciones,
                              escritos para SQLite
@@ -145,7 +174,9 @@ demo-agente/               demo web del rastro de llamadas: paquete aparte, con 
   index.js                 arranque: catálogo, sesión y escucha en :3100
   src/ejecutar.js          seam 1: petición → rastro de saltos
   src/sesion.js            seam 2: crear/conservar/recrear la sesión, prompt de
-                           creación y huella del catálogo
+                           creación y las DOS huellas que la identifican: la del
+                           catálogo y la del texto del prompt
+  preguntas.json           las 16 preguntas preparadas (datos, no código)
   src/protocolo.js         las palabras del agente: prompt del clic, prompt de
                            corrección y lectura del JSON que devuelve
   src/servidor.js          estáticos de public/ y los endpoints JSON (incluida
@@ -177,7 +208,7 @@ corre la demo y explícame el caso obligatorio; después corre los tests". Orden
    error con sugerencia y la telemetría. Filas esperadas de la empresa A:
    Ingeniería 4.35/2 y 3.80/1; `completion_rate` 75.
 3. Tests: `npm install` y `npm test` con `DATABASE_URL` y `REDIS_URL` de la
-   sección Comandos → 217 en verde (132 + 1 saltado sin variables).
+   sección Comandos → 291 en verde (182 tests, 181 + 1 saltado, sin variables).
 4. La demo del agente, si el prompt la pide (el del README la pide):
    `cd demo-agente && npm install && npm start` en segundo plano, con la capa
    arriba; no va en el compose. Di la URL (`http://localhost:3100`), que usa la
@@ -226,6 +257,226 @@ curl -s -H 'Authorization: Bearer demo-dashboard-empresa-a' \
 - Repo público: sin datos personales ni nombres reales en seeds ni ejemplos.
 
 ## Estado
+
+El segundo selector, el de los **casos raros** (11-09, sólo `demo-agente`). Seis
+preguntas para ver **cómo reacciona el agente ante lo difícil**, debajo de la
+casilla "usar agente": no traen `consulta` —lo que se mira es el JSON que él
+decide escribir—, así que son **sólo del camino con agente** (elegir una marca la
+casilla y, si el caso lo pide, cambia el token; sin Claude Code el selector queda
+deshabilitado con el motivo) y van **sin fechas** a propósito, porque casi todas
+tratan de lo que hace cuando no le dan un período. Viven en
+`demo-agente/preguntas-raras.json`, aparte de las dieciséis preparadas, porque
+tienen otra forma y otro selector; `preguntaPorId` busca en las dos listas, el
+mini back las publica en `GET /api/preguntas-raras` y una rara sin agente falla
+diciendo que hay que marcar la casilla, en vez de dejar un rastro vacío. Cada una
+trae una `nota` con qué mirar, y las notas describen la conducta **medida**, no
+la esperada: el caso del miembro mal escrito se cayó —seis preguntas distintas
+(ausencias, días presentes, inactivos, calibradas, cruzar asistencia con
+evaluaciones, un "empieza con") y el agente no inventó un miembro ni una vez:
+siempre `noPuedo` nombrando lo que sí existe, o la consulta correcta— y se
+cambió por el **resultado truncado** de la empresa C: 500 filas de 4.380 con el
+aviso del ADR 0013 en `meta.warnings` y `plan.warnings` vacío. Los seis se
+ejecutaron de verdad contra la capa en Docker y Claude Code real; el 1 y el 2
+salen como dice su nota en 3 de cada 4 clics (en el otro, `noPuedo` de entrada),
+los demás en todas sus corridas. La raíz sigue en **291 tests en verde** (no se
+tocó `src/` ni `test/`); `demo-agente` pasa de **73 a 79**.
+
+Los ejes del relleno dejan de depender del rango (11-09, corrección del ADR
+0012). Defecto reproducido contra Postgres: la tasa de asistencia de la empresa A
+por departamento, por día, entre el 01 y el 31 de enero de 2025 con
+`fillMissing: true` devolvía **`rows: []` y `warnings: []`**. La CTE `ejes` hacía
+`SELECT DISTINCT … FROM <entidad de hechos + joins>` y esa CTE **ya lleva el
+`dateRange`**, así que los ejes eran "los valores con datos en el período" y no
+"los que existen": un departamento sin asistencia en enero desaparecía del
+gráfico entero, y si ninguno tenía, la respuesta era cero filas en silencio. El
+código hacía lo que decía la especificación; la especificación estaba mal.
+**Ahora los ejes se arman desde las CTE de las entidades de las dimensiones, sin
+pasar por la de hechos** (`FROM departments`), con sus propios filtros y sin el
+recorte de fechas; una entidad intermedia entra sólo si aporta un filtro o hace
+de puente, porque `JOIN employees` de más borra los departamentos sin empleados.
+No se arma una segunda copia de la CTE de hechos sin el filtro de fecha: recorrer
+1 M de filas para saber qué departamentos hay es lo que el rango evita. **Una
+dimensión no temporal de la propia entidad de hechos** (`attendance.present` con
+relleno) **se rechaza** con `INVALID_QUERY`: su dominio no se conoce sin escanear
+la tabla entera, y degradar a serie dispersa sería devolver 200 con lo contrario
+de lo pedido. **Un relleno que vuelve vacío avisa** en `meta.warnings`. Aceptación
+verificada: 2 departamentos × 31 días = **62 filas**, tasa `null` y `count` 0;
+con el tope en 40 filas devuelve 40, advierte el corte y `total` dice 62. Cambió
+**un solo SQL de referencia**, `test/snapshots/relleno-de-serie.sql`, y un test
+cambió de expectativa a propósito ("el relleno no cruza empresas": la empresa B
+ahora devuelve sus dos departamentos, uno con la serie en cero). La raíz pasa de
+**283 a 291 tests en verde**; `demo-agente` sigue en **73**.
+
+La demo aprende lo último de la capa (11-09, ADR 0012 a 0015): el agente de
+`demo-agente` no conocía el relleno, el total, los rangos relativos ni la
+comparación, porque su vocabulario vive en el texto de `promptDeCreacion`
+(`src/sesion.js`) y ahí no estaban. Ahora están, y cada regla nueva dice
+**cuándo sí y cuándo no**: el riesgo real de enseñarle propiedades nuevas es que
+las use donde no van —`fillMissing` en una consulta que no agrupa por tiempo,
+una comparación que nadie pidió—, así que la mitad "cuándo NO" es parte de la
+regla y tiene test. El vocabulario de rangos relativos va **entero**, las quince
+formas escritas como se aceptan, porque es cerrado: una que falte es una que el
+agente no puede escribir. **La identidad de la sesión pasa a ser dos huellas**,
+la del catálogo y la del prompt entero (`huellaDelPrompt`): las reglas cambian
+editando ese archivo, sin que la capa publique nada, y sin la segunda huella la
+sesión guardada seguía viva y el agente nunca veía la regla nueva. El front
+entiende la respuesta de una comparación: `{ results: [...] }` se dibuja como N
+bloques, cada uno con su rango resuelto, su frase, su `servedFrom`, su `queryId`
+y —en el dry-run— su SQL; la forma la decide la respuesta, así que sirve igual al
+camino con agente y al preparado. Cuatro preguntas preparadas nuevas (16 en
+total) con sus rangos precargados por empresa, y un arreglo que salió de
+probarlas: `sinRangoVacio` (`public/preparar.js`) le borraba el `dateRange` a
+**toda** dimensión temporal cuando el formulario venía sin fechas, y se comía la
+frase `"last year"` que la pregunta trae escrita; ahora sólo le quita el rango a
+la dimensión que lo recibe del formulario, la de los marcadores. La raíz sigue
+en **283 tests en verde** (no se tocó `src/` ni `test/`); `demo-agente` pasa de
+**62 a 73**. Verificado ejecutando con la capa en Docker y Claude Code real: las
+cuatro preguntas por los dos caminos y en las dos empresas; el agente escribió
+sin ayuda `fillMissing: true`, `dateRange: "last year"`, `compareDateRange` y
+`total: true` **a la primera**, sin corrección, y no le puso ninguna de las
+cuatro a tres preguntas viejas que no las piden. La sesión se recreó de verdad al
+cambiar el prompt (`las reglas del prompt cambiaron` en el log) y se reutilizó en
+el arranque siguiente.
+
+Comparación de períodos (11-09, ADR 0015): `compareDateRange` en una dimensión
+temporal, **en lugar de** `dateRange`, con la lista de rangos a comparar —cada
+uno un par de fechas o una frase del vocabulario del ADR 0014—. `["this month",
+"last month"]` es el caso de uso real. **Decisión central: varias consultas, no
+un `UNION ALL`.** Dos razones: (1) cada rango tiene su propia vida de caché —el
+mes pasado ya no cambia y este mes cambia todo el rato; con una sola sentencia
+compartirían llave y TTL y la mitad estable se recalcularía siempre—, y (2)
+`UNION ALL` obligaría a una columna discriminadora que no sería un miembro
+declarado, rompiendo la invariante de que toda columna de salida tiene nombre
+semántico. Así que **una planificación y una ejecución por rango**, cada una con
+su `queryId`, su entrada de caché y su `meta`, reutilizando el camino que ya
+existe: `src/comparacion.js` sólo valida y expande, y quien llama es el engine
+(la pregunta "cuántas consultas hay" es anterior a planificar). La respuesta
+cambia de forma **sólo** para esta consulta: `{ results: [{ dateRange,
+dateRangeExpression?, rows, meta }] }`, en el orden pedido siempre; sin
+`compareDateRange` sale lo de siempre, `{ rows, meta }`, byte por byte, y hay
+tests que lo fijan. **Tope de cuatro rangos** (Cube usa tres en sus ejemplos):
+cubre las comparaciones reales —un período contra el anterior, los cuatro
+trimestres, un mes contra el mismo mes de tres años— y deja el peor caso del
+tablero en 4 × 5 s; de cinco en adelante lo que se pide es una serie con
+`granularity`. Un solo rango se acepta (la forma la decide la propiedad, no el
+largo); la lista vacía no. **El presupuesto NO se reparte**: cada rango recibe el
+de su clase entero —repartir el tope de filas haría que el resultado de una
+ventana cambiara según con cuántas se la compara, y repartir el timeout haría
+fallar dentro de una comparación a una consulta que sola funciona—; lo que acota
+el gasto es el tope de rangos. **Un solo tic del reloj para toda la
+comparación** (`planificar(query, ctx, { ahora })`): sin eso, el 31 de agosto a
+las 23:59 `this month` y `last month` podrían resolver los dos a agosto. Los
+rangos se ejecutan **en serie**, no en paralelo: N conexiones del pool por
+petición desplazarían a otros consumidores. `fillMissing`, `total` y el chequeo
+de buckets del ADR 0013 funcionan por rango sin una línea nueva; el dry-run
+devuelve un plan por rango y el SQL se sigue escondiendo en cada uno. Un rechazo
+de rango señala lo que el consumidor escribió
+(`timeDimensions[0].compareDateRange[1]`), no el `dateRange` que la capa fabricó
+al expandir. La raíz corre **283 tests en verde** con `DATABASE_URL` y
+`REDIS_URL`, y **178 sin nada** (1 se salta). Los seis SQL de referencia de
+`test/snapshots/` quedaron byte por byte iguales. Comprobado ejecutando contra
+Postgres: la misma comparación tarda 95,4 ms la primera vez y 1,1 ms la segunda
+(las dos entradas en `cache-l1`); cambiando **sólo un rango**, 26,1 ms, con el
+otro todavía en caché y con su `queryId` de antes. Evoluciones anotadas en el
+ADR: los rangos en paralelo si alguna vez la latencia duele, y enseñarle
+`compareDateRange` al agente en el prompt de creación de la demo.
+
+Rangos relativos (11-09, ADR 0014): el `dateRange` de una dimensión temporal
+acepta, además del par de fechas, **una frase de un vocabulario cerrado** que la
+capa resuelve a ese par. Quince formas, en minúsculas y escritas exactamente
+así: `today`, `yesterday`, `this week|month|quarter|year`,
+`last week|month|quarter|year` y `last N days|weeks|months|quarters|years` (N
+entero positivo, unidad siempre en plural). **No hay intérprete de lenguaje
+natural** —Cube usa Chrono; aquí no—: cualquier otra cadena es `INVALID_QUERY`
+con `member` `timeDimensions[i].dateRange` y la lista entera en la sugerencia,
+por la misma razón por la que las granularidades son una lista cerrada. Un rango
+mal interpretado no falla: devuelve los datos de otro período con un 200.
+**Definición elegida y escrita: `last month` es el mes calendario anterior
+COMPLETO**, no los últimos 30 días, y ninguna frase `last …` incluye hoy (las
+formas cortas son el caso N=1 de las largas); las `this …` van del comienzo del
+período en curso **a hoy**. La semana empieza el lunes, como el
+`DATE_TRUNC('week')` de Postgres y como `bucketsDelRango`. La zona es
+`timezone`, propiedad **de la consulta** (como en Cube), por defecto `UTC`,
+validada con la API `Intl` del runtime y no con una lista propia; **no reabre el
+supuesto v1**: las columnas siguen siendo `DATE` y la capa no convierte nada, la
+zona sólo decide qué día es hoy. **Lo crítico es cuándo se resuelve**: en la
+**primera puerta** del planificador, antes de validar la forma, antes de que las
+fechas entren como parámetros `$n` y, por lo tanto, antes del `queryId` —que
+nace del SQL ejecutado y sus parámetros—. Comprobado ejecutando, no razonando:
+la misma frase `last 7 days` con "hoy" en agosto y en septiembre da
+`ada38a495c69039d` y `d5ae1b4eefe8ebe6`, las dos `live`, mientras con el mismo
+"hoy" la segunda sale `cache-l1` con el mismo id (test con TTL inmenso inyectado
+para que un vencimiento no pueda ser la explicación alternativa). El "hoy" sale
+del **reloj inyectable que el engine ya tenía** para el `asOf` y el TTL, leído
+una sola vez por consulta. El plan lógico del dry-run estrena `timeDimensions`
+—con el rango ya resuelto y la frase original en `dateRangeExpression`— y
+`timezone`. La raíz corre **266 tests en verde** con `DATABASE_URL` y
+`REDIS_URL`, y **167 sin nada** (1 se salta). Los seis SQL de referencia de
+`test/snapshots/` quedaron byte por byte iguales. Evoluciones anotadas en el
+ADR: publicar el vocabulario por `describe()` y enseñárselo al agente en el
+prompt de creación de la demo.
+
+Truncado visible y total de filas (11-09, ADR 0013): cierra la evolución que el
+ADR 0012 había dejado anotada. Tres cosas. **(1)** Cuando las filas devueltas
+alcanzan el límite efectivo de la clase, la respuesta suma una advertencia a
+`meta.warnings` —misma forma `{ member, warning }` que la razón anulada, `member`
+`limit`— diciendo que puede venir truncada y sugiriendo acotar el rango, subir la
+granularidad o pedir menos dimensiones. Vale para **toda** consulta, no sólo para
+las que rellenan; vive en el engine porque antes de ejecutar no hay filas que
+contar, y viaja también en la entrada de caché. No se pide una fila de más para
+saber si sobraban: eso le cobraría a todas las consultas el precio de unas pocas.
+**(2)** Con `fillMissing`, los buckets se cuentan **sin tocar la base** desde el
+`dateRange` y la `granularity` (`bucketsDelRango` en `src/planner.js`, verificada
+contra `generate_series` en las cinco granularidades); si los buckets solos ya
+pasan el límite, ni un eje cabría y la consulta se rechaza en la puerta
+`resolverMiembros` con `INVALID_QUERY` (400) y una sugerencia que nombra buckets,
+tope y salidas. Los ejes **no** se estiman: exigiría consultar la base. Una fecha
+que no viene en `YYYY-MM-DD` no se convierte en rechazo: el guardarraíl falla
+abierto. **(3)** `total: true` (la propiedad de Cube: filas del resultado
+ignorando límite y desplazamiento, **no** el gran total de una medida) devuelve
+`meta.total`. Es una **segunda sentencia sobre el mismo cuerpo**, sin `ORDER BY`
+ni `LIMIT` (`SELECT COUNT(*) FROM (<cuerpo>) AS t`), armada antes de pedir el
+parámetro del `LIMIT` para no mover la numeración de los `$n`; por eso vale igual
+con derivadas y con relleno —ahí da `buckets × ejes`— sin una regla propia. Corre
+en la **misma transacción** que la consulta (misma foto de los datos, una
+conexión, mismo `statement_timeout`) y su tiempo entra en el `dbMs` de la
+telemetría, que no estrena contador. **Dry-run no ejecuta el total**: devuelve la
+sentencia y el plan lógico con `total: true`. **Desde caché el total viene
+guardado con la entrada**, no se recalcula, y el `queryId` incorpora la segunda
+sentencia para que una consulta con total y otra sin él no compartan entrada (la
+clave sólo entra al hash si existe: los queryId anteriores no se movieron). La
+raíz corre **251 tests en verde** con `DATABASE_URL` y `REDIS_URL`, y **154 sin
+nada** (1 se salta). Los seis SQL de referencia de `test/snapshots/` quedaron
+byte por byte iguales. Verificado contra Postgres real: la asistencia por día y
+departamento del 8 al 14 de agosto da 10 filas y `total` 10 sin relleno, y 14 y
+`total` 14 con relleno; con `limit: 3` da 3 filas, `total` 10 y la advertencia de
+truncado. Fila del tope de filas de `docs/riesgos.md` actualizada: ya no dice que
+el truncado es silencioso.
+
+Relleno de series densas (11-09, ADR 0012): una `timeDimension` con
+`granularity`, `dateRange` y `fillMissing: true` devuelve **todos** los buckets
+del rango, también los vacíos, para que un gráfico no salte días. La bandera vive
+en la consulta y no en la definición del módulo: la serie densa la necesita quien
+dibuja, no la entidad. Qué se rellena con qué lo decide el **tipo de la medida**:
+`count`, `count_distinct` y `sum` → `COALESCE(…, 0)`; `avg` y `ratio` quedan
+**nulos** (un promedio de cero valores no es cero). Las derivadas se siguen
+calculando afuera, sobre el resultado ya denso, y su denominador rellenado en 0
+las anula solo por el `NULLIF` que ya estaba. El SQL agrega tres CTE —`serie`,
+`ejes` y `agregada`— y afuera `serie CROSS JOIN ejes LEFT JOIN agregada`; sin
+dimensiones no temporales no hay `ejes` ni `CROSS JOIN`. Rellenar **no agrega ni
+un parámetro**: la serie usa los mismos `$2`/`$3` que ya filtran la CTE.
+Capacidad nueva del dialecto `serieDeFechas`: Postgres la declara y la emite con
+`generate_series` truncando el inicio (si no, un rango que parte el 15 de enero
+con granularidad `month` daría 15/01, 15/02…); SQLite la declara `false` y pedir
+`fillMissing` sobre esa fuente sale con `UNSUPPORTED_OPERATOR` (400). La raíz
+corre **230 tests en verde** con `DATABASE_URL` y `REDIS_URL`, y **142 sin nada**
+(1 se salta). Snapshot nuevo `test/snapshots/relleno-de-serie.sql`; los cinco
+anteriores byte por byte iguales. Verificado contra Postgres real: la asistencia
+de la empresa A entre el 8 y el 14 de agosto pasa de 10 filas a 14, con los
+cuatro días sin registro de Ventas en `count: 0` y `attendance_rate: null`.
+Riesgo nuevo registrado en `docs/riesgos.md`: densificar multiplica filas contra
+el tope de la clase (medido en la empresa C, por día × departamento sobre dos
+años: de 4.392 filas con 12 departamentos a las 5.000 del tope con 7).
 
 Rango sin granularidad (10-09 madrugada, ADR 0011): una `timeDimension` con
 `dateRange` y sin `granularity` sólo filtra por fecha. La raíz corre **217 tests

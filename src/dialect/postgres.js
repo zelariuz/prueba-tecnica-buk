@@ -18,6 +18,19 @@ import { SemanticError } from '../errors.js';
 
 const SOPORTADAS = new Set(GRANULARIDADES);
 
+// El paso con el que `generate_series` avanza de un bucket al siguiente, por
+// granularidad. No se puede derivar del nombre: `DATE_TRUNC` entiende
+// `'quarter'` pero `INTERVAL '1 quarter'` no existe en Postgres —lo rechaza con
+// `invalid input syntax for type interval`— y hay que escribirlo como tres
+// meses. Es una tabla, no lógica, y vive aquí porque es sintaxis del motor.
+const PASO_DE_LA_SERIE = {
+  day: '1 day',
+  week: '1 week',
+  month: '1 month',
+  quarter: '3 months',
+  year: '1 year',
+};
+
 const ESQUEMA = 'public';
 
 // --- 2. Introspección -------------------------------------------------------
@@ -150,6 +163,11 @@ export const postgres = {
     // por eso el presupuesto de tiempo de la clase de consumidor se hace
     // cumplir de verdad en esta fuente.
     timeoutDeSentencia: true,
+    // El motor sabe generar la serie de buckets de un rango (`generate_series`),
+    // que es lo que necesita el relleno de series densas (ADR 0012). Un motor
+    // que no pueda prometerlo declara `false` y el planificador rechaza
+    // `fillMissing` sobre esa fuente en vez de emitir un SQL a medias.
+    serieDeFechas: true,
   },
 
   // --- 1. Sintaxis SQL ------------------------------------------------------
@@ -170,6 +188,36 @@ export const postgres = {
 
   agregadoFiltrado(agregado, condicion) {
     return `${agregado} FILTER (WHERE ${condicion})`;
+  },
+
+  // Todos los buckets de un rango, uno por fila, en una sola columna `bucket`.
+  // El contrato es que salga **exactamente con el mismo formato que
+  // `dateTrunc`**: el relleno une la serie con la etapa agregada por igualdad de
+  // texto, y un formato distinto no falla —devuelve todos los buckets vacíos—,
+  // que es la peor forma de fallar. Por eso el mismo `TO_CHAR` de arriba.
+  //
+  // El inicio se trunca antes de generar: `generate_series` avanza desde donde
+  // se le diga, así que un rango que parte el 15 de enero con granularidad `month`
+  // produciría 15/01, 15/02, 15/03 —fechas que `dateTrunc` nunca emite— y
+  // ningún bucket calzaría. El fin no necesita truncarse: `generate_series` corta
+  // en el último valor que no lo pasa.
+  //
+  // `desdeSql` y `hastaSql` llegan como marcadores (`$2`, `$3`), nunca como
+  // valores: los literales de la consulta viajan como parámetros, aquí también.
+  // La granularidad sí se interpola, como en `dateTrunc`, y por eso sale de la
+  // misma lista cerrada.
+  serieDeFechas(granularidad, desdeSql, hastaSql) {
+    if (!SOPORTADAS.has(granularidad)) {
+      throw new Error(`Granularidad no soportada por el dialecto: ${granularidad}`);
+    }
+    return (
+      `SELECT TO_CHAR(g.bucket, 'YYYY-MM-DD') AS bucket\n` +
+      `FROM generate_series(\n` +
+      `  DATE_TRUNC('${granularidad}', ${desdeSql}::date),\n` +
+      `  ${hastaSql}::date,\n` +
+      `  INTERVAL '${PASO_DE_LA_SERIE[granularidad]}'\n` +
+      `) AS g(bucket)`
+    );
   },
 
   // Forzar aritmética no entera en una razón: dos COUNT son enteros y 3/4 daría

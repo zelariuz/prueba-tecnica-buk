@@ -44,6 +44,19 @@ export const CONSUMIDORES = [
       'enunciado-2-completaron-por-trimestre': ['2025-01-01', '2025-12-31'],
       'enunciado-3-asistencia-por-departamento': ['2025-06-01', '2025-08-31'],
       'asistencia-por-departamento': ['2025-06-01', '2025-08-31'],
+      // La semana del ADR 0012: del 8 al 14 de agosto Ventas deja de registrar
+      // el 11, así que sin relleno son 10 filas y con relleno 14.
+      'serie-densa-asistencia-diaria': ['2025-08-08', '2025-08-14'],
+      // Tres meses por día y departamento: 152 filas, de las que la consulta
+      // pide 20. El `total` es el número que el límite escondía.
+      'total-de-filas-asistencia': ['2025-06-01', '2025-08-31'],
+      // Éstas traen el período puesto en la consulta —una frase relativa, o la
+      // lista de rangos a comparar—, así que los campos van VACÍOS: si el
+      // formulario precargara fechas, la línea "Filtros: desde…, hasta…" del
+      // prompt del clic le pediría al agente justo lo contrario de lo que la
+      // pregunta demuestra.
+      'rango-relativo-ultimo-ano': ['', ''],
+      'comparacion-agosto-contra-julio': ['', ''],
       'headcount-por-departamento': ['', ''],
       'cuantos-empleados-hay': ['', ''],
       'cuales-departamentos-hay': ['', ''],
@@ -67,6 +80,13 @@ export const CONSUMIDORES = [
     // sobre `employees` y la de los departamentos van sin rango: no hay
     // dimensión temporal que acotar.
     rangos: {
+      // La misma semana de agosto que en la empresa A, y por el mismo motivo:
+      // la serie densa se mira día a día. Acá no hay huecos que rellenar —la C
+      // registra todos los días—, así que lo que se ve es el otro lado de la
+      // bandera: la serie ya venía completa y el relleno no cambia nada.
+      'serie-densa-asistencia-diaria': ['2025-08-08', '2025-08-14'],
+      'rango-relativo-ultimo-ano': ['', ''],
+      'comparacion-agosto-contra-julio': ['', ''],
       'headcount-por-departamento': ['', ''],
       'cuantos-empleados-hay': ['', ''],
       'cuales-departamentos-hay': ['', ''],

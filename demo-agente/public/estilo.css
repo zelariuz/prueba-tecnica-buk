@@ -270,6 +270,12 @@ textarea {
   color: var(--apagado);
 }
 
+/* Mismo apagado para el selector de casos raros: sin Claude Code no hay caso
+   que ofrecer, y el campo entero se atenúa en vez de esconderse. */
+.campo.apagada {
+  color: var(--apagado);
+}
+
 /* Las dos casillas del agente van en línea y se envuelven en pantallas
    angostas: "redactar" es una opción DE "usar agente", no un paso aparte. */
 .fila-casillas {
@@ -553,6 +559,18 @@ form.controles {
 
 .cuerpo.ancho {
   grid-column: 1 / -1;
+}
+
+/* Un resultado de una comparación de períodos: uno por rango. Se separan con
+   un raíl del color de la capa porque son respuestas distintas —cada una con
+   su caché y su instante—, no trozos de una sola. */
+.cuerpo.rango {
+  border-left: 3px solid var(--capa);
+  padding-left: 0.75rem;
+}
+
+.cuerpo.rango .etiqueta {
+  color: var(--capa-texto);
 }
 
 pre.sql {

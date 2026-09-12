@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto';
 
 import { presupuestos as presupuestosPorDefecto } from './budgets.js';
 import { canonica } from './canonical.js';
+import { apuntandoAlRango, expandirComparacion } from './comparacion.js';
 import { postgres } from './dialect/postgres.js';
 import { crearPlanificador } from './planner.js';
 import { crearTelemetria } from './telemetry.js';
@@ -43,19 +44,64 @@ export function createEngine({
   const fuentesDelEngine = fuentes ?? { [dialect.name]: { dialecto: dialect, pool } };
   // Huella por fuente, resuelta una vez (ver `identidadDeFuente`).
   const huellas = new Map();
-  const planificar = crearPlanificador({ catalog, fuentes: fuentesDelEngine, presupuestos });
+  // El mismo reloj va al planificador: un `dateRange` relativo se resuelve a
+  // fechas en la primera puerta, y el "hoy" con el que se resuelve tiene que ser
+  // el mismo que fecha la respuesta (ADR 0014).
+  const planificar = crearPlanificador({ catalog, fuentes: fuentesDelEngine, presupuestos, reloj });
 
   // Dry-run: el plan sin tocar la base (historia 25). También se observa: el
   // dry-run es una consulta que alguien pidió, y no verla en el log sería no
   // ver justo la que se estaba escribiendo.
   function plan(query, ctx) {
     const comienzo = performance.now();
+    let comparacion;
+    try {
+      comparacion = expandirComparacion(query);
+    } catch (error) {
+      // El dry-run no cuenta en la telemetría —no responde a nadie ni toca la
+      // base— pero sí se observa: es una consulta que alguien escribió, y el
+      // rechazo de la comparación ocurre antes de que haya un plan que emitir.
+      emitir('plan', ctx, { error, gate: error?.gate }, comienzo);
+      throw error;
+    }
+    if (!comparacion) return planDeUnaConsulta(query, ctx);
+    return planDeLaComparacion(comparacion, ctx);
+  }
+
+  // Un plan por rango, en el orden pedido: el dry-run de una comparación tiene
+  // que mostrar las N consultas que se ejecutarían, porque N consultas es
+  // exactamente lo que va a pasar (ADR 0015). Cada plan es el de siempre, y
+  // encima el rango al que corresponde, ya resuelto.
+  function planDeLaComparacion({ indice, consultas }, ctx) {
+    const ahora = reloj();
+    return {
+      results: consultas.map((consulta, posicion) => {
+        let salida;
+        try {
+          salida = planDeUnaConsulta(consulta, ctx, { ahora });
+        } catch (error) {
+          throw apuntandoAlRango(error, indice, posicion);
+        }
+        return { ...rotuloDelRango(salida.plan, indice), ...salida };
+      }),
+    };
+  }
+
+  function planDeUnaConsulta(query, ctx, opciones) {
+    const comienzo = performance.now();
     const registro = {};
     try {
-      const { sql, params, logico } = planificar(query, ctx);
+      const { sql, params, logico, total } = planificar(query, ctx, opciones);
       registro.logico = logico;
       registro.sql = sql;
-      return { sql, params, plan: logico };
+      // El dry-run NO ejecuta el conteo, ni siquiera cuando la consulta pidió
+      // `total: true`: un dry-run es el plan sin tocar la base (historia 25), y
+      // contar filas es tocarla —tan caro como la consulta misma, porque recorre
+      // lo mismo sin el `LIMIT` que la acota—. Pedir el plan para revisar una
+      // consulta antes de gastar la base no puede gastar la base. Lo que sale es
+      // la segunda sentencia, para que se pueda leer antes de correrla, y el
+      // plan lógico diciendo `total: true`.
+      return { sql, params, plan: logico, ...(total === undefined ? {} : { total }) };
     } catch (error) {
       registro.error = error;
       registro.gate = error?.gate;
@@ -70,9 +116,72 @@ export function createEngine({
   // emitir; el `registro` es lo que la llamada fue aprendiendo por el camino.
   async function run(query, ctx) {
     const comienzo = performance.now();
+    let comparacion;
+    try {
+      comparacion = expandirComparacion(query);
+    } catch (error) {
+      // Un rechazo de la comparación es un rechazo del consumidor como
+      // cualquier otro: se cuenta y se observa. Ocurre antes de planificar, así
+      // que no hay consulta que ejecutar ni queryId que emitir.
+      telemetria.registrarError({ consumer: ctx?.consumer, code: error?.code, gate: error?.gate });
+      emitir('run', ctx, { error, gate: error?.gate }, comienzo);
+      throw error;
+    }
+    if (!comparacion) return (await correrObservado(query, ctx)).respuesta;
+    return await compararRangos(comparacion, ctx);
+  }
+
+  // Comparación de períodos: una planificación y una ejecución POR RANGO, cada
+  // una con su queryId, su entrada de caché y su meta (ADR 0015). No hay un
+  // segundo motor: son N vueltas por el mismo camino, y lo único que esta
+  // función agrega es el rótulo que dice a qué ventana corresponde cada
+  // resultado y el orden, que es siempre el de los rangos pedidos.
+  async function compararRangos({ indice, consultas }, ctx) {
+    // Un solo tic del reloj para toda la comparación. Si el día cambiara entre
+    // un rango y el siguiente —el 31 de agosto a las 23:59:59—, `this month` y
+    // `last month` resolverían los dos a agosto y la comparación sería contra sí
+    // misma. Una comparación habla de un solo "hoy".
+    const ahora = reloj();
+    const results = [];
+    // En serie y no en paralelo: N rangos en paralelo son N conexiones del pool
+    // para una sola petición, y el pool lo comparten todos los consumidores. Lo
+    // que se gana comparando —la mitad estable sale de caché— pesa más que la
+    // latencia que se ahorraría.
+    for (const [posicion, consulta] of consultas.entries()) {
+      let ejecutado;
+      try {
+        ejecutado = await correrObservado(consulta, ctx, { ahora });
+      } catch (error) {
+        throw apuntandoAlRango(error, indice, posicion);
+      }
+      results.push({ ...rotuloDelRango(ejecutado.registro.logico, indice), ...ejecutado.respuesta });
+    }
+    return { results };
+  }
+
+  // A qué ventana corresponde un resultado, leído del plan lógico y no de la
+  // consulta: sale ya resuelto —que es lo que el consumidor necesita para
+  // rotular su gráfico— y con la frase al lado si la hubo, con el mismo nombre
+  // que estrenó el dry-run del ADR 0014. Sin esto, `results` sería una lista de
+  // filas sin decir cuál es cuál.
+  function rotuloDelRango(logico, indice) {
+    const { dateRange, dateRangeExpression } = logico.timeDimensions[indice];
+    return {
+      dateRange,
+      ...(dateRangeExpression === undefined ? {} : { dateRangeExpression }),
+    };
+  }
+
+  // Una consulta de punta a punta con su línea de log: es lo que `run` hacía
+  // entero antes de que existiera la comparación. Devuelve también el registro
+  // porque quien compara necesita del plan una cosa que la respuesta no lleva:
+  // a qué par de fechas resolvió el rango de esta vuelta.
+  async function correrObservado(query, ctx, opciones) {
+    const comienzo = performance.now();
     const registro = {};
     try {
-      return await correr(query, ctx, registro);
+      const respuesta = await correr(query, ctx, registro, opciones);
+      return { respuesta, registro };
     } catch (error) {
       registro.error = error;
       throw error;
@@ -102,7 +211,14 @@ export function createEngine({
   // Postgres, el `SET LOCAL statement_timeout` que hace cumplir el
   // presupuesto— lo dice el dialecto: el engine no nombra ninguna sentencia de
   // ningún motor, y un motor que no ofrece ninguna no recibe ninguna.
-  async function ejecutar(sql, params, presupuesto, nombreDeFuente) {
+  //
+  // `total` —la segunda sentencia, la que cuenta las filas sin límite— viaja en
+  // la MISMA transacción que la consulta: así cuenta sobre la misma foto de los
+  // datos que devolvió las filas (de otro modo, una escritura entre las dos
+  // daría un total que no corresponde a lo que el consumidor tiene en la mano),
+  // gasta una conexión y no dos, y queda cubierta por el mismo
+  // `statement_timeout` de la clase.
+  async function ejecutar({ sql, params, total }, presupuesto, nombreDeFuente) {
     // Contra qué base se ejecuta y quién traduce sus errores sale de la fuente
     // de la entidad de hechos, que resolvió el planificador.
     const { pool: poolDeLaFuente, dialecto } = fuentesDelEngine[nombreDeFuente];
@@ -138,8 +254,12 @@ export function createEngine({
         await cliente.query(sentencia);
       }
       const resultado = await cliente.query(sql, params);
+      // `COUNT(*)` es un int8 y node-postgres lo entrega como texto, igual que
+      // cualquier otra medida: sale como número, como todo lo que el consumidor
+      // recibe de esta capa.
+      const conteo = total ? Number(await cliente.query(total.sql, total.params).then(unSoloValor)) : undefined;
       await cliente.query('COMMIT');
-      return resultado.rows;
+      return { filas: resultado.rows, total: conteo };
     } catch (error) {
       // El error de la consulta manda sobre el que haya anotado el oyente: es
       // el que se traduce y el que el consumidor va a leer.
@@ -176,12 +296,12 @@ export function createEngine({
     }
   }
 
-  async function correr(query, ctx, registro) {
+  async function correr(query, ctx, registro, opciones) {
     // El dry-run no cuenta en la telemetría: no responde a nadie ni toca la
     // base. Lo que se mide es lo que se sirvió.
     let plan;
     try {
-      plan = planificar(query, ctx);
+      plan = planificar(query, ctx, opciones);
     } catch (error) {
       telemetria.registrarError({ consumer: ctx?.consumer, code: error?.code, gate: error?.gate });
       // `gate` es no enumerable en el error (planner.js), así que el evento se
@@ -189,7 +309,7 @@ export function createEngine({
       registro.gate = error?.gate;
       throw error;
     }
-    const { sql, params, medidas, presupuesto, advertencias, fuente } = plan;
+    const { sql, params, medidas, presupuesto, advertencias, fuente, filas: tope, total, relleno } = plan;
     registro.logico = plan.logico;
     // El SQL del plan, sin la marca de comentario: el `queryId` que la marca
     // repite ya viaja como campo propio del evento.
@@ -203,8 +323,21 @@ export function createEngine({
     // consultas distintas y no pueden compartir entrada. La empresa dentro del
     // hash hace imposible que una entrada de A sirva a B, y la versión del
     // catálogo invalida todo al cambiar una definición.
+    //
+    // Con `total: true` lo que se ejecuta son DOS sentencias, y la segunda entra
+    // al hash: el SQL de las filas es idéntico se haya pedido o no el conteo, así
+    // que sin ella una consulta con total y otra sin él compartirían entrada de
+    // caché y la segunda en llegar recibiría una respuesta a la que le falta —o
+    // le sobra— el campo. La clave sólo aparece cuando hay segunda sentencia, así
+    // que el `queryId` de todas las consultas de siempre no se movió ni un bit.
     const catalogVersion = catalog.version();
-    const queryId = identificarConsulta({ sql, params, companyId: ctx.companyId, catalogVersion });
+    const queryId = identificarConsulta({
+      sql,
+      sqlTotal: total?.sql,
+      params,
+      companyId: ctx.companyId,
+      catalogVersion,
+    });
     registro.queryId = queryId;
 
     // La llave con la que la caché guarda es el `queryId` con su procedencia
@@ -238,6 +371,14 @@ export function createEngine({
           asOf: guardado.asOf,
           queryId,
           warnings: guardado.warnings,
+          // El total viaja GUARDADO con la entrada, no se recalcula al servirla.
+          // Recalcularlo sería ir a la base justo en el camino que existe para no
+          // ir, y además daría un número de ahora pegado a filas de antes: dos
+          // instantes distintos en la misma respuesta. Guardado, el total es tan
+          // viejo como el `asOf` que está ahí al lado, que es lo honesto. Y no
+          // puede faltar: el `queryId` distingue la consulta con total de la que
+          // no lo pidió, así que una entrada de una nunca sirve a la otra.
+          ...(guardado.total === undefined ? {} : { total: guardado.total }),
         },
       };
     }
@@ -246,27 +387,52 @@ export function createEngine({
     // entrada guardada conserva su propio asOf.
     const asOf = new Date(reloj()).toISOString();
     const comienzo = performance.now();
-    let filas;
+    let ejecutado;
     try {
-      filas = await ejecutar(marcado(sql, queryId, ctx), params, presupuesto, fuente);
+      ejecutado = await ejecutar(
+        {
+          sql: marcado(sql, queryId, ctx),
+          params,
+          ...(total === undefined ? {} : { total: { sql: marcado(total.sql, queryId, ctx), params: total.params } }),
+        },
+        presupuesto,
+        fuente,
+      );
     } catch (error) {
       telemetria.registrarError({ consumer: ctx?.consumer, code: error?.code, gate: 'ejecutar' });
       registro.gate = 'ejecutar';
       throw error;
     }
+    // El tiempo de las dos sentencias, porque las dos son esta consulta contra
+    // la base: contarlas aparte partiría en dos lo que el consumidor esperó una
+    // sola vez. Por eso el conteo no estrena contador propio en la telemetría —
+    // ya se ve donde tiene que verse, en `dbMs`—.
     const dbMs = performance.now() - comienzo;
     telemetria.registrarOk({ consumer: ctx?.consumer, dbMs });
 
-    const rows = aNumeros(filas, medidas);
+    const rows = aNumeros(ejecutado.filas, medidas);
+    // Las advertencias del plan son lo que se pudo saber antes de ejecutar; el
+    // truncado sólo se sabe después, contando lo que volvió. Las dos viajan
+    // juntas en `meta.warnings` porque para quien lee la respuesta son lo mismo:
+    // algo que hay que mirar antes de creerle al número.
+    const avisos = [
+      ...advertencias,
+      ...avisoDeTruncado(rows.length, tope),
+      ...avisoDeRellenoVacio(rows.length, relleno),
+    ];
     registro.servedFrom = 'live';
     registro.rows = rows.length;
     registro.dbMs = dbMs;
-    registro.warnings = advertencias.length;
+    registro.warnings = avisos.length;
 
     // Puerta · Guardar en caché. Sólo lo que se ejecutó en vivo: un resultado
     // servido desde la caché no se vuelve a guardar, así que su TTL cuenta
     // desde la ejecución real y una entrada no se renueva sola para siempre.
-    await guardarEnCache(llave, { rows, asOf, warnings: advertencias }, presupuesto.cacheTtlMs);
+    await guardarEnCache(
+      llave,
+      { rows, asOf, warnings: avisos, ...(ejecutado.total === undefined ? {} : { total: ejecutado.total }) },
+      presupuesto.cacheTtlMs,
+    );
 
     return {
       rows,
@@ -276,7 +442,11 @@ export function createEngine({
         queryId,
         // Siempre presente, aunque esté vacía: quien la lee no tiene que
         // preguntarse si el campo existe.
-        warnings: advertencias,
+        warnings: avisos,
+        // `total` sí es condicional, y al revés que `warnings`: sólo está si la
+        // consulta lo pidió. Un `total: undefined` en toda respuesta obligaría a
+        // distinguir "no lo pedí" de "salió cero".
+        ...(ejecutado.total === undefined ? {} : { total: ejecutado.total }),
       },
     };
   }
@@ -343,6 +513,55 @@ export function createEngine({
   }
 
   return { plan, run, telemetry: telemetria.snapshot, identidadDeFuente };
+}
+
+// Un resultado que llega justo al tope de filas de su clase de consumidor puede
+// venir cortado, y hasta aquí cortaba en silencio: el `LIMIT` recorta, la
+// respuesta sale con 200 y un gráfico dibujado con ella **se ve completo**. Un
+// gráfico truncado que parece entero miente peor que uno con huecos, que es la
+// misma razón por la que existe el relleno del ADR 0012.
+//
+// No se puede saber si sobraban filas sin pedirlas —por eso esto es una
+// advertencia y no una certeza—, y no se pide una fila de más para averiguarlo:
+// el tope de la clase es el tope, y gastarse una fila extra en cada consulta
+// para adornar un aviso sería cobrarle a todos el precio de unos pocos. Quien
+// necesite el número exacto lo pide con `total: true`, que lo cuenta ignorando
+// el límite.
+//
+// El aviso es del resultado y no del plan, así que nace aquí y no en el
+// planificador: antes de ejecutar no hay filas que contar. Viaja con la forma
+// que el repo ya usa para la razón anulada —`{ member, warning }` en
+// `meta.warnings`—, así que ningún consumidor tiene que aprender un campo nuevo.
+function avisoDeTruncado(devueltas, tope) {
+  if (tope === undefined || devueltas < tope) return [];
+  return [
+    {
+      member: 'limit',
+      warning: `El resultado trae ${devueltas} filas, que es exactamente el tope de tu clase de consumidor: puede estar truncado y desde la respuesta no hay forma de notarlo. Acota el rango, sube la granularidad o pide menos dimensiones; con total: true sabrás cuántas filas tiene el resultado completo.`,
+    },
+  ];
+}
+
+// Un relleno que vuelve vacío es un silencio, y el relleno existe justamente
+// para que nada falte. Corregidos los ejes (ADR 0012, corrección del
+// 2026-09-11), la rejilla `buckets × ejes` ya no puede quedar vacía porque el
+// período no tenga datos; sólo puede quedar vacía si la empresa no tiene ningún
+// valor de esa dimensión. Eso hay que decirlo: cero filas y `warnings: []` es lo
+// contrario de lo que la función promete, y desde la respuesta no hay forma de
+// distinguirlo de un error.
+//
+// Nace aquí y no en el planificador por lo mismo que el aviso de truncado: antes
+// de ejecutar no hay filas que contar. Viaja con la forma `{ member, warning }`
+// que el repo ya usa.
+function avisoDeRellenoVacio(devueltas, relleno) {
+  if (relleno === undefined || devueltas > 0) return [];
+  const miembro = relleno.ejes[0] ?? relleno.miembro;
+  return [
+    {
+      member: miembro,
+      warning: `La consulta pidió fillMissing y no devolvió ninguna fila: ${relleno.ejes.length > 0 ? `tu empresa no tiene ningún valor de ${relleno.ejes.join(', ')}` : 'el rango pedido no produjo ni un bucket'}, así que no hay serie que rellenar. No es un resultado vacío por falta de datos en el período: con relleno el período nunca vacía la serie.`,
+    },
+  ];
 }
 
 // El evento que ve el observador: qué se pidió, qué se planificó, de dónde
@@ -416,6 +635,13 @@ function nivelDe(guardado) {
   return guardado.nivel ?? 'cache-l1';
 }
 
+// El único valor de una sentencia que devuelve una sola fila y una sola columna
+// —el `COUNT(*)` del total—. Se lee por posición y no por nombre para que el
+// engine no tenga que conocer el alias con el que el planificador la escribió.
+function unSoloValor(resultado) {
+  return Object.values(resultado.rows[0])[0];
+}
+
 // Postgres devuelve int8 y numeric como texto para no perder precisión; las
 // medidas vuelven al consumidor como números.
 function aNumeros(filas, medidas) {
@@ -441,9 +667,9 @@ function aNumeros(filas, medidas) {
 // pueda servir a otra empresa aunque el SQL se pareciera; la versión, para que
 // el mismo SQL sobre otro contrato de datos no se confunda con la misma
 // consulta. La serialización es canónica: el orden de las claves no lo cambia.
-function identificarConsulta({ sql, params, companyId, catalogVersion }) {
+function identificarConsulta({ sql, sqlTotal, params, companyId, catalogVersion }) {
   return createHash('sha256')
-    .update(canonica({ sql, params, companyId, catalogVersion }))
+    .update(canonica({ sql, ...(sqlTotal === undefined ? {} : { sqlTotal }), params, companyId, catalogVersion }))
     .digest('hex')
     .slice(0, 16);
 }

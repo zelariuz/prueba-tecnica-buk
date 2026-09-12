@@ -16,7 +16,7 @@ import {
   CONSUMIDORES,
 } from './consumidores.js';
 import { ejecutar } from './ejecutar.js';
-import { preguntaPorId, preguntas, prepararTexto } from './preguntas.js';
+import { preguntaPorId, preguntas, preguntasRaras, prepararTexto } from './preguntas.js';
 import { huellaDelCatalogo, promptDeCreacion, PROMPT_DE_SISTEMA } from './sesion.js';
 
 const PUBLICO = new URL('../public/', import.meta.url);
@@ -56,6 +56,12 @@ export function crearServidor({
 
     if (url.pathname === '/api/preguntas') {
       responderJson(respuesta, 200, preguntas);
+      return;
+    }
+    // Los casos raros van por su propia ruta y no mezclados con las preparadas:
+    // son otro selector en la página y otra forma (sin `consulta`).
+    if (url.pathname === '/api/preguntas-raras') {
+      responderJson(respuesta, 200, preguntasRaras);
       return;
     }
     // Los tokens de demo que la página ofrece elegir: nombre, etiqueta y rangos
@@ -106,6 +112,11 @@ export function crearServidor({
         uuid: sesion?.id ?? null,
         versionCatalogo: catalogo?.version ?? null,
         huella: sesion?.huella ?? null,
+        // La otra mitad de la identidad de la sesión: el hash del prompt
+        // entero. Las reglas del vocabulario viven en su texto, no en el
+        // catálogo, así que la huella del catálogo sola no dice si esta sesión
+        // conoce las reglas de hoy.
+        huellaDelPrompt: sesion?.huellaDelPrompt ?? null,
         creadaEn: sesion?.creadaEn ?? null,
         motivo: sesion?.motivo ?? null,
         modelo,

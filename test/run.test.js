@@ -13,6 +13,7 @@ import { reviews } from '../src/definitions/reviews.js';
 import { attendance } from '../src/definitions/attendance.js';
 import { registrarModulos } from '../src/definitions/index.js';
 import { consultasTipo } from '../src/definitions/consultas-tipo.js';
+import { crearMemoryStore } from '../src/cache/store.js';
 
 // La misma foto fija del esquema que usa el resto de los tests del catálogo.
 const SNAPSHOT = JSON.parse(readFileSync(new URL('./fixtures/snapshot.json', import.meta.url), 'utf8'));
@@ -32,6 +33,9 @@ const conteoPorEstado = {
 // Empresas del seed determinista de docker/init/02-seed.sql.
 const EMPRESA_A = 1;
 const EMPRESA_B = 2;
+// Una empresa que el seed no registra: sirve para ver qué responde la capa
+// cuando no hay ni un valor de la dimensión con el que armar los ejes.
+const EMPRESA_SIN_DATOS = 999;
 
 function porEstado(rows) {
   return Object.fromEntries(rows.map((row) => [row['reviews.status'], row['reviews.count']]));
@@ -1249,5 +1253,469 @@ describe('rango sin granularidad', conBase, () => {
     assert.deepEqual(rows, [
       { 'departments.name': 'Ingeniería', 'reviews.avg_score': 4.166666666666667 },
     ]);
+  });
+});
+
+// --- ADR 0012: relleno de series densas. Con `fillMissing: true` el resultado
+// trae todos los buckets del rango, también los que no tienen ninguna fila, y
+// qué se rellena con qué lo decide el tipo de la medida.
+describe('relleno de series densas', conBase, () => {
+  let pool;
+  let catalog;
+  let engine;
+
+  before(() => {
+    pool = new pg.Pool({ connectionString: DATABASE_URL });
+    catalog = createCatalog();
+    registrarModulos(catalog);
+    engine = createEngine({ catalog, pool });
+  });
+
+  after(async () => {
+    await pool.end();
+  });
+
+  // Literales del seed (docker/init/02-seed.sql), asistencia de la empresa 1 en
+  // agosto de 2025. El hueco es del seed, no fabricado para este test:
+  //   Ingeniería (empleado 100): del 01 al 20; ausente el 04, 11, 18 y 20
+  //   Ventas     (empleado 102): del 01 al 10; ausente el 02, 04, 06, 08 y 10
+  // Entre el 08 y el 14, Ventas deja de tener filas a partir del 11: cuatro
+  // buckets vacíos que sin relleno simplemente no salen en el resultado.
+  const SEMANA_CON_HUECO = ['2025-08-08', '2025-08-14'];
+
+  const porDia = {
+    measures: ['attendance.count', 'attendance.attendance_rate'],
+    dimensions: ['departments.name'],
+    timeDimensions: [
+      { dimension: 'attendance.date', granularity: 'day', dateRange: SEMANA_CON_HUECO },
+    ],
+    order: { 'departments.name': 'asc', 'attendance.date': 'asc' },
+  };
+
+  it('sin relleno los días sin filas no aparecen: la serie viene con huecos', async () => {
+    const { rows } = await engine.run(porDia, { companyId: EMPRESA_A, consumer: 'dashboard' });
+
+    const ventas = rows.filter((fila) => fila['departments.name'] === 'Ventas');
+    assert.deepEqual(
+      ventas.map((fila) => fila['attendance.date']),
+      ['2025-08-08', '2025-08-09', '2025-08-10'],
+    );
+    assert.equal(rows.length, 10, 'siete días de Ingeniería y tres de Ventas');
+  });
+
+  it('con relleno salen los siete días de los dos departamentos', async () => {
+    const { rows } = await engine.run(
+      {
+        ...porDia,
+        timeDimensions: [{ ...porDia.timeDimensions[0], fillMissing: true }],
+      },
+      { companyId: EMPRESA_A, consumer: 'dashboard' },
+    );
+
+    assert.equal(rows.length, 14, 'siete buckets por cada uno de los dos ejes');
+
+    // Los cuatro buckets vacíos de Ventas: conteo en 0 —hubo cero días
+    // registrados— y tasa NULA, porque un porcentaje sobre cero días no es 0:
+    // no existe. La razón se anula sola, por el NULLIF de su denominador.
+    assert.deepEqual(
+      rows.filter(
+        (fila) => fila['departments.name'] === 'Ventas' && fila['attendance.date'] > '2025-08-10',
+      ),
+      [
+        { 'departments.name': 'Ventas', 'attendance.date': '2025-08-11', 'attendance.count': 0, 'attendance.attendance_rate': null },
+        { 'departments.name': 'Ventas', 'attendance.date': '2025-08-12', 'attendance.count': 0, 'attendance.attendance_rate': null },
+        { 'departments.name': 'Ventas', 'attendance.date': '2025-08-13', 'attendance.count': 0, 'attendance.attendance_rate': null },
+        { 'departments.name': 'Ventas', 'attendance.date': '2025-08-14', 'attendance.count': 0, 'attendance.attendance_rate': null },
+      ],
+    );
+
+    // Y los buckets que sí tienen datos siguen dando lo mismo que sin relleno:
+    // el 11 de agosto el empleado 100 está ausente, así que Ingeniería marca 0 %
+    // sobre un día registrado. Ese 0 es un dato, no un relleno.
+    assert.deepEqual(
+      rows.find(
+        (fila) =>
+          fila['departments.name'] === 'Ingeniería' && fila['attendance.date'] === '2025-08-11',
+      ),
+      { 'departments.name': 'Ingeniería', 'attendance.date': '2025-08-11', 'attendance.count': 1, 'attendance.attendance_rate': 0 },
+    );
+  });
+
+  it('un promedio sobre un bucket vacío queda nulo, nunca en cero', async () => {
+    const { rows } = await engine.run(
+      {
+        measures: ['reviews.count', 'reviews.avg_score'],
+        timeDimensions: [
+          {
+            dimension: 'reviews.period',
+            granularity: 'quarter',
+            dateRange: ['2025-01-01', '2025-12-31'],
+            fillMissing: true,
+          },
+        ],
+        order: { 'reviews.period': 'asc' },
+      },
+      { companyId: EMPRESA_A, consumer: 'dashboard' },
+    );
+
+    // Literales del seed: la empresa 1 tiene evaluaciones en los tres primeros
+    // trimestres de 2025 y ninguna en el cuarto. Promediar cero scores no da 0,
+    // y un 0 en un gráfico de scores es un número falso que hunde la línea.
+    assert.deepEqual(
+      rows.map((fila) => [fila['reviews.period'], fila['reviews.count'], fila['reviews.avg_score']]),
+      [
+        ['2025-01-01', 3, 4.066666666666666],
+        ['2025-04-01', 3, 3.2333333333333334],
+        ['2025-07-01', 1, 5],
+        ['2025-10-01', 0, null],
+      ],
+    );
+  });
+
+
+  // --- Corrección del ADR 0012 (2026-09-11): el período decide el eje x, no qué
+  // series existen. Antes los ejes salían de la entidad de hechos, cuya CTE ya
+  // lleva el rango, y un valor sin datos en esas fechas desaparecía del
+  // resultado entero.
+
+  it('un rango sin ninguna asistencia devuelve igual todos los departamentos por todos sus días', async () => {
+    const { rows, meta } = await engine.run(
+      {
+        measures: ['attendance.attendance_rate', 'attendance.count'],
+        dimensions: ['departments.name'],
+        timeDimensions: [
+          {
+            dimension: 'attendance.date',
+            granularity: 'day',
+            dateRange: ['2025-01-01', '2025-01-31'],
+            fillMissing: true,
+          },
+        ],
+        order: { 'departments.name': 'asc', 'attendance.date': 'asc' },
+      },
+      { companyId: EMPRESA_A, consumer: 'dashboard' },
+    );
+
+    // El seed sólo tiene asistencia de junio a agosto: en enero no hay ni una
+    // fila. Antes de la corrección esto devolvía `rows: []` y `warnings: []`, que
+    // es lo contrario de lo que fillMissing promete. Ahora son los dos
+    // departamentos de la empresa A por los 31 días de enero.
+    assert.equal(rows.length, 62, 'dos departamentos × 31 días');
+    assert.deepEqual(meta.warnings, []);
+    assert.deepEqual(rows[0], {
+      'departments.name': 'Ingeniería',
+      'attendance.date': '2025-01-01',
+      // La tasa es un promedio: sin días registrados NO existe, y un 0 hundiría
+      // la línea del gráfico justo donde no hubo datos.
+      'attendance.attendance_rate': null,
+      'attendance.count': 0,
+    });
+    assert.deepEqual(rows[61], {
+      'departments.name': 'Ventas',
+      'attendance.date': '2025-01-31',
+      'attendance.attendance_rate': null,
+      'attendance.count': 0,
+    });
+  });
+
+  it('un departamento sin asistencia en el rango sale con su serie completa, no desaparece', async () => {
+    const { rows } = await engine.run(
+      {
+        measures: ['attendance.count'],
+        dimensions: ['departments.name'],
+        timeDimensions: [
+          {
+            dimension: 'attendance.date',
+            granularity: 'day',
+            dateRange: ['2025-08-11', '2025-08-14'],
+            fillMissing: true,
+          },
+        ],
+        order: { 'departments.name': 'asc', 'attendance.date': 'asc' },
+      },
+      { companyId: EMPRESA_A, consumer: 'dashboard' },
+    );
+
+    // Del 11 al 14 de agosto Ventas (empleado 102, que marca del 01 al 10) no
+    // tiene ni una fila, mientras Ingeniería las tiene todas. Faltar una línea
+    // entera del gráfico es peor que un hueco: el consumidor no puede notarlo.
+    assert.deepEqual(
+      rows.filter((fila) => fila['departments.name'] === 'Ventas'),
+      [
+        { 'departments.name': 'Ventas', 'attendance.date': '2025-08-11', 'attendance.count': 0 },
+        { 'departments.name': 'Ventas', 'attendance.date': '2025-08-12', 'attendance.count': 0 },
+        { 'departments.name': 'Ventas', 'attendance.date': '2025-08-13', 'attendance.count': 0 },
+        { 'departments.name': 'Ventas', 'attendance.date': '2025-08-14', 'attendance.count': 0 },
+      ],
+    );
+    assert.equal(rows.length, 8, 'los cuatro días de los dos departamentos');
+  });
+
+  it('un relleno que vuelve vacío lo dice: el silencio es el fallo que esto corrige', async () => {
+    const { rows, meta } = await engine.run(
+      {
+        measures: ['attendance.count'],
+        dimensions: ['departments.name'],
+        timeDimensions: [
+          {
+            dimension: 'attendance.date',
+            granularity: 'day',
+            dateRange: ['2025-01-01', '2025-01-07'],
+            fillMissing: true,
+          },
+        ],
+      },
+      { companyId: EMPRESA_SIN_DATOS, consumer: 'dashboard' },
+    );
+
+    // Una empresa sin ningún departamento no tiene ejes, así que la rejilla sale
+    // vacía. Es el único vacío que queda posible, y una función que existe para
+    // que nada falte no puede fallar callada.
+    assert.deepEqual(rows, []);
+    assert.equal(meta.warnings.length, 1);
+    assert.equal(meta.warnings[0].member, 'departments.name');
+    assert.match(meta.warnings[0].warning, /fillMissing y no devolvió ninguna fila/);
+  });
+
+  it('el tope de filas del ADR 0013 mide la rejilla nueva, que ahora puede ser más grande', async () => {
+    const acotado = createEngine({
+      catalog,
+      pool,
+      presupuestos: {
+        dashboard: { timeoutMs: 5_000, maxFilas: 40, rangoObligatorio: false, cacheTtlMs: 0 },
+      },
+    });
+
+    const { rows, meta } = await acotado.run(
+      {
+        measures: ['attendance.count'],
+        dimensions: ['departments.name'],
+        total: true,
+        timeDimensions: [
+          {
+            dimension: 'attendance.date',
+            granularity: 'day',
+            dateRange: ['2025-01-01', '2025-01-31'],
+            fillMissing: true,
+          },
+        ],
+        order: { 'departments.name': 'asc', 'attendance.date': 'asc' },
+      },
+      { companyId: EMPRESA_A, consumer: 'dashboard' },
+    );
+
+    // Los 31 buckets caben en el tope de 40, así que la consulta no se rechaza
+    // al planificar; la rejilla completa son 62 filas y el corte se avisa. El
+    // total cuenta el mismo cuerpo, así que mide la rejilla corregida sin una
+    // regla propia.
+    assert.equal(rows.length, 40, 'cortada en el tope de la clase');
+    assert.equal(meta.total, 62);
+    assert.equal(meta.warnings.length, 1);
+    assert.equal(meta.warnings[0].member, 'limit');
+  });
+
+  it('el relleno no cruza empresas: los ejes salen de los valores de la propia', async () => {
+    const { rows } = await engine.run(
+      {
+        measures: ['attendance.count'],
+        dimensions: ['departments.name'],
+        timeDimensions: [
+          {
+            dimension: 'attendance.date',
+            granularity: 'day',
+            dateRange: ['2025-08-03', '2025-08-05'],
+            fillMissing: true,
+          },
+        ],
+        order: { 'departments.name': 'asc', 'attendance.date': 'asc' },
+      },
+      { companyId: EMPRESA_B, consumer: 'dashboard' },
+    );
+
+    // La empresa 2 tiene dos departamentos propios (20 y 21) y sólo registra
+    // asistencia en Ingeniería (empleado 200, del 01 al 04 de agosto). Los ejes
+    // son sus dos departamentos —existen, tengan datos o no en el rango: es la
+    // corrección del ADR 0012— y ninguno más: los cuatro departamentos del seed
+    // se llaman de a dos igual, así que un cruce de empresas daría filas
+    // repetidas. Ventas sale con su serie completa en 0 y el día 05 de
+    // Ingeniería también.
+    assert.deepEqual(
+      rows.map((fila) => [fila['departments.name'], fila['attendance.date'], fila['attendance.count']]),
+      [
+        ['Ingeniería', '2025-08-03', 1],
+        ['Ingeniería', '2025-08-04', 1],
+        ['Ingeniería', '2025-08-05', 0],
+        ['Ventas', '2025-08-03', 0],
+        ['Ventas', '2025-08-04', 0],
+        ['Ventas', '2025-08-05', 0],
+      ],
+    );
+  });
+});
+
+// --- Aviso de resultado truncado. Vale para CUALQUIER consulta, no sólo para
+// las que rellenan: el `LIMIT` de la clase de consumidor recorta en silencio y
+// una respuesta cortada se ve igual de completa que una entera.
+describe('aviso de resultado truncado', conBase, () => {
+  let pool;
+  let catalog;
+
+  before(() => {
+    pool = new pg.Pool({ connectionString: DATABASE_URL });
+    catalog = createCatalog();
+    for (const definicion of [reviews, employees, departments]) catalog.register(definicion);
+  });
+
+  after(async () => {
+    await pool.end();
+  });
+
+  const ctx = { companyId: EMPRESA_A, consumer: 'dashboard' };
+
+  it('la consulta que llega al tope de su clase vuelve con la advertencia', async () => {
+    // La empresa A tiene tres estados en el seed; esta clase sólo puede
+    // devolver dos, así que la tercera fila se pierde sin que se note.
+    const acotado = createEngine({
+      catalog,
+      pool,
+      presupuestos: { dashboard: { timeoutMs: 5_000, maxFilas: 2, rangoObligatorio: false } },
+    });
+
+    const { rows, meta } = await acotado.run(conteoPorEstado, ctx);
+
+    assert.equal(rows.length, 2);
+    assert.equal(meta.warnings.length, 1);
+    assert.equal(meta.warnings[0].member, 'limit');
+    assert.match(meta.warnings[0].warning, /truncado/);
+    assert.match(meta.warnings[0].warning, /total: true/);
+  });
+
+  it('la consulta que no lo alcanza no trae ninguna advertencia', async () => {
+    const engine = createEngine({ catalog, pool });
+
+    const { rows, meta } = await engine.run(conteoPorEstado, ctx);
+
+    assert.equal(rows.length, 3, 'los tres estados del seed, muy por debajo de las 5.000 del tope');
+    assert.deepEqual(meta.warnings, []);
+  });
+
+  it('el aviso viaja con la entrada de caché: la repetida dice lo mismo', async () => {
+    const acotado = createEngine({
+      catalog,
+      pool,
+      cache: crearMemoryStore(),
+      presupuestos: { dashboard: { timeoutMs: 5_000, maxFilas: 2, rangoObligatorio: false, cacheTtlMs: 60_000 } },
+    });
+
+    const primera = await acotado.run(conteoPorEstado, ctx);
+    const segunda = await acotado.run(conteoPorEstado, ctx);
+
+    assert.equal(segunda.meta.servedFrom, 'cache-l1');
+    // Las mismas filas cortadas de la misma manera: la advertencia no puede
+    // depender de si la respuesta salió de la base o de la caché.
+    assert.deepEqual(segunda.meta.warnings, primera.meta.warnings);
+    assert.equal(segunda.meta.warnings.length, 1);
+  });
+});
+
+// --- `total: true`: el número de filas del resultado ignorando límite y
+// desplazamiento, que es lo que hace falta para paginar. No es el gran total de
+// ninguna medida: es un conteo de filas.
+describe('total de filas para paginar', conBase, () => {
+  let pool;
+  let catalog;
+  let engine;
+
+  before(() => {
+    pool = new pg.Pool({ connectionString: DATABASE_URL });
+    catalog = createCatalog();
+    registrarModulos(catalog);
+    engine = createEngine({ catalog, pool });
+  });
+
+  after(async () => {
+    await pool.end();
+  });
+
+  const TABLERO = { companyId: EMPRESA_A, consumer: 'dashboard' };
+
+  // La misma semana con hueco del relleno: del 8 al 14 de agosto, Ingeniería
+  // tiene los siete días y Ventas sólo el 08, el 09 y el 10.
+  const asistenciaPorDia = {
+    measures: ['attendance.count'],
+    dimensions: ['departments.name'],
+    timeDimensions: [
+      { dimension: 'attendance.date', granularity: 'day', dateRange: ['2025-08-08', '2025-08-14'] },
+    ],
+    order: { 'departments.name': 'asc', 'attendance.date': 'asc' },
+  };
+
+  it('sin relleno cuenta las filas que la consulta devolvería sin techo', async () => {
+    const { rows, meta } = await engine.run({ ...asistenciaPorDia, total: true }, TABLERO);
+
+    // Siete días de Ingeniería y tres de Ventas: los mismos diez que ya devuelve
+    // la consulta sin relleno del seed.
+    assert.equal(rows.length, 10);
+    assert.equal(meta.total, 10);
+  });
+
+  it('con relleno el total es buckets × ejes, sin ninguna regla aparte', async () => {
+    const { rows, meta } = await engine.run(
+      {
+        ...asistenciaPorDia,
+        total: true,
+        timeDimensions: [{ ...asistenciaPorDia.timeDimensions[0], fillMissing: true }],
+      },
+      TABLERO,
+    );
+
+    // Siete buckets del rango por los dos departamentos de la empresa A. Sale
+    // solo porque el conteo se hace sobre el mismo cuerpo que produce las filas.
+    assert.equal(rows.length, 14);
+    assert.equal(meta.total, 14);
+  });
+
+  it('el total ignora el límite: es lo que permite pedir la página siguiente', async () => {
+    const { rows, meta } = await engine.run({ ...asistenciaPorDia, total: true, limit: 3 }, TABLERO);
+
+    assert.equal(rows.length, 3, 'la página pedida');
+    assert.equal(meta.total, 10, 'y el resultado completo, para saber cuántas páginas faltan');
+    // Y como la página llegó justo al techo, la respuesta además advierte que
+    // puede venir cortada: las dos mitades del mismo problema.
+    assert.equal(meta.warnings.length, 1);
+    assert.equal(meta.warnings[0].member, 'limit');
+  });
+
+  it('sin la propiedad no hay campo total: no se cuenta lo que nadie pidió', async () => {
+    const { meta } = await engine.run(asistenciaPorDia, TABLERO);
+
+    assert.ok(!('total' in meta), 'un total en cada respuesta sería una consulta más por consulta');
+  });
+
+  it('el total sale guardado con la entrada de caché, no se recalcula', async () => {
+    const conCache = createEngine({ catalog, pool, cache: crearMemoryStore() });
+    const consulta = { ...asistenciaPorDia, total: true };
+
+    const primera = await conCache.run(consulta, TABLERO);
+    const segunda = await conCache.run(consulta, TABLERO);
+
+    assert.equal(primera.meta.servedFrom, 'live');
+    assert.equal(segunda.meta.servedFrom, 'cache-l1');
+    assert.equal(segunda.meta.total, 10, 'el mismo total, tan viejo como el asOf que lo acompaña');
+    assert.equal(segunda.meta.asOf, primera.meta.asOf);
+  });
+
+  it('la consulta con total y la misma sin total no comparten entrada de caché', async () => {
+    const conCache = createEngine({ catalog, pool, cache: crearMemoryStore() });
+
+    const conTotal = await conCache.run({ ...asistenciaPorDia, total: true }, TABLERO);
+    const sinTotal = await conCache.run(asistenciaPorDia, TABLERO);
+
+    // El SQL de las filas es idéntico en las dos; lo que las distingue es la
+    // segunda sentencia, y por eso entra al queryId. Si compartieran llave, la
+    // segunda recibiría una respuesta con un campo que no pidió, o al revés.
+    assert.notEqual(sinTotal.meta.queryId, conTotal.meta.queryId);
+    assert.equal(sinTotal.meta.servedFrom, 'live');
+    assert.ok(!('total' in sinTotal.meta));
   });
 });

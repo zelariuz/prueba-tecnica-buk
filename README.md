@@ -93,7 +93,7 @@ Con los contenedores de A arriba, en la raíz del repo:
 npm install
 export DATABASE_URL=postgres://capa:capa@localhost:5433/capa_semantica
 export REDIS_URL=redis://localhost:6380
-npm test                         # suite completa, 217 tests
+npm test                         # suite completa, 291 tests
 npm run demo                     # las tres preguntas del caso, por consola
 ```
 
@@ -181,6 +181,11 @@ contra el día `hasta` pierde casi todo el último día. Los dos tipos salieron 
 mapa de tipos del dialecto justamente para que no se acepten en silencio.
 Evolución: `timestamptz` en base, zona declarada por empresa en el catálogo y
 `AT TIME ZONE` en el dialecto. Detalle en `docs/riesgos.md`.
+
+La propiedad `timezone` de la consulta (ADR 0014) **no reabre este supuesto**:
+no convierte ningún dato ni emite un solo `AT TIME ZONE`. Sirve únicamente para
+saber qué día es "hoy" al resolver un `dateRange` relativo (`last 6 months`) a
+fechas; con un rango absoluto no cambia nada.
 
 ## Cómo se consulta
 
@@ -309,6 +314,301 @@ sólo el departamento. Agregar `granularity: 'month'` devuelve la tendencia mes 
 mes, que es la otra pregunta. Una `timeDimension` **sin** `dateRange` y **sin**
 `granularity` es `INVALID_QUERY`: no filtra ni agrupa, así que no dice nada.
 
+### Un rango relativo: `dateRange` como frase
+
+`dateRange` acepta, además del par de fechas, **una frase de un vocabulario
+cerrado** que la capa resuelve a ese par (ADR 0014). "Los últimos seis meses" se
+escribe una vez y sigue diciendo lo mismo mañana:
+
+```js
+await engine.run(
+  {
+    measures: ['attendance.attendance_rate'],
+    dimensions: ['departments.name'],
+    timeDimensions: [{ dimension: 'attendance.date', dateRange: 'last 6 months' }],
+  },
+  { companyId: 1, consumer: 'dashboard' },
+);
+```
+
+Las quince formas, escritas **exactamente así, en minúsculas**:
+
+| Frase | Ventana (con hoy = viernes 11-09-2020) |
+|---|---|
+| `today` / `yesterday` | `2020-09-11` / `2020-09-10` |
+| `this week` | `2020-09-07` → `2020-09-11` (del lunes a hoy) |
+| `this month` | `2020-09-01` → `2020-09-11` |
+| `this quarter` | `2020-07-01` → `2020-09-11` |
+| `this year` | `2020-01-01` → `2020-09-11` |
+| `last week` | `2020-08-31` → `2020-09-06` |
+| `last month` | `2020-08-01` → `2020-08-31` |
+| `last quarter` | `2020-04-01` → `2020-06-30` |
+| `last year` | `2019-01-01` → `2019-12-31` |
+| `last N days` | `last 7 days` → `2020-09-04` → `2020-09-10` |
+| `last N weeks` | `last 2 weeks` → `2020-08-24` → `2020-09-06` |
+| `last N months` | `last 6 months` → `2020-03-01` → `2020-08-31` |
+| `last N quarters` | `last 3 quarters` → `2019-10-01` → `2020-06-30` |
+| `last N years` | `last 2 years` → `2018-01-01` → `2019-12-31` |
+
+Dos reglas, y están decididas y escritas para que no haya que adivinarlas:
+
+- **`last …` es el período calendario anterior COMPLETO y nunca incluye hoy.**
+  `last month` es agosto entero, no los últimos 30 días; un período a medio
+  transcurrir hunde el último punto del gráfico y arruina la comparación contra
+  el anterior. Quien quiera la ventana móvil escribe `last 30 days`.
+- **`this …` va del comienzo del período en curso a hoy**, no al final del
+  período: un rango que llegara al 31 de diciembre incluiría días que todavía no
+  ocurrieron.
+
+`N` es un entero positivo y la unidad va siempre en plural, también con N=1
+(`last 1 months` es `last month`). La semana empieza el **lunes**, como el
+`DATE_TRUNC('week', …)` de Postgres. **No hay intérprete de lenguaje natural**:
+cualquier otra cadena —`Last 6 Months`, `last 6 month`, `últimos seis meses`— es
+`INVALID_QUERY` con la lista entera en la sugerencia. Cube usa Chrono para
+interpretar frases libres; aquí no, por la misma razón por la que las
+granularidades son una lista cerrada: un rango mal interpretado no falla,
+devuelve los datos de otro período con un 200 y nadie lo nota.
+
+Para saber cuándo empieza "hoy" hace falta una zona: es `timezone`, una
+propiedad **de la consulta** (como en Cube), por omisión `UTC`, validada con la
+API `Intl` del runtime —una zona que el runtime no conoce es `INVALID_QUERY`—.
+
+```js
+{ measures: ['attendance.count'],
+  timeDimensions: [{ dimension: 'attendance.date', granularity: 'day', dateRange: 'last 7 days' }],
+  timezone: 'America/Santiago' }
+```
+
+La zona **sólo** sirve para resolver la frase a fechas: no reabre el supuesto v1
+de más arriba, las columnas siguen siendo `DATE` y la capa sigue sin convertir
+nada. Con un `dateRange` absoluto no cambia absolutamente nada.
+
+La frase se resuelve **en la primera puerta del planificador**, antes de que las
+fechas entren como parámetros `$n` y, por lo tanto, antes de que exista el
+`queryId`. Eso es lo que hace que "los últimos siete días" de hoy y los de
+mañana sean dos entradas de caché distintas: si la identidad naciera de la
+frase, el gráfico se quedaría congelado en la primera ventana. El dry-run
+muestra en qué quedó:
+
+```jsonc
+// POST /analytics/query?dryRun=true
+"plan": {
+  "timeDimensions": [{ "dimension": "attendance.date", "granularity": "day",
+                       "dateRange": ["2025-08-08", "2025-08-14"],
+                       "dateRangeExpression": "last 7 days" }],
+  "timezone": "UTC"
+}
+```
+
+### Comparar períodos: `compareDateRange`
+
+"Este mes contra el mes pasado", en una sola petición. `compareDateRange` va en
+la dimensión temporal **en lugar de** `dateRange`, con la lista de rangos a
+comparar (ADR 0015). Cada rango es un par de fechas **o una frase del
+vocabulario de arriba**, que es el caso de uso real:
+
+```jsonc
+// POST /analytics/query
+{ "measures": ["attendance.count"],
+  "dimensions": ["departments.name"],
+  "timeDimensions": [{ "dimension": "attendance.date", "granularity": "month",
+                       "compareDateRange": ["this month", "last month"] }] }
+```
+
+La respuesta trae **un resultado por rango**, en el orden pedido (con hoy =
+15-08-2025):
+
+```jsonc
+{ "results": [
+    { "dateRange": ["2025-08-01", "2025-08-15"],
+      "dateRangeExpression": "this month",
+      "rows": [ { "departments.name": "Ingeniería", "attendance.date": "2025-08-01", "attendance.count": 15 },
+                { "departments.name": "Ventas",     "attendance.date": "2025-08-01", "attendance.count": 10 } ],
+      "meta": { "servedFrom": "live", "asOf": "2025-08-15T12:00:00.000Z",
+                "queryId": "abf79906593cc5e4", "warnings": [] } },
+
+    { "dateRange": ["2025-07-01", "2025-07-31"],
+      "dateRangeExpression": "last month",
+      "rows": [ { "departments.name": "Ingeniería", "attendance.date": "2025-07-01", "attendance.count": 31 },
+                { "departments.name": "Ventas",     "attendance.date": "2025-07-01", "attendance.count": 31 } ],
+      "meta": { "servedFrom": "cache-l1", "asOf": "2025-08-15T12:00:00.000Z",
+                "queryId": "5c3af4cd1829e72e", "warnings": [] } } ] }
+```
+
+Salida real de la base del repo, con el reloj fijo en ese instante y un tablero
+que ya había mirado el mes pasado por su cuenta.
+
+Lo que hay que leer ahí: cada elemento dice **a qué ventana corresponde, ya
+resuelta**, con la frase al lado para poder rotular el gráfico; y cada uno trae
+su propio `meta`, porque **cada rango es una consulta entera**, con su `queryId`
+y su entrada de caché. En el ejemplo el mes pasado sale de la caché y el mes en
+curso no: eso es el diseño funcionando. El mes pasado ya no va a cambiar nunca;
+este mes cambia todo el rato.
+
+Ésa es la razón por la que la capa **no** resuelve esto con un `UNION ALL`: los
+dos rangos compartirían una llave de caché y un TTL, y la mitad estable se
+recalcularía en cada consulta. La segunda razón es el contrato: `UNION ALL`
+obligaría a una columna que dijera de qué rango viene cada fila, y esa columna no
+sería un miembro declarado por ninguna entidad. Medido contra la base del repo:
+la misma comparación tarda **95,4 ms** la primera vez y **1,1 ms** la segunda; si
+se cambia **sólo un rango**, 26,1 ms — el otro sigue saliendo de caché.
+
+Una consulta **sin** `compareDateRange` devuelve exactamente la respuesta de
+siempre, `{ rows, meta }`: la forma la decide la presencia de la propiedad, y por
+eso `compareDateRange: ["last month"]` —un solo rango— también devuelve
+`results`, con un elemento. Lo demás funciona por rango sin nada que aprender:
+`fillMissing` rellena cada serie por separado, `total: true` cuenta las filas de
+cada una, y el dry-run devuelve un plan por rango.
+
+Se rechaza con `INVALID_QUERY`: traer `dateRange` y `compareDateRange` en la
+misma dimensión temporal (declaran lo mismo), una lista vacía, **más de cuatro
+rangos** —cada rango es una consulta contra la base; de cinco en adelante lo que
+se quiere es una serie con `granularity`—, dos dimensiones temporales comparando
+a la vez, y cualquier rango que no sea un `dateRange` válido. El rechazo de un
+rango señala la posición que se escribió: `timeDimensions[0].compareDateRange[1]`.
+
+### Una serie sin huecos: `fillMissing`
+
+Una serie agregada sólo trae los buckets que **tienen filas**, así que un
+gráfico de líneas salta los días sin datos y dibuja una curva que miente.
+`fillMissing: true` en la dimensión temporal devuelve **todos** los buckets del
+rango (ADR 0012). Exige `granularity` y `dateRange`: sin los dos no hay serie
+que generar.
+
+```js
+await engine.run(
+  {
+    measures: ['attendance.count', 'attendance.attendance_rate'],
+    dimensions: ['departments.name'],
+    timeDimensions: [
+      {
+        dimension: 'attendance.date',
+        granularity: 'day',
+        dateRange: ['2025-08-08', '2025-08-14'],
+        fillMissing: true,
+      },
+    ],
+    order: { 'departments.name': 'asc', 'attendance.date': 'asc' },
+  },
+  { companyId: 1, consumer: 'dashboard' },
+);
+// Ventas no registra asistencia después del 10 de agosto. Sin la bandera, esos
+// cuatro días simplemente no salen; con ella:
+// → [ …,
+//    { 'departments.name': 'Ventas', 'attendance.date': '2025-08-10', 'attendance.count': 1, 'attendance.attendance_rate': 0 },
+//    { 'departments.name': 'Ventas', 'attendance.date': '2025-08-11', 'attendance.count': 0, 'attendance.attendance_rate': null },
+//    { 'departments.name': 'Ventas', 'attendance.date': '2025-08-12', 'attendance.count': 0, 'attendance.attendance_rate': null }, … ]
+```
+
+**Qué se rellena con qué lo decide el tipo de la medida**, no la consulta: un
+`count`, un `count_distinct` y un `sum` valen **0** en un bucket vacío, porque
+hubo cero eventos. Un `avg` y una razón quedan **nulos**: promediar cero valores
+no da cero, da nada, y un 0 ahí hunde la línea del gráfico con un número falso.
+
+La bandera vive en la consulta y no en la definición del módulo porque una serie
+densa la necesita quien dibuja, no la entidad: el mismo módulo alimenta un
+gráfico que la quiere y una exportación que no. El SQL está en
+`test/snapshots/relleno-de-serie.sql`. Requiere que el dialecto de la fuente
+declare la capacidad `serieDeFechas`: Postgres la declara, SQLite no, y pedirla
+sobre SQLite sale con `UNSUPPORTED_OPERATOR` (400) y una sugerencia.
+
+**Los ejes son los valores que existen, no los que tienen datos en el período**
+(corrección del ADR 0012, 11-09). El rango decide el eje x y nada más: los
+valores de las dimensiones no temporales salen de las CTE de **sus propias
+entidades** —`FROM departments`, no `FROM attendance JOIN employees JOIN
+departments`—, así que respetan la empresa y los filtros de la consulta, pero no
+el recorte de fechas. Un departamento sin asistencia en enero sale igual, con sus
+31 días en cero; antes desaparecía del gráfico entero, y si ninguno tenía datos
+la respuesta eran cero filas sin una palabra. Una entidad intermedia entra a los
+ejes sólo si aporta un filtro propio —con el segmento `employees.active`, los
+ejes pasan a ser los departamentos con empleados activos— o si hace de puente.
+
+Dos consecuencias del mismo criterio:
+
+- **Una dimensión no temporal de la propia entidad de hechos rechaza el
+  relleno.** `dimensions: ['attendance.present']` con `fillMissing` sale con
+  `INVALID_QUERY` (400): saber qué valores tiene exigiría recorrer `attendance`
+  entera sin el rango que la acota, que es el costo que el rango evita. La
+  sugerencia dice las dos salidas: agrupar por una dimensión de otra entidad, o
+  pedir la consulta sin relleno.
+- **Un relleno que vuelve vacío lo avisa** en `meta.warnings`. Sólo puede pasar
+  si la empresa no tiene ningún valor de esa dimensión, y una función que existe
+  para que nada falte no puede fallar callada.
+
+### Cuando el resultado llega al tope: la advertencia de truncado
+
+Toda consulta sale con `LIMIT`: el tope de filas de tu clase de consumidor
+(`dashboard` 5.000, `api` 10.000, `agent` 1.000). Cuando el resultado lo alcanza,
+la base recorta y la respuesta sale con 200 — y un gráfico dibujado con ella **se
+ve completo**. Desde el ADR 0013 eso ya no pasa en silencio: la respuesta trae
+una advertencia en `meta.warnings`, con la misma forma que la de la razón
+anulada.
+
+```js
+const { rows, meta } = await engine.run({ ...consulta, limit: 3 }, ctx);
+// rows.length === 3
+// meta.warnings → [{ member: 'limit',
+//   warning: 'El resultado trae 3 filas, que es exactamente el tope de tu clase
+//             de consumidor: puede estar truncado y desde la respuesta no hay
+//             forma de notarlo. Acota el rango, sube la granularidad o pide
+//             menos dimensiones; con total: true sabrás cuántas filas tiene el
+//             resultado completo.' }]
+```
+
+Es una advertencia y no una certeza porque saber si sobraban filas exige
+pedirlas, y la capa **no pide una fila de más** en cada consulta para adornar el
+aviso. Quien quiere el número exacto usa `total: true`.
+
+La otra mitad del guardarraíl es un rechazo, y sólo aplica a `fillMissing`: los
+buckets de una serie se cuentan sin tocar la base, desde el `dateRange` y la
+`granularity`. Si los buckets **solos** ya pasan el límite efectivo, ni con un
+único departamento cabría la serie, así que la consulta se rechaza al planificar
+con `INVALID_QUERY` (400):
+
+```js
+// Clase con tope de 90 filas, 181 días por día.
+// → INVALID_QUERY en timeDimensions attendance.date:
+//   'La serie que pide fillMissing tiene 181 buckets (granularity day entre
+//    2025-01-01 y 2025-06-30) y tu clase de consumidor sólo puede devolver 90
+//    filas: … Sube la granularidad (day → week → month → quarter → year),
+//    acorta el dateRange a lo más 90 buckets, o pide la serie por tramos.'
+```
+
+Los **ejes no se estiman**: cuántos departamentos tiene la empresa sólo lo sabe
+la base, y preguntárselo sería gastar una consulta para decidir si vale la pena
+hacer la otra. El rechazo se queda con lo que se sabe con certeza y gratis; el
+resto lo cubre la advertencia de arriba, que cuenta filas de verdad.
+
+### Cuántas filas tiene el resultado completo: `total`
+
+`total: true` devuelve en `meta.total` el número de filas del resultado
+**ignorando límite y desplazamiento**, que es lo que hace falta para paginar. No
+es el gran total de ninguna medida: es un conteo de filas.
+
+```js
+const { rows, meta } = await engine.run(
+  { ...asistenciaPorDia, total: true, limit: 3 },
+  { companyId: 1, consumer: 'dashboard' },
+);
+// rows.length === 3   ← la página
+// meta.total === 10   ← el resultado completo: faltan cuatro páginas
+```
+
+Se implementa como una **segunda sentencia sobre el mismo cuerpo**, sin
+`ORDER BY` y sin `LIMIT` —`SELECT COUNT(*) FROM (<cuerpo>) AS t`—, y no como un
+camino aparte. Por eso vale igual con derivadas y con relleno sin una sola regla
+propia: con `fillMissing` el conteo da `buckets × ejes` porque cuenta exactamente
+la rejilla que la consulta devolvería sin techo (la misma semana da 10 filas sin
+relleno y 14 con relleno, y el total dice 10 y 14).
+
+Las dos sentencias van en la **misma transacción**: el total cuenta sobre la
+misma foto de los datos que produjo las filas, y su tiempo entra en el `dbMs` de
+la telemetría. **En dry-run no se ejecuta nada** —un dry-run no toca la base, y
+contar filas la toca—: lo que devuelve es la sentencia, para poder leerla, y el
+plan lógico con `total: true`. **Desde caché el total viene guardado con la
+entrada**, no se recalcula; una consulta con `total` y la misma sin él no
+comparten entrada, porque la segunda sentencia entra al `queryId`.
+
 ## Medidas derivadas: razones sobre agregados
 
 `completion_rate` no se declara como una fórmula: se declara como la razón entre
@@ -358,9 +658,10 @@ const { sql, params, plan } = engine.plan(consulta, { companyId: 1, consumer: 'a
 ```
 
 `plan` trae la entidad de hechos, el camino de joins, las dimensiones, las
-medidas pedidas, las medidas base que hizo falta resolver, las derivadas con su
-numerador y denominador, los filtros globales, los filtros de cada medida, el
-presupuesto aplicado con el límite efectivo y las advertencias. No abre ninguna
+dimensiones temporales con su rango **ya resuelto** y la zona con que se resolvió
+(ADR 0014), las medidas pedidas, las medidas base que hizo falta resolver, las
+derivadas con su numerador y denominador, los filtros globales, los filtros de
+cada medida, el presupuesto aplicado con el límite efectivo y las advertencias. No abre ninguna
 conexión: un agente puede revisar la consulta antes de ejecutarla.
 
 El plan lógico está escrito **en nombres semánticos**: no hay una tabla ni una
@@ -478,7 +779,7 @@ queda en el log del servidor.
 | HTTP | Códigos |
 | --- | --- |
 | 401 | `MISSING_TENANT` (sin token o token desconocido) |
-| 400 | `FORBIDDEN_FIELD`, `UNKNOWN_MEMBER`, `NO_JOIN_PATH`, `INVALID_OPERATOR`, `UNSUPPORTED_OPERATOR`, `MULTI_ENTITY_MEASURES`, `MISSING_TIME_RANGE`, `INVALID_CONSUMER`, `UNKNOWN_QUERY`, `MISSING_PARAM`, `INVALID_JSON` |
+| 400 | `FORBIDDEN_FIELD`, `UNKNOWN_MEMBER`, `NO_JOIN_PATH`, `INVALID_OPERATOR`, `UNSUPPORTED_OPERATOR`, `MULTI_ENTITY_MEASURES`, `MISSING_TIME_RANGE`, `INVALID_CONSUMER`, `UNKNOWN_QUERY`, `MISSING_PARAM`, `INVALID_QUERY`, `INVALID_JSON` |
 | 403 | `FORBIDDEN` (el token se reconoció, pero su sesión no es interna) |
 | 413 | `PAYLOAD_TOO_LARGE` (el cuerpo pasó los 64 KiB) |
 | 503 | `SCHEMA_DRIFT` (la base ya no calza con el catálogo), `SOURCE_UNAVAILABLE` (la base de la fuente no responde; la respuesta lleva `Retry-After: 5`) |

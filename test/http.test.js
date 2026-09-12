@@ -250,6 +250,41 @@ describe('capa HTTP', { ...conBase, timeout: 10_000 }, () => {
     }
   });
 
+  // Comparación de períodos (ADR 0015): la única consulta que cambia la forma de
+  // la respuesta también cambia la del dry-run —un plan por rango—, y el SQL se
+  // tiene que seguir escondiendo en cada uno de ellos.
+  it('el dry-run de una comparación devuelve un plan por rango, sin SQL', async () => {
+    const respuesta = await fetch(`${base}/analytics/query?dryRun=true`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${TOKEN_A}`, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        measures: ['reviews.count'],
+        timeDimensions: [
+          {
+            dimension: 'reviews.period',
+            granularity: 'quarter',
+            compareDateRange: [
+              ['2025-01-01', '2025-06-30'],
+              ['2024-01-01', '2024-06-30'],
+            ],
+          },
+        ],
+      }),
+    });
+
+    assert.equal(respuesta.status, 200);
+    const cuerpo = await respuesta.json();
+    assert.equal(cuerpo.results.length, 2);
+    assert.deepEqual(cuerpo.results[0].dateRange, ['2025-01-01', '2025-06-30']);
+    assert.deepEqual(cuerpo.results[1].dateRange, ['2024-01-01', '2024-06-30']);
+    for (const resultado of cuerpo.results) {
+      assert.equal(resultado.sql, undefined, 'el SQL nombra tablas físicas: no sale a un token normal');
+      assert.equal(resultado.plan.entity, 'reviews');
+      assert.equal(resultado.params[0], 1, 'la empresa del token es el primer parámetro de cada rango');
+    }
+    assert.doesNotMatch(JSON.stringify(cuerpo), /performance_reviews/);
+  });
+
   it('un token interno sí recibe el SQL del dry-run', async () => {
     const respuesta = await fetch(`${base}/analytics/query?dryRun=true`, {
       method: 'POST',

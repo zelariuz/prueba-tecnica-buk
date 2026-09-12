@@ -526,8 +526,12 @@ test('la vista pública no contiene ningún nombre de tabla ni de columna físic
   }
   const aVerificar = [...fisicos].filter((nombre) => !semanticos.has(nombre));
 
-  // Si el filtro dejara la lista vacía, el test pasaría sin comprobar nada.
-  assert.ok(aVerificar.length >= 10, `quedan nombres físicos que verificar: ${aVerificar}`);
+  // Si el filtro dejara la lista vacía, el test pasaría sin comprobar nada. El
+  // piso baja cuando una columna física pasa a declararse como dimensión —su
+  // nombre deja de ser "sólo físico"—, y por eso este número acompaña al
+  // catálogo: al declarar `employees.hire_date` quedaron nueve, entre ellos las
+  // tres tablas de hechos, que es lo que de verdad no puede filtrarse.
+  assert.ok(aVerificar.length >= 9, `quedan nombres físicos que verificar: ${aVerificar}`);
   assert.ok(aVerificar.includes('performance_reviews'), 'la tabla del caso está en la lista');
   for (const nombre of aVerificar) {
     // Límites de palabra: `score` no debe confundirse con la medida `avg_score`.
