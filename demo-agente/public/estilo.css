@@ -555,6 +555,18 @@ form.controles {
   grid-column: 1 / -1;
 }
 
+/* Un resultado de una comparación de períodos: uno por rango. Se separan con
+   un raíl del color de la capa porque son respuestas distintas —cada una con
+   su caché y su instante—, no trozos de una sola. */
+.cuerpo.rango {
+  border-left: 3px solid var(--capa);
+  padding-left: 0.75rem;
+}
+
+.cuerpo.rango .etiqueta {
+  color: var(--capa-texto);
+}
+
 pre.sql {
   white-space: pre;
 }

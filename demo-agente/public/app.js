@@ -587,9 +587,19 @@ function tarjetaDeSalto(salto, indice) {
   const cuerpos = document.createElement('div');
   cuerpos.className = 'cuerpos';
   cuerpos.append(panel('enviado', salto.enviado), panel('recibido', salto.recibido));
-  // El dry-run con token interno trae el SQL que emitió la capa: se muestra
-  // aparte, con saltos de línea de verdad y los $n señalados con su valor.
-  if (typeof salto.recibido?.sql === 'string') {
+  // Una comparación de períodos (ADR 0015) no vuelve como {rows, meta} sino
+  // como {results: [...]}: N consultas de verdad, una por rango, cada una con
+  // su caché y su instante. Se dibujan las N, rotuladas; el panel "recibido"
+  // de al lado sigue teniendo el JSON entero. La forma la decide la RESPUESTA
+  // y no quién la pidió, así que sirve igual al camino con agente y al de la
+  // consulta preparada.
+  if (Array.isArray(salto.recibido?.results)) {
+    for (const [indiceRango, resultado] of salto.recibido.results.entries()) {
+      cuerpos.append(panelDeRango(resultado, indiceRango));
+    }
+  } else if (typeof salto.recibido?.sql === 'string') {
+    // El dry-run con token interno trae el SQL que emitió la capa: se muestra
+    // aparte, con saltos de línea de verdad y los $n señalados con su valor.
     cuerpos.append(panelSql(salto.recibido.sql, salto.recibido.params));
   }
   tarjeta.append(cuerpos);
@@ -650,6 +660,50 @@ function panel(titulo, valor) {
     caja.append(detalles);
   }
   return caja;
+}
+
+// Un resultado de una comparación: el rango al que corresponde —ya resuelto, y
+// con la frase que lo pidió si la hubo—, su propio `servedFrom` y sus propias
+// filas. Cada uno se sirvió de un lugar distinto en un instante distinto: por
+// eso la capa no publica un `meta` global y por eso acá no hay uno solo.
+//
+// En el dry-run interno cada rango trae además SU SQL, que es la mitad de la
+// gracia: son N sentencias, no un UNION ALL.
+function panelDeRango(resultado, indice) {
+  const caja = document.createElement('div');
+  caja.className = 'cuerpo ancho rango';
+  caja.append(texto('span', rotuloDeRango(resultado, indice), 'etiqueta'));
+
+  const medicion = [
+    Array.isArray(resultado.rows) ? `${resultado.rows.length} filas` : null,
+    resultado.meta?.servedFrom ? `servedFrom ${resultado.meta.servedFrom}` : null,
+    resultado.meta?.total != null ? `total ${resultado.meta.total}` : null,
+    resultado.meta?.queryId ? `queryId ${resultado.meta.queryId}` : null,
+    resultado.meta?.asOf ? `asOf ${resultado.meta.asOf}` : null,
+  ]
+    .filter(Boolean)
+    .join(' · ');
+  if (medicion) caja.append(texto('p', medicion, 'medicion'));
+  for (const aviso of resultado.meta?.warnings ?? []) {
+    caja.append(texto('p', `aviso · ${aviso.member}: ${aviso.warning}`, 'nota'));
+  }
+
+  if (Array.isArray(resultado.rows)) {
+    caja.append(texto('pre', JSON.stringify(resultado.rows, null, 2)));
+  }
+  if (typeof resultado.sql === 'string') caja.append(panelSql(resultado.sql, resultado.params));
+  return caja;
+}
+
+// El rótulo dice las dos cosas que el consumidor necesita para dibujar: a qué
+// ventana le tocó responder, y si esa ventana era fija o se mueve sola. El par
+// de fechas solo no distingue una de otra.
+function rotuloDeRango(resultado, indice) {
+  const rango = Array.isArray(resultado.dateRange)
+    ? resultado.dateRange.join(' → ')
+    : 'sin rango';
+  const frase = resultado.dateRangeExpression ? ` · «${resultado.dateRangeExpression}»` : '';
+  return `Rango ${indice + 1} · ${rango}${frase}`;
 }
 
 // SQL con palabras clave y parámetros marcados. Se arma con nodos y
@@ -727,9 +781,20 @@ function pintarResumen(totalMs) {
   caja.append(dato('total', `${totalMs} ms`));
 
   const consulta = ultimaConsulta();
-  const meta = consulta?.recibido?.meta;
-  if (meta?.servedFrom) caja.append(dato('servedFrom', meta.servedFrom));
-  if (meta?.queryId) caja.append(dato('queryId', meta.queryId));
+  const resultados = consulta?.recibido?.results;
+  if (Array.isArray(resultados)) {
+    // Comparación: no hay un `servedFrom` que valga por todos —cada rango se
+    // sirvió por su cuenta—, así que se dicen los N, en el orden pedido.
+    caja.append(dato('rangos comparados', String(resultados.length)));
+    caja.append(
+      dato('servedFrom', resultados.map((uno) => uno.meta?.servedFrom ?? 'sin meta').join(' · ')),
+    );
+  } else {
+    const meta = consulta?.recibido?.meta;
+    if (meta?.servedFrom) caja.append(dato('servedFrom', meta.servedFrom));
+    if (meta?.queryId) caja.append(dato('queryId', meta.queryId));
+    if (meta?.total != null) caja.append(dato('total de filas', numero(meta.total)));
+  }
 
   const comparacion = comparacionDelAgente();
   if (comparacion) {
