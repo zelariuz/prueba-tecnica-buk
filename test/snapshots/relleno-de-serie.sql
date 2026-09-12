@@ -25,9 +25,7 @@ serie AS (
 ),
 ejes AS (
   SELECT DISTINCT departments.name AS "departments.name"
-  FROM attendance
-  JOIN employees ON attendance.employee_id = employees.id
-  JOIN departments ON employees.department_id = departments.id
+  FROM departments
 ),
 agregada AS (
   SELECT departments.name AS "departments.name", TO_CHAR(DATE_TRUNC('day', attendance.date), 'YYYY-MM-DD') AS "attendance.date", COUNT(*) AS "attendance.count", COUNT(*) FILTER (WHERE attendance.present = $4) AS "attendance.present_count"

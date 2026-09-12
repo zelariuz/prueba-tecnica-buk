@@ -1368,7 +1368,7 @@ describe('relleno de series densas', conBase, () => {
     );
   });
 
-  it('el relleno no cruza empresas: los ejes salen de las filas de la propia', async () => {
+  it('el relleno no cruza empresas: los ejes salen de los valores de la propia', async () => {
     const { rows } = await engine.run(
       {
         measures: ['attendance.count'],
@@ -1386,15 +1386,22 @@ describe('relleno de series densas', conBase, () => {
       { companyId: EMPRESA_B, consumer: 'dashboard' },
     );
 
-    // La empresa 2 sólo registra asistencia en Ingeniería (empleado 200, del 01
-    // al 04 de agosto): Ventas no es un eje suyo aunque exista con ese nombre en
-    // la empresa 1, y el día 05 queda relleno en 0.
+    // La empresa 2 tiene dos departamentos propios (20 y 21) y sólo registra
+    // asistencia en Ingeniería (empleado 200, del 01 al 04 de agosto). Los ejes
+    // son sus dos departamentos —existen, tengan datos o no en el rango: es la
+    // corrección del ADR 0012— y ninguno más: los cuatro departamentos del seed
+    // se llaman de a dos igual, así que un cruce de empresas daría filas
+    // repetidas. Ventas sale con su serie completa en 0 y el día 05 de
+    // Ingeniería también.
     assert.deepEqual(
       rows.map((fila) => [fila['departments.name'], fila['attendance.date'], fila['attendance.count']]),
       [
         ['Ingeniería', '2025-08-03', 1],
         ['Ingeniería', '2025-08-04', 1],
         ['Ingeniería', '2025-08-05', 0],
+        ['Ventas', '2025-08-03', 0],
+        ['Ventas', '2025-08-04', 0],
+        ['Ventas', '2025-08-05', 0],
       ],
     );
   });

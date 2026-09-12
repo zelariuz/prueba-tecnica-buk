@@ -309,7 +309,7 @@ export function createEngine({
       registro.gate = error?.gate;
       throw error;
     }
-    const { sql, params, medidas, presupuesto, advertencias, fuente, filas: tope, total } = plan;
+    const { sql, params, medidas, presupuesto, advertencias, fuente, filas: tope, total, relleno } = plan;
     registro.logico = plan.logico;
     // El SQL del plan, sin la marca de comentario: el `queryId` que la marca
     // repite ya viaja como campo propio del evento.
@@ -415,7 +415,11 @@ export function createEngine({
     // truncado sólo se sabe después, contando lo que volvió. Las dos viajan
     // juntas en `meta.warnings` porque para quien lee la respuesta son lo mismo:
     // algo que hay que mirar antes de creerle al número.
-    const avisos = [...advertencias, ...avisoDeTruncado(rows.length, tope)];
+    const avisos = [
+      ...advertencias,
+      ...avisoDeTruncado(rows.length, tope),
+      ...avisoDeRellenoVacio(rows.length, relleno),
+    ];
     registro.servedFrom = 'live';
     registro.rows = rows.length;
     registro.dbMs = dbMs;
@@ -534,6 +538,28 @@ function avisoDeTruncado(devueltas, tope) {
     {
       member: 'limit',
       warning: `El resultado trae ${devueltas} filas, que es exactamente el tope de tu clase de consumidor: puede estar truncado y desde la respuesta no hay forma de notarlo. Acota el rango, sube la granularidad o pide menos dimensiones; con total: true sabrás cuántas filas tiene el resultado completo.`,
+    },
+  ];
+}
+
+// Un relleno que vuelve vacío es un silencio, y el relleno existe justamente
+// para que nada falte. Corregidos los ejes (ADR 0012, corrección del
+// 2026-09-11), la rejilla `buckets × ejes` ya no puede quedar vacía porque el
+// período no tenga datos; sólo puede quedar vacía si la empresa no tiene ningún
+// valor de esa dimensión. Eso hay que decirlo: cero filas y `warnings: []` es lo
+// contrario de lo que la función promete, y desde la respuesta no hay forma de
+// distinguirlo de un error.
+//
+// Nace aquí y no en el planificador por lo mismo que el aviso de truncado: antes
+// de ejecutar no hay filas que contar. Viaja con la forma `{ member, warning }`
+// que el repo ya usa.
+function avisoDeRellenoVacio(devueltas, relleno) {
+  if (relleno === undefined || devueltas > 0) return [];
+  const miembro = relleno.ejes[0] ?? relleno.miembro;
+  return [
+    {
+      member: miembro,
+      warning: `La consulta pidió fillMissing y no devolvió ninguna fila: ${relleno.ejes.length > 0 ? `tu empresa no tiene ningún valor de ${relleno.ejes.join(', ')}` : 'el rango pedido no produjo ni un bucket'}, así que no hay serie que rellenar. No es un resultado vacío por falta de datos en el período: con relleno el período nunca vacía la serie.`,
     },
   ];
 }

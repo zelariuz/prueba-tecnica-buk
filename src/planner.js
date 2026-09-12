@@ -192,6 +192,7 @@ export function crearPlanificador({ catalog, fuentes, presupuestos, reloj = Date
     resolverMiembros,
     aplicarFiltros,
     resolverCaminoDeJoins,
+    resolverEjesDelRelleno,
     resolverAgregacion,
     emitirSql,
     describirPlan,
@@ -205,13 +206,15 @@ export function crearPlanificador({ catalog, fuentes, presupuestos, reloj = Date
   return function planificar(query, ctx, { ahora } = {}) {
     let paso = { catalog, fuentes, presupuestos, reloj, ahora, query, ctx };
     for (const puerta of puertas) paso = anotandoLaPuerta(puerta, paso);
-    const { sql, params, medidas, presupuesto, advertencias, logico, fuente, filas, total } = paso;
+    const { sql, params, medidas, presupuesto, advertencias, logico, fuente, filas, total, relleno } = paso;
     // `filas` —el LIMIT efectivo que se emitió— sale del planificador porque el
     // engine no puede recalcularlo sin repetir la regla: quien lo decide es
     // quien lo escribió en el SQL. Lo necesita para saber si la respuesta llegó
     // al tope y puede venir cortada.
     // `total` es la segunda sentencia, o nada si la consulta no la pidió.
-    return { sql, params, medidas, presupuesto, advertencias, logico, fuente, filas, total };
+    // `relleno` viaja hasta el engine porque un relleno que vuelve vacío hay que
+    // decirlo, y eso sólo se sabe contando filas: ver `avisoDeRellenoVacio`.
+    return { sql, params, medidas, presupuesto, advertencias, logico, fuente, filas, total, relleno };
   };
 }
 
@@ -378,7 +381,7 @@ function resolverMiembros(paso) {
     if (temporal.fillMissing !== true) continue;
     exigirSerieDeFechas(dialect, fuente, temporal.dimension);
     exigirSerieQueQuepa(paso, temporal);
-    relleno = { miembro: temporal.dimension, granularidad: temporal.granularity, desdeSql, hastaSql };
+    relleno = { miembro: temporal.dimension, entidad, granularidad: temporal.granularity, desdeSql, hastaSql };
   }
 
   return { ...paso, raiz, fuente, dialect, medidas, derivadas, dimensiones, condiciones, relleno };
@@ -611,7 +614,146 @@ function exigirMismaFuente(catalog, fuente, raiz, entidad) {
   });
 }
 
-// Puerta 5 · Agregación y derivadas: qué se agrega, con qué fórmula se combina
+// Puerta 5 · Ejes del relleno: de dónde salen los valores de las dimensiones NO
+// temporales cuando la consulta pide `fillMissing` (corrección del ADR 0012 del
+// 2026-09-11).
+//
+// El período decide el **eje x**, no qué series existen. La versión original
+// armaba `ejes` con un `SELECT DISTINCT … FROM <entidad de hechos + joins>`, y
+// la CTE de la entidad de hechos ya lleva el rango: los ejes terminaban siendo
+// "los valores que tienen datos en el período" en vez de "los valores que
+// existen". Un departamento sin asistencia en enero desaparecía del gráfico
+// entero, y si ninguno tenía datos la respuesta salía con cero filas y sin una
+// palabra, que es lo contrario de lo que el relleno promete.
+//
+// Los ejes se arman ahora desde las CTE de las **entidades de las dimensiones**,
+// unidas entre sí por el camino de relaciones y **sin pasar por la entidad de
+// hechos**. Esas CTE ya traen su `company_id` y sus propios filtros, así que los
+// ejes siguen respetando lo que deben respetar —la empresa, un filtro por
+// empleados activos— y dejan de respetar el recorte de fechas, que no era suyo.
+//
+// No se arma una segunda versión de la CTE de hechos sin el filtro de fecha:
+// escanear un millón de filas de asistencia para averiguar qué departamentos hay
+// es exactamente lo que el rango existe para evitar.
+function resolverEjesDelRelleno(paso) {
+  const { relleno, dimensiones, raiz, aristas, condiciones, catalog } = paso;
+  if (!relleno) return paso;
+
+  // La dimensión temporal rellenada la pone la serie; las demás son los ejes.
+  const dimensionesDeEje = dimensiones.filter((d) => d.miembro !== relleno.miembro);
+  // Sin dimensiones no temporales no hay ejes que armar: la serie sola es el
+  // esqueleto y el cuerpo sigue siendo `FROM serie LEFT JOIN agregada`. Ese
+  // camino no cambió.
+  // Los miembros de los ejes viajan con el relleno hasta el engine: si la
+  // rejilla vuelve vacía, la advertencia tiene que poder nombrarlos.
+  const miembrosDeEje = dimensionesDeEje.map((d) => d.miembro);
+  if (dimensionesDeEje.length === 0) {
+    return {
+      ...paso,
+      relleno: { ...relleno, ejes: miembrosDeEje },
+      ejes: { dimensiones: [], aristas: [], entidades: [] },
+    };
+  }
+
+  for (const dimension of dimensionesDeEje) {
+    exigirEjeConociblePorSuCuenta(paso, dimension);
+  }
+
+  // El camino de joins es un árbol colgado de la entidad de hechos. Quitarla
+  // deja un bosque: cada entidad de eje sube por sus padres hasta justo antes de
+  // la raíz, y lo que queda son una o más ramas sueltas.
+  const padres = new Map(aristas.map((arista) => [arista.hacia, arista]));
+  const cadenaHastaLaRaiz = (entidad) => {
+    const cadena = [];
+    for (let actual = padres.get(entidad)?.desde; actual !== undefined && actual !== raiz; ) {
+      cadena.push(actual);
+      actual = padres.get(actual)?.desde;
+    }
+    return cadena;
+  };
+
+  // Qué entidades entran. Las de los ejes, siempre. Una entidad intermedia entra
+  // sólo si aporta algo: o trae condiciones propias —un filtro que los ejes
+  // tienen que respetar— o hace de puente entre dos que sí entran. Pasar por una
+  // entidad que no aporta nada no es gratis: `FROM employees JOIN departments`
+  // borra los departamentos sin ningún empleado, que existen igual. Ésa es la
+  // "forma mínima correcta": los valores que existen, filtrados sólo por lo que
+  // la consulta pidió.
+  const conservadas = new Set(dimensionesDeEje.map((d) => d.entidad));
+  for (const entidad of new Set(dimensionesDeEje.map((d) => d.entidad))) {
+    for (const intermedia of cadenaHastaLaRaiz(entidad)) {
+      if ((condiciones.get(intermedia) ?? []).length > 0) conservadas.add(intermedia);
+    }
+  }
+  // Puentes: entre una entidad conservada y su antepasado conservado más cercano
+  // no puede quedar un hueco, porque el JOIN se escribe con la clave foránea del
+  // padre y sin él no hay dónde colgarlo.
+  for (const entidad of [...conservadas]) {
+    const puente = [];
+    for (const antepasado of cadenaHastaLaRaiz(entidad)) {
+      if (conservadas.has(antepasado)) {
+        for (const medio of puente) conservadas.add(medio);
+        break;
+      }
+      puente.push(antepasado);
+    }
+  }
+
+  // Una entidad conservada que carga el rango de la dimensión rellenada volvería
+  // a atar los ejes al período por la puerta de atrás.
+  if (conservadas.has(relleno.entidad)) exigirEjeSinElRango(paso, dimensionesDeEje);
+
+  // El orden de `aristas` ya deja cada entidad después de la suya de origen, que
+  // es lo que el FROM necesita para que ningún JOIN nombre algo que todavía no
+  // apareció.
+  const entidades = aristas.map((arista) => arista.hacia).filter((entidad) => conservadas.has(entidad));
+
+  return {
+    ...paso,
+    relleno: { ...relleno, ejes: miembrosDeEje },
+    ejes: {
+      dimensiones: dimensionesDeEje,
+      entidades,
+      // De cada entidad conservada, la arista que la cuelga de su padre, si el
+      // padre también quedó. Si no, es la raíz de su propia rama.
+      aristas: entidades.map((entidad) => padres.get(entidad)).filter((arista) => conservadas.has(arista.desde)),
+    },
+  };
+}
+
+// Una dimensión no temporal de la propia entidad de hechos —`attendance.present`
+// agrupando junto con el relleno— no tiene dominio conocible barato: saber qué
+// valores existen exige escanear la tabla de hechos entera, sin el rango que la
+// acota, que es justo el costo que el rango evita. La capa prefiere rechazar
+// antes que responder mal o carísimo, así que se rechaza en vez de degradar en
+// silencio a una serie dispersa (ver la corrección del ADR 0012).
+//
+// `INVALID_QUERY` (400): la consulta es legítima como vocabulario —las dos
+// piezas existen y por separado se responden—, pero juntas no tienen respuesta
+// posible, y quien la pide sí puede arreglarla. Es el mismo código con el que el
+// ADR 0013 rechaza la serie que no cabe.
+function exigirEjeConociblePorSuCuenta(paso, dimension) {
+  if (dimension.entidad !== paso.raiz) return;
+  throw new SemanticError({
+    code: 'INVALID_QUERY',
+    member: dimension.miembro,
+    suggestion: `${dimension.miembro} es una dimensión de ${paso.raiz}, la misma entidad de la que salen los hechos: para rellenar la serie habría que saber qué valores tiene, y eso exige recorrer ${paso.raiz} entera sin el rango que la acota. Agrupa por una dimensión de otra entidad —a la que se llega por una relación— o pide la consulta sin fillMissing.`,
+  });
+}
+
+// El otro caso del mismo problema: la entidad que hace falta para armar los ejes
+// es la que lleva el rango de la dimensión rellenada, así que sus valores
+// volverían a ser "los que tienen datos en el período".
+function exigirEjeSinElRango(paso, dimensionesDeEje) {
+  const culpable = dimensionesDeEje.find((d) => d.entidad === paso.relleno.entidad) ?? dimensionesDeEje[0];
+  throw new SemanticError({
+    code: 'INVALID_QUERY',
+    member: culpable.miembro,
+    suggestion: `Los ejes de ${culpable.miembro} salen de ${paso.relleno.entidad}, que es la entidad donde ${paso.relleno.miembro} aplica su dateRange: rellenar así daría por ejes sólo los valores con datos en el período, que es lo que fillMissing viene a evitar. Agrupa por una dimensión de otra entidad o pide la consulta sin fillMissing.`,
+  });
+}
+
+// Puerta 6 · Agregación y derivadas: qué se agrega, con qué fórmula se combina
 // lo agregado y qué hay que advertirle al consumidor sobre lo que pidió. Una
 // consulta sin medidas la atraviesa sin producir nada: no hay base que agregar
 // ni derivada que calcular, y el SELECT queda con las dimensiones solas.
@@ -697,7 +839,7 @@ function advertirRazonesAnuladas(paso, declaraciones, derivadas, declarados) {
   return advertencias;
 }
 
-// Puerta 6 · Emitir: las CTE por entidad, la consulta agregada, la etapa de las
+// Puerta 7 · Emitir: las CTE por entidad, la consulta agregada, la etapa de las
 // derivadas, el orden y el límite. Es el único lugar donde se escribe SQL.
 function emitirSql(paso) {
   const { query, presupuesto, parametro, dimensiones, medidas, derivadas, medidasBase, formulas, raiz, aristas } = paso;
@@ -731,7 +873,7 @@ function emitirSql(paso) {
   // buckets. Sin `fillMissing` no se toca nada de esto: el SQL emitido es el
   // mismo de siempre, byte por byte.
   const { ctesDelRelleno, cuerpo } = paso.relleno
-    ? etapasDelRelleno(paso, agregada, joins)
+    ? etapasDelRelleno(paso, agregada)
     : {
         ctesDelRelleno: [],
         cuerpo: derivadas.length
@@ -788,17 +930,19 @@ function emitirSql(paso) {
 //   serie    los buckets del rango, uno por fila, en el mismo formato de texto
 //            que `dateTrunc`, para que el JOIN calce por igualdad.
 //   ejes     los valores distintos de las dimensiones NO temporales, tomados de
-//            los mismos datos filtrados: se rellena el tiempo de los ejes que
-//            existen, no se inventan departamentos que nadie tiene.
+//            las CTE de SUS PROPIAS entidades, sin pasar por la entidad de
+//            hechos: son los valores que existen en la empresa, no los que
+//            tienen datos en el período (corrección del ADR 0012; la forma la
+//            decide `resolverEjesDelRelleno`).
 //   agregada exactamente la etapa que emite el camino normal, sin un cambio.
 //
 // Afuera, el producto `serie × ejes` es la rejilla completa y el `LEFT JOIN`
 // trae lo que haya. Sin dimensiones no temporales no hay rejilla que armar: no
 // se emite `ejes` ni el `CROSS JOIN`, y la serie sola es el esqueleto.
-function etapasDelRelleno(paso, agregada, joins) {
-  const { dialect, dimensiones, medidas, formulas, raiz, relleno } = paso;
+function etapasDelRelleno(paso, agregada) {
+  const { dialect, dimensiones, medidas, formulas, relleno } = paso;
 
-  const ejes = dimensiones.filter((d) => d.miembro !== relleno.miembro);
+  const ejes = paso.ejes.dimensiones;
 
   const ctesDelRelleno = [
     `${ALIAS_SERIE} AS (\n${indentar(
@@ -810,7 +954,7 @@ function etapasDelRelleno(paso, agregada, joins) {
       `${ALIAS_EJES} AS (\n${indentar(
         [
           `SELECT DISTINCT ${ejes.map((d) => `${d.expresion} AS "${d.miembro}"`).join(', ')}`,
-          `FROM ${raiz}${joins.join('')}`,
+          `FROM ${fromDeLosEjes(paso)}`,
         ].join('\n'),
       )}\n)`,
     );
@@ -846,6 +990,23 @@ function etapasDelRelleno(paso, agregada, joins) {
       `LEFT JOIN ${ALIAS_AGREGADA} ON ${condicion.join('\n  AND ')}`,
     ],
   };
+}
+
+// El FROM de la CTE `ejes`: las entidades que `resolverEjesDelRelleno` conservó,
+// cada una colgada de su padre por la relación declarada. Una entidad cuyo padre
+// no quedó es la raíz de su propia rama y entra con `CROSS JOIN`: dos ejes de
+// ramas distintas no tienen relación que los una, y la rejilla los cruza igual
+// que cruza la serie con ellos. La entidad de hechos nunca aparece aquí.
+function fromDeLosEjes(paso) {
+  const { catalog, ejes } = paso;
+  const porDestino = new Map(ejes.aristas.map((arista) => [arista.hacia, arista]));
+  return ejes.entidades
+    .map((entidad, indice) => {
+      const arista = porDestino.get(entidad);
+      if (arista === undefined) return indice === 0 ? entidad : `\nCROSS JOIN ${entidad}`;
+      return `\nJOIN ${entidad} ON ${arista.desde}.${arista.relacion.foreignKey} = ${entidad}.${catalog.entity(entidad).primaryKey}`;
+    })
+    .join('');
 }
 
 // El filtro de empresa vive dentro de la CTE, en el único lugar donde se nombra
@@ -915,7 +1076,7 @@ function ordenDeSalida(query, dimensiones, medidas) {
   });
 }
 
-// Puerta 7 · Describir: lo que el planificador decidió, dicho en el vocabulario
+// Puerta 8 · Describir: lo que el planificador decidió, dicho en el vocabulario
 // del consumidor y sin una sola tabla física (historia 25). Es lo que el
 // dry-run devuelve para poder revisar una consulta antes de gastar la base.
 function describirPlan(paso) {
