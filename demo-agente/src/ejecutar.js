@@ -3,7 +3,7 @@
 // HTTP ni de HTML: eso vive en los adaptadores. Las palabras que se cruzan con
 // el agente están en `protocolo.js`.
 import { consumidorPorId, CONSUMIDORES } from './consumidores.js';
-import { preguntas, preguntaPorId, prepararConsulta } from './preguntas.js';
+import { preguntas, preguntasRaras, preguntaPorId, prepararConsulta } from './preguntas.js';
 import { comoJson, promptDeCorreccion, promptDeRedaccion, promptDelClic } from './protocolo.js';
 
 const RUTA_CONSULTA = '/analytics/query';
@@ -23,9 +23,22 @@ export async function ejecutar(peticion, { agente, capa, reloj, alSalto = null }
   const pregunta = preguntaPorId(peticion.pregunta);
   if (!pregunta) {
     throw new Error(
-      `No existe la pregunta preparada "${peticion.pregunta}". Preparadas: ${preguntas
+      `No existe la pregunta preparada "${peticion.pregunta}". Preparadas: ${[
+        ...preguntas,
+        ...preguntasRaras,
+      ]
         .map((preparada) => preparada.id)
         .join(', ')}.`,
+    );
+  }
+  // Un caso raro no trae JSON preparado a propósito: lo que se mira es lo que
+  // el agente decide escribir. Sin agente no hay nada que mandarle a la capa, y
+  // eso es un error de la petición —no un rastro vacío— para que se lea el
+  // motivo en vez de un 200 sin saltos.
+  if (!pregunta.consulta && !peticion.usarAgente) {
+    throw new Error(
+      `La pregunta "${pregunta.id}" es un caso raro: existe sólo por el camino con agente y no ` +
+        'trae consulta preparada. Marca "usar agente" para ejecutarla.',
     );
   }
   const consumidor = consumidorPorId(peticion.token);
@@ -41,8 +54,10 @@ export async function ejecutar(peticion, { agente, capa, reloj, alSalto = null }
   const agregar = anotarEn(rastro, alSalto);
 
   // Con agente, el JSON que sigue al resto del rastro lo escribe él; sin
-  // agente, sale del preparado. De ahí para abajo, el camino es el mismo.
-  let consulta = prepararConsulta(pregunta, peticion);
+  // agente, sale del preparado. De ahí para abajo, el camino es el mismo. Los
+  // casos raros no tienen preparado que sustituir: acá no hay nada que hacer y
+  // el JSON llega en el salto siguiente.
+  let consulta = pregunta.consulta ? prepararConsulta(pregunta, peticion) : null;
   if (peticion.usarAgente) {
     const primero = await saltoAlAgente(promptDelClic(pregunta, peticion), { agente, reloj });
     agregar(primero.salto);
