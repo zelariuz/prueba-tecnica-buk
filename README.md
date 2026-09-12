@@ -93,7 +93,7 @@ Con los contenedores de A arriba, en la raíz del repo:
 npm install
 export DATABASE_URL=postgres://capa:capa@localhost:5433/capa_semantica
 export REDIS_URL=redis://localhost:6380
-npm test                         # suite completa, 290 tests
+npm test                         # suite completa, 291 tests
 npm run demo                     # las tres preguntas del caso, por consola
 ```
 

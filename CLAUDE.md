@@ -208,7 +208,7 @@ corre la demo y explícame el caso obligatorio; después corre los tests". Orden
    error con sugerencia y la telemetría. Filas esperadas de la empresa A:
    Ingeniería 4.35/2 y 3.80/1; `completion_rate` 75.
 3. Tests: `npm install` y `npm test` con `DATABASE_URL` y `REDIS_URL` de la
-   sección Comandos → 290 en verde (181 tests, 180 + 1 saltado, sin variables).
+   sección Comandos → 291 en verde (182 tests, 181 + 1 saltado, sin variables).
 4. La demo del agente, si el prompt la pide (el del README la pide):
    `cd demo-agente && npm install && npm start` en segundo plano, con la capa
    arriba; no va en el compose. Di la URL (`http://localhost:3100`), que usa la
@@ -282,7 +282,7 @@ con el tope en 40 filas devuelve 40, advierte el corte y `total` dice 62. Cambi�
 **un solo SQL de referencia**, `test/snapshots/relleno-de-serie.sql`, y un test
 cambió de expectativa a propósito ("el relleno no cruza empresas": la empresa B
 ahora devuelve sus dos departamentos, uno con la serie en cero). La raíz pasa de
-**283 a 290 tests en verde**; `demo-agente` sigue en **73**.
+**283 a 291 tests en verde**; `demo-agente` sigue en **73**.
 
 La demo aprende lo último de la capa (11-09, ADR 0012 a 0015): el agente de
 `demo-agente` no conocía el relleno, el total, los rangos relativos ni la

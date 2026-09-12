@@ -9,6 +9,7 @@ import { departments } from '../src/definitions/departments.js';
 import { employees } from '../src/definitions/employees.js';
 import { reviews } from '../src/definitions/reviews.js';
 import { consultasTipo } from '../src/definitions/consultas-tipo.js';
+import { attendance } from '../src/definitions/attendance.js';
 import { registrarModulos } from '../src/definitions/index.js';
 
 // Valor improbable a propósito: si aparece en el SQL, es que se interpoló.
@@ -1366,6 +1367,57 @@ test('una dimensión de la propia entidad de hechos no se puede rellenar', () =>
     TABLERO,
   );
   assert.ok(!sql.includes('ejes AS ('));
+});
+
+test('dos ejes de ramas distintas se cruzan entre sí: ninguna relación los une', () => {
+  // El catálogo de hoy tiene una sola rama colgando de la asistencia
+  // (`employees → departments`), así que este caso se arma con un módulo de
+  // prueba: una segunda relación de la entidad de hechos hacia `shifts`. Sin la
+  // entidad de hechos en el medio, las dos ramas quedan sueltas, y la rejilla
+  // las cruza igual que cruza la serie con ellas.
+  const catalog = createCatalog();
+  catalog.register(departments);
+  catalog.register(employees);
+  catalog.register({
+    name: 'shifts',
+    table: 'shifts',
+    primaryKey: 'id',
+    companyColumn: 'company_id',
+    description: 'Turnos de trabajo, sólo para este test.',
+    dimensions: { label: { column: 'label', type: 'string', description: 'Nombre del turno.' } },
+  });
+  catalog.register({
+    ...attendance,
+    relationships: {
+      ...attendance.relationships,
+      shift: {
+        type: 'many_to_one',
+        target: 'shifts',
+        foreignKey: 'shift_id',
+        description: 'Turno del registro.',
+      },
+    },
+  });
+
+  const { sql } = createEngine({ catalog }).plan(
+    {
+      measures: ['attendance.count'],
+      dimensions: ['departments.name', 'shifts.label'],
+      timeDimensions: [
+        {
+          dimension: 'attendance.date',
+          granularity: 'day',
+          dateRange: ['2025-06-01', '2025-06-03'],
+          fillMissing: true,
+        },
+      ],
+    },
+    TABLERO,
+  );
+
+  const ejes = sql.match(/ejes AS \(\n([\s\S]*?)\n\)/)[1];
+  assert.match(ejes, /FROM departments\n\s*CROSS JOIN shifts/);
+  assert.ok(!ejes.includes('attendance'), 'la entidad de hechos sigue fuera de los ejes');
 });
 
 test('la bandera en false o ausente emite exactamente el mismo SQL de siempre', () => {
